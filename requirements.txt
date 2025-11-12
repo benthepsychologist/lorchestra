@@ -1,0 +1,4 @@
+pyyaml>=6.0
+click>=8.1
+rich>=13.0
+python-dotenv>=1.0

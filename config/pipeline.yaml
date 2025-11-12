@@ -1,0 +1,130 @@
+# lorch Pipeline Configuration
+#
+# This file defines the three-stage data pipeline:
+# 1. Extract (Meltano) - Pull data from sources
+# 2. Canonize (Canonizer) - Transform to canonical format
+# 3. Index (Vector-projector) - Store in local document store
+
+pipeline:
+  name: phi-local-pipeline
+  version: 1.0.0
+  description: Local-first PHI data processing pipeline
+
+# Stage Definitions
+stages:
+  # ─────────────────────────────────────────────────────────────────
+  # Stage 1: Extract with Meltano
+  # ─────────────────────────────────────────────────────────────────
+  extract:
+    type: meltano
+    enabled: true
+    repo_path: /home/user/meltano-ingest
+    venv_path: /home/user/meltano-ingest/.venv
+    job: ingest-all-accounts  # Meltano job name
+    output_dir: /home/user/phi-data/meltano-extracts
+    retry:
+      enabled: true
+      max_attempts: 3
+      backoff_seconds: 60
+      backoff_multiplier: 2
+    validation:
+      require_files: true  # Fail if no output files
+      min_records: 1       # Fail if no records extracted
+
+  # ─────────────────────────────────────────────────────────────────
+  # Stage 2: Canonize with Canonizer
+  # ─────────────────────────────────────────────────────────────────
+  canonize:
+    type: canonizer
+    enabled: true
+    repo_path: /home/user/canonizer
+    venv_path: /home/user/canonizer/.venv
+    transform_registry: /home/user/transforms
+    input_dir: /home/user/phi-data/meltano-extracts
+    output_dir: /home/user/phi-data/canonical
+
+    # Mapping patterns: source files → transforms
+    mappings:
+      - source_pattern: "*gmail*.jsonl"
+        transform: email/gmail_to_canonical_v1
+        output_name: email
+
+      - source_pattern: "*exchange*.jsonl"
+        transform: email/exchange_to_canonical_v1
+        output_name: email
+
+      - source_pattern: "*contacts*.jsonl"
+        transform: contact/dataverse_contact_to_canonical_v1
+        output_name: contact
+
+      - source_pattern: "*sessions*.jsonl"
+        transform: clinical_session/dataverse_session_to_canonical_v1
+        output_name: clinical_session
+
+    retry:
+      enabled: true
+      max_attempts: 2
+      backoff_seconds: 30
+
+    validation:
+      validate_schemas: true   # Validate against canonical schemas
+      skip_invalid: true       # Skip invalid records vs fail
+      require_checksums: true  # Verify transform checksums
+
+  # ─────────────────────────────────────────────────────────────────
+  # Stage 3: Index with Vector-projector (stub)
+  # ─────────────────────────────────────────────────────────────────
+  index:
+    type: vector-projector
+    enabled: true
+    repo_path: /home/user/vector-projector
+    venv_path: /home/user/vector-projector/.venv  # Not yet created
+    input_dir: /home/user/phi-data/canonical
+    output_dir: /home/user/phi-data/vector-store
+    mode: stub  # Placeholder: just copy files
+
+    retry:
+      enabled: false  # No retry for stub mode
+
+    validation:
+      require_files: true
+
+# Logging Configuration
+logging:
+  level: INFO  # DEBUG, INFO, WARNING, ERROR
+  format: structured  # structured (JSON) or pretty (human-readable)
+  output: logs/pipeline-{date}.log
+  console: true  # Also log to console
+  include_timestamps: true
+
+  # What to log (no PHI)
+  include:
+    - stage_start
+    - stage_end
+    - record_counts
+    - file_paths
+    - errors
+    - warnings
+
+  exclude:
+    - record_content  # NEVER log PHI data
+
+# Security Configuration
+security:
+  phi_directories:
+    - /home/user/phi-data
+    - /home/user/phi-data/meltano-extracts
+    - /home/user/phi-data/canonical
+    - /home/user/phi-data/vector-store
+
+  enforce_permissions: true
+  required_perms: "700"  # Owner-only access
+
+  validate_before_run: true  # Check permissions before execution
+
+# Pipeline Behavior
+behavior:
+  fail_fast: false  # Continue to next stage even if current fails
+  cleanup_on_success: false  # Keep intermediate files
+  cleanup_on_failure: false  # Keep files for debugging
+  parallel_execution: false  # Run stages sequentially (for now)
