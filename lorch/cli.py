@@ -11,7 +11,14 @@ import click
 from lorch import __version__
 from lorch.config import load_config
 from lorch.pipeline import Pipeline
-from lorch.utils import format_duration, print_error, print_info, print_success
+from lorch.utils import (
+    format_duration,
+    print_banner,
+    print_error,
+    print_info,
+    print_success,
+    print_warning,
+)
 
 
 @click.group()
@@ -311,6 +318,859 @@ def clean(stage, clean_all, dry_run, config):
 
     except Exception as e:
         print_error(f"Clean failed: {e}")
+        exit(1)
+
+
+@main.command()
+@click.argument("tap_name")
+@click.option(
+    "--config",
+    type=click.Path(exists=True, path_type=Path),
+    help="Custom configuration file",
+)
+@click.option(
+    "--target",
+    default=None,
+    help="Target to use (auto-selects chunked target if not specified)",
+)
+@click.option(
+    "--verbose",
+    is_flag=True,
+    help="Enable verbose output",
+)
+def extract(tap_name, config, target, verbose):
+    """
+    Run a single meltano extractor with target-jsonl-chunked.
+
+    Automatically selects the appropriate chunked target based on tap name.
+
+    Examples:
+
+      # Extract from single Gmail account (auto-selects chunked target)
+      lorch extract tap-gmail--acct1-personal
+
+      # Extract from Exchange account
+      lorch extract tap-msgraph-mail--ben-mensio
+
+      # Extract from Dataverse
+      lorch extract tap-dataverse
+
+      # Override target
+      lorch extract tap-dataverse --target target-jsonl
+    """
+    try:
+        import subprocess
+        import time
+        import os
+
+        # Load configuration
+        pipeline_config = load_config(config) if config else load_config()
+
+        # Get extract stage config
+        extract_config = pipeline_config.get_stage("extract")
+        if not extract_config:
+            print_error("Extract stage not configured")
+            exit(1)
+
+        # Auto-select chunked target if not specified
+        if target is None:
+            target = _select_chunked_target(tap_name)
+            print_info(f"Auto-selected target: {target}")
+
+        # Set RUN_ID environment variable for chunked targets
+        run_id = os.environ.get("RUN_ID")
+        if not run_id:
+            from datetime import datetime
+            run_id = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+            os.environ["RUN_ID"] = run_id
+
+        # Build command
+        meltano_bin = extract_config.venv_path / "bin" / "meltano"
+        command = [str(meltano_bin), "run", tap_name, target]
+
+        print_banner(f"Extracting: {tap_name}")
+        print_info(f"Command: meltano run {tap_name} {target}")
+        print_info(f"Run ID: {run_id}")
+        print_info(f"Working directory: {extract_config.repo_path}")
+        print_info(f"Vault directory: {extract_config.output_dir}\n")
+
+        start_time = time.time()
+
+        # Run meltano
+        result = subprocess.run(
+            command,
+            cwd=extract_config.repo_path,
+            capture_output=not verbose,
+            text=True,
+            check=False,
+        )
+
+        duration = time.time() - start_time
+
+        if result.returncode != 0:
+            print_error(f"\nExtraction failed (exit code {result.returncode})")
+            if not verbose and result.stderr:
+                print_error(f"Error: {result.stderr[:500]}")
+            exit(1)
+
+        # Find and display manifests
+        print_success(f"\nExtraction completed in {format_duration(duration)}")
+
+        # Update LATEST pointers for successful runs
+        _update_latest_pointers(extract_config.output_dir, run_id)
+
+        _display_vault_summary(extract_config.output_dir, run_id)
+
+        exit(0)
+
+    except Exception as e:
+        print_error(f"Extraction failed: {e}")
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        exit(1)
+
+
+def _select_chunked_target(tap_name: str) -> str:
+    """Select appropriate chunked target based on tap name."""
+    # Gmail accounts
+    if "gmail--acct1" in tap_name:
+        return "target-jsonl-chunked--gmail-ben-mensio"
+    elif "gmail--acct2" in tap_name:
+        return "target-jsonl-chunked--gmail-drben"
+    elif "gmail--acct3" in tap_name:
+        return "target-jsonl-chunked--gmail-ben-personal"
+
+    # Exchange/MS Graph accounts
+    elif "msgraph-mail--ben-mensio" in tap_name:
+        return "target-jsonl-chunked--ben-mensio-exchange"
+    elif "msgraph-mail--booking" in tap_name:
+        return "target-jsonl-chunked--booking-mensio"
+    elif "msgraph-mail--info" in tap_name:
+        return "target-jsonl-chunked--info-mensio"
+    elif "msgraph-mail--ben-efs" in tap_name:
+        return "target-jsonl-chunked--ben-efs"
+
+    # Dataverse
+    elif "dataverse" in tap_name:
+        return "target-jsonl-chunked--dataverse"
+
+    # Google Sheets
+    elif "google-sheets--initial-1" in tap_name:
+        return "target-jsonl-chunked--google-sheets-initial-1"
+    elif "google-sheets--initial-2" in tap_name:
+        return "target-jsonl-chunked--google-sheets-initial-2"
+    elif "google-sheets--followup" in tap_name:
+        return "target-jsonl-chunked--google-sheets-followup"
+
+    # QuickBooks
+    elif "quickbooks--ben-personal" in tap_name:
+        return "target-jsonl-chunked--quickbooks-ben-personal"
+    elif "quickbooks--mensio-cad" in tap_name:
+        return "target-jsonl-chunked--quickbooks-mensio-cad"
+
+    else:
+        # Fallback to generic chunked target
+        return "target-jsonl-chunked"
+
+
+def _update_latest_pointers(vault_root: Path, run_id: str):
+    """
+    Update LATEST.json pointers for all successful runs.
+
+    Creates/updates LATEST.json in each account directory pointing to the
+    latest successful run.
+    """
+    import json
+    import re
+    from builtins import list as builtin_list
+
+    # Find all manifests with this run_id
+    manifests = builtin_list(vault_root.rglob(f"run_id={run_id}/manifest.json"))
+
+    for manifest_path in manifests:
+        try:
+            # Read manifest to check status
+            with open(manifest_path, "r") as f:
+                manifest = json.load(f)
+
+            status = manifest.get("status")
+            if status != "completed":
+                continue  # Skip failed runs
+
+            # Extract dt and run_id from path
+            # e.g., vault/email/gmail/ben-mensio/dt=2025-11-12/run_id=20251112T205433Z/manifest.json
+            run_dir = manifest_path.parent
+            run_id_dir = run_dir.name  # run_id=20251112T205433Z
+            dt_dir = run_dir.parent.name  # dt=2025-11-12
+            account_dir = run_dir.parent.parent  # vault/email/gmail/ben-mensio/
+
+            # Extract values
+            dt_match = re.match(r"dt=(.+)", dt_dir)
+            run_id_match = re.match(r"run_id=(.+)", run_id_dir)
+
+            if not dt_match or not run_id_match:
+                continue
+
+            dt = dt_match.group(1)
+            run_id_value = run_id_match.group(1)
+
+            # Create LATEST.json in account directory
+            latest_file = account_dir / "LATEST.json"
+            latest_data = {
+                "dt": dt,
+                "run_id": run_id_value,
+                "updated_at": manifest.get("ended_utc"),
+                "records": manifest.get("totals", {}).get("records", 0),
+            }
+
+            with open(latest_file, "w") as f:
+                json.dump(latest_data, f, indent=2)
+
+            # Set secure permissions (600)
+            latest_file.chmod(0o600)
+
+        except Exception as e:
+            print_warning(f"Could not update LATEST pointer for {manifest_path}: {e}")
+
+
+def _display_vault_summary(vault_root: Path, run_id: str):
+    """Display summary of extracted data from vault manifests."""
+    import json
+    from builtins import list as builtin_list
+
+    print_info("\nVault Summary:")
+
+    # Find manifests with this run_id
+    manifests = builtin_list(vault_root.rglob(f"run_id={run_id}/manifest.json"))
+
+    if not manifests:
+        print_warning("No manifests found (extraction may have failed)")
+        return
+
+    for manifest_path in manifests:
+        try:
+            with open(manifest_path, "r") as f:
+                manifest = json.load(f)
+
+            source = manifest.get("source", "unknown")
+            account = manifest.get("account", "unknown")
+            totals = manifest.get("totals", {})
+            records = totals.get("records", 0)
+            size_compressed = totals.get("size_compressed", 0)
+            size_mb = size_compressed / (1024 * 1024)
+            parts = totals.get("parts", 0)
+
+            print(f"\n  {source}/{account}:")
+            print(f"    Records: {records}")
+            print(f"    Size: {size_mb:.2f} MB (compressed)")
+            print(f"    Parts: {parts}")
+            print(f"    Location: {manifest_path.parent}")
+
+        except Exception as e:
+            print_warning(f"Could not read manifest: {manifest_path}: {e}")
+
+
+@main.group()
+def list():
+    """
+    List available extractors, jobs, transforms, and mappings.
+
+    Examples:
+
+      # List all extractors
+      lorch list extractors
+
+      # List all jobs
+      lorch list jobs
+
+      # List all transforms
+      lorch list transforms
+
+      # List configured mappings
+      lorch list mappings
+    """
+    pass
+
+
+@list.command()
+@click.option(
+    "--config",
+    type=click.Path(exists=True, path_type=Path),
+    help="Custom configuration file",
+)
+def extractors(config):
+    """
+    List all configured meltano extractors (taps).
+
+    Shows all tap instances configured in meltano.yml.
+    """
+    try:
+        import subprocess
+        import yaml
+
+        # Load configuration
+        pipeline_config = load_config(config) if config else load_config()
+
+        # Get meltano repo path
+        extract_config = pipeline_config.get_stage("extract")
+        if not extract_config:
+            print_error("Extract stage not configured")
+            exit(1)
+
+        meltano_path = extract_config.repo_path / "meltano.yml"
+
+        if not meltano_path.exists():
+            print_error(f"Meltano configuration not found: {meltano_path}")
+            exit(1)
+
+        # Parse meltano.yml
+        with open(meltano_path, "r") as f:
+            meltano_config = yaml.safe_load(f)
+
+        # Get all extractors
+        extractors_list = []
+        plugins = meltano_config.get("plugins", {})
+        extractor_plugins = plugins.get("extractors", [])
+
+        for extractor in extractor_plugins:
+            name = extractor.get("name", "")
+            variant = extractor.get("variant", "")
+            inherit_from = extractor.get("inherit_from", "")
+
+            # Determine type
+            if "gmail" in name.lower():
+                tap_type = "Gmail"
+            elif "msgraph" in name.lower() or "exchange" in name.lower():
+                tap_type = "Exchange"
+            elif "dataverse" in name.lower():
+                tap_type = "Dataverse"
+            elif "stripe" in name.lower():
+                tap_type = "Stripe"
+            elif "sheets" in name.lower():
+                tap_type = "Google Sheets"
+            else:
+                tap_type = "Other"
+
+            # Skip base configurations
+            if inherit_from:
+                extractors_list.append({
+                    "name": name,
+                    "type": tap_type,
+                    "base": inherit_from,
+                })
+
+        print_info(f"Configured Extractors ({len(extractors_list)} total):\n")
+
+        # Group by type
+        by_type = {}
+        for ext in extractors_list:
+            tap_type = ext["type"]
+            if tap_type not in by_type:
+                by_type[tap_type] = []
+            by_type[tap_type].append(ext["name"])
+
+        for tap_type, names in sorted(by_type.items()):
+            print(f"\n{tap_type}:")
+            for name in sorted(names):
+                print(f"  - {name}")
+
+        exit(0)
+
+    except Exception as e:
+        print_error(f"Failed to list extractors: {e}")
+        exit(1)
+
+
+@list.command()
+@click.option(
+    "--config",
+    type=click.Path(exists=True, path_type=Path),
+    help="Custom configuration file",
+)
+def jobs(config):
+    """
+    List all configured meltano jobs.
+
+    Jobs are bundles of extractors that run together.
+    """
+    try:
+        import subprocess
+
+        # Load configuration
+        pipeline_config = load_config(config) if config else load_config()
+
+        # Get meltano repo path
+        extract_config = pipeline_config.get_stage("extract")
+        if not extract_config:
+            print_error("Extract stage not configured")
+            exit(1)
+
+        # Run meltano job list
+        meltano_bin = extract_config.venv_path / "bin" / "meltano"
+
+        result = subprocess.run(
+            [str(meltano_bin), "job", "list"],
+            cwd=extract_config.repo_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        if result.returncode != 0:
+            print_error(f"Failed to list jobs: {result.stderr}")
+            exit(1)
+
+        print_info("Configured Jobs:\n")
+        print(result.stdout)
+
+        exit(0)
+
+    except Exception as e:
+        print_error(f"Failed to list jobs: {e}")
+        exit(1)
+
+
+@list.command()
+@click.option(
+    "--config",
+    type=click.Path(exists=True, path_type=Path),
+    help="Custom configuration file",
+)
+def transforms(config):
+    """
+    List all available transforms.
+
+    Shows transforms from the transform registry.
+    """
+    try:
+        import subprocess
+
+        # Load configuration
+        pipeline_config = load_config(config) if config else load_config()
+
+        # Get canonize config
+        canonize_config = pipeline_config.get_stage("canonize")
+        if not canonize_config:
+            print_error("Canonize stage not configured")
+            exit(1)
+
+        transform_registry = Path(canonize_config.get("transform_registry"))
+        can_bin = canonize_config.venv_path / "bin" / "can"
+
+        if not can_bin.exists():
+            print_error(f"Canonizer executable not found: {can_bin}")
+            exit(1)
+
+        # Run can transform list
+        result = subprocess.run(
+            [str(can_bin), "transform", "list", "--dir", str(transform_registry)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        if result.returncode != 0:
+            print_error(f"Failed to list transforms: {result.stderr}")
+            exit(1)
+
+        print(result.stdout)
+
+        exit(0)
+
+    except Exception as e:
+        print_error(f"Failed to list transforms: {e}")
+        exit(1)
+
+
+@list.command()
+@click.option(
+    "--config",
+    type=click.Path(exists=True, path_type=Path),
+    help="Custom configuration file",
+)
+def mappings(config):
+    """
+    List configured source → transform mappings.
+
+    Shows which source files get transformed by which transforms.
+    """
+    try:
+        # Load configuration
+        pipeline_config = load_config(config) if config else load_config()
+
+        # Get canonize config
+        canonize_config = pipeline_config.get_stage("canonize")
+        if not canonize_config:
+            print_error("Canonize stage not configured")
+            exit(1)
+
+        mappings_list = canonize_config.get("mappings", [])
+
+        if not mappings_list:
+            print_info("No mappings configured")
+            exit(0)
+
+        print_info(f"Configured Mappings ({len(mappings_list)} total):\n")
+
+        for i, mapping in enumerate(mappings_list, 1):
+            source_pattern = mapping.get("source_pattern", "")
+            transform = mapping.get("transform", "")
+            output_name = mapping.get("output_name", "")
+
+            print(f"{i}. {source_pattern}")
+            print(f"   → Transform: {transform}")
+            print(f"   → Output: {output_name}.jsonl")
+            print()
+
+        exit(0)
+
+    except Exception as e:
+        print_error(f"Failed to list mappings: {e}")
+        exit(1)
+
+
+@main.group()
+def config():
+    """
+    Manage tool configurations.
+
+    Sync and display configuration for external tools (meltano, canonizer, etc.).
+
+    Examples:
+
+      # Show meltano configuration
+      lorch config show meltano
+
+      # Sync from meltano.yml to lorch cache
+      lorch config sync meltano
+    """
+    pass
+
+
+@config.command()
+@click.argument("tool", type=click.Choice(["meltano"], case_sensitive=False))
+@click.option(
+    "--config",
+    type=click.Path(exists=True, path_type=Path),
+    help="Custom configuration file",
+)
+def show(tool, config):
+    """
+    Display tool configuration from cache.
+
+    Shows the cached configuration for the specified tool.
+    Run 'lorch config sync <tool>' first if cache is empty.
+    """
+    try:
+        from datetime import datetime
+        import yaml
+        from lorch.tools.meltano import MeltanoAdapter
+
+        # Load pipeline configuration
+        pipeline_config = load_config(config) if config else load_config()
+
+        if tool == "meltano":
+            # Get meltano repo path
+            extract_config = pipeline_config.get_stage("extract")
+            if not extract_config:
+                print_error("Extract stage not configured")
+                exit(1)
+
+            # Create adapter
+            adapter = MeltanoAdapter(
+                meltano_dir=extract_config.repo_path,
+                config_cache=Path("config/tools/meltano.yaml"),
+            )
+
+            # Check if config is synced
+            if not adapter.config or not adapter.config.get("extractors"):
+                print_warning("Config cache is empty. Run 'lorch config sync meltano' first.")
+                exit(1)
+
+            # Display config
+            print_banner(f"Meltano Configuration (cached)")
+            print_info(f"Cache: {adapter.config_path}\n")
+
+            synced_at = adapter.config.get("synced_at")
+            if synced_at:
+                print(f"Synced at: {synced_at}\n")
+
+            extractors = adapter.config.get("extractors", {})
+            loaders = adapter.config.get("loaders", {})
+            jobs = adapter.config.get("jobs", [])
+
+            print(f"Extractors: {len(extractors)}")
+            print(f"Loaders: {len(loaders)}")
+            print(f"Jobs: {len(jobs)}")
+
+            # Show extractors grouped by type
+            print("\n" + "=" * 60)
+            print("EXTRACTORS")
+            print("=" * 60 + "\n")
+
+            for name in sorted(extractors.keys()):
+                print(f"  {name}")
+
+            # Show loaders
+            print("\n" + "=" * 60)
+            print("LOADERS")
+            print("=" * 60 + "\n")
+
+            for name in sorted(loaders.keys()):
+                print(f"  {name}")
+
+            # Show jobs
+            if jobs:
+                print("\n" + "=" * 60)
+                print("JOBS")
+                print("=" * 60 + "\n")
+
+                for job in jobs:
+                    job_name = job.get("name", "unnamed")
+                    tasks = job.get("tasks", [])
+                    print(f"  {job_name}: {len(tasks)} tasks")
+
+        exit(0)
+
+    except Exception as e:
+        print_error(f"Failed to show config: {e}")
+        import traceback
+        traceback.print_exc()
+        exit(1)
+
+
+@config.command()
+@click.argument("tool", type=click.Choice(["meltano"], case_sensitive=False))
+@click.option(
+    "--config",
+    type=click.Path(exists=True, path_type=Path),
+    help="Custom configuration file",
+)
+def sync(tool, config):
+    """
+    Sync tool configuration from source to lorch cache.
+
+    Reads the tool's native configuration file and caches it
+    in lorch's config/tools/ directory for validation and inspection.
+    """
+    try:
+        from datetime import datetime
+        from lorch.tools.meltano import MeltanoAdapter
+
+        # Load pipeline configuration
+        pipeline_config = load_config(config) if config else load_config()
+
+        if tool == "meltano":
+            # Get meltano repo path
+            extract_config = pipeline_config.get_stage("extract")
+            if not extract_config:
+                print_error("Extract stage not configured")
+                exit(1)
+
+            print_info(f"Syncing meltano configuration...")
+            print_info(f"Source: {extract_config.repo_path / 'meltano.yml'}")
+            print_info(f"Cache: config/tools/meltano.yaml\n")
+
+            # Create adapter
+            adapter = MeltanoAdapter(
+                meltano_dir=extract_config.repo_path,
+                config_cache=Path("config/tools/meltano.yaml"),
+            )
+
+            # Sync config
+            adapter.sync_config()
+
+            # Update synced_at timestamp
+            import yaml
+            with open(adapter.config_path, "r") as f:
+                cached = yaml.safe_load(f)
+
+            cached["synced_at"] = datetime.utcnow().isoformat() + "Z"
+
+            with open(adapter.config_path, "w") as f:
+                yaml.safe_dump(cached, f, default_flow_style=False, sort_keys=False)
+
+            # Reload to get counts
+            adapter.config = adapter.load_config()
+
+            extractors = adapter.config.get("extractors", {})
+            loaders = adapter.config.get("loaders", {})
+            jobs = adapter.config.get("jobs", [])
+
+            print_success(f"✓ Synced {len(extractors)} extractors, {len(loaders)} loaders, {len(jobs)} jobs")
+            print_info(f"Cache saved to: {adapter.config_path}")
+
+        exit(0)
+
+    except Exception as e:
+        print_error(f"Failed to sync config: {e}")
+        import traceback
+        traceback.print_exc()
+        exit(1)
+
+
+@main.group()
+def tools():
+    """
+    Manage tool adapters.
+
+    List and validate tool adapters for external tools.
+
+    Examples:
+
+      # List available tool adapters
+      lorch tools list
+
+      # Validate meltano configuration
+      lorch tools validate meltano
+    """
+    pass
+
+
+@tools.command()
+def list():
+    """
+    List available tool adapters.
+
+    Shows all tool adapters available in lorch for orchestrating
+    external tools (meltano, canonizer, vector-projector, etc.).
+    """
+    try:
+        print_banner("Available Tool Adapters")
+
+        adapters = [
+            {
+                "name": "meltano",
+                "description": "Meltano extract/load tool",
+                "status": "implemented",
+            },
+            {
+                "name": "canonizer",
+                "description": "Data canonization tool",
+                "status": "planned",
+            },
+            {
+                "name": "vector-projector",
+                "description": "Vector embedding and indexing",
+                "status": "planned",
+            },
+        ]
+
+        for adapter in adapters:
+            status_symbol = "✓" if adapter["status"] == "implemented" else "○"
+            status_text = adapter["status"].upper()
+
+            print(f"\n{status_symbol} {adapter['name']}")
+            print(f"  Description: {adapter['description']}")
+            print(f"  Status: {status_text}")
+
+        print()
+
+        exit(0)
+
+    except Exception as e:
+        print_error(f"Failed to list tools: {e}")
+        exit(1)
+
+
+@tools.command()
+@click.argument("tool", type=click.Choice(["meltano"], case_sensitive=False))
+@click.option(
+    "--config",
+    type=click.Path(exists=True, path_type=Path),
+    help="Custom configuration file",
+)
+@click.option(
+    "--tap",
+    help="Validate specific tap-target pair (requires --target)",
+)
+@click.option(
+    "--target",
+    help="Target for tap-target validation (requires --tap)",
+)
+def validate(tool, config, tap, target):
+    """
+    Validate tool configuration and setup.
+
+    Checks that the tool is properly configured and ready to use.
+    Can also validate specific tap-target pairs for meltano.
+
+    Examples:
+
+      # Validate meltano setup
+      lorch tools validate meltano
+
+      # Validate specific tap-target pair
+      lorch tools validate meltano --tap tap-gmail--acct1-personal --target target-jsonl-chunked--gmail-ben-mensio
+    """
+    try:
+        from lorch.tools.meltano import MeltanoAdapter
+
+        # Load pipeline configuration
+        pipeline_config = load_config(config) if config else load_config()
+
+        if tool == "meltano":
+            # Get meltano repo path
+            extract_config = pipeline_config.get_stage("extract")
+            if not extract_config:
+                print_error("Extract stage not configured")
+                exit(1)
+
+            # Create adapter
+            adapter = MeltanoAdapter(
+                meltano_dir=extract_config.repo_path,
+                config_cache=Path("config/tools/meltano.yaml"),
+            )
+
+            print_banner(f"Validating {tool}")
+
+            # General validation
+            validation = adapter.validate()
+
+            if validation["errors"]:
+                print_error("Validation failed:")
+                for error in validation["errors"]:
+                    print(f"  ✗ {error}")
+                exit(1)
+
+            if validation["warnings"]:
+                print_warning("Warnings:")
+                for warning in validation["warnings"]:
+                    print(f"  ⚠ {warning}")
+                print()
+
+            print_success("✓ General validation passed")
+
+            # Task-specific validation
+            if tap and target:
+                print_info(f"\nValidating task: {tap} → {target}")
+
+                task_validation = adapter.validate_task(tap, target)
+
+                if task_validation["errors"]:
+                    print_error("\nTask validation failed:")
+                    for error in task_validation["errors"]:
+                        print(f"  ✗ {error}")
+                    exit(1)
+
+                if task_validation["warnings"]:
+                    print_warning("\nTask warnings:")
+                    for warning in task_validation["warnings"]:
+                        print(f"  ⚠ {warning}")
+
+                print_success("\n✓ Task validation passed")
+
+            elif tap or target:
+                print_error("Both --tap and --target must be specified together")
+                exit(1)
+
+        exit(0)
+
+    except Exception as e:
+        print_error(f"Validation failed: {e}")
+        import traceback
+        traceback.print_exc()
         exit(1)
 
 

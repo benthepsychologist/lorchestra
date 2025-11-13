@@ -10,6 +10,7 @@ from typing import List
 
 from lorch.config import StageConfig
 from lorch.stages.base import Stage, StageResult
+from lorch.tools.meltano import MeltanoAdapter
 from lorch.utils import count_jsonl_records, retry_with_backoff
 
 
@@ -21,24 +22,32 @@ class ExtractStage(Stage):
     """
 
     def validate(self) -> None:
-        """Validate Meltano installation and configuration."""
-        # Check repo path exists
-        if not self.config.repo_path.exists():
-            raise FileNotFoundError(
-                f"Meltano repo not found: {self.config.repo_path}"
+        """Validate Meltano installation and configuration using adapter."""
+        # Create adapter for validation
+        adapter = MeltanoAdapter(
+            meltano_dir=self.config.repo_path,
+            config_cache=Path("config/tools/meltano.yaml"),
+        )
+
+        # Use adapter validation
+        validation = adapter.validate()
+
+        # Check for errors
+        if not validation["valid"]:
+            errors = validation["errors"]
+            raise ValueError(
+                f"Meltano validation failed: {'; '.join(errors)}"
             )
 
-        # Check venv exists
-        if not self.config.venv_path.exists():
-            raise FileNotFoundError(
-                f"Meltano venv not found: {self.config.venv_path}"
-            )
-
-        # Check meltano executable
-        meltano_bin = self.config.venv_path / "bin" / "meltano"
-        if not meltano_bin.exists():
-            raise FileNotFoundError(
-                f"Meltano executable not found: {meltano_bin}"
+        # Log warnings
+        for warning in validation.get("warnings", []):
+            self.logger.warning(
+                f"Meltano validation warning: {warning}",
+                extra={
+                    "stage": self.name,
+                    "event": "validation_warning",
+                    "metadata": {"warning": warning},
+                },
             )
 
         # Validate output directory
@@ -47,6 +56,37 @@ class ExtractStage(Stage):
     def execute(self) -> StageResult:
         """Execute Meltano extraction job."""
         job_name = self.config.get("job", "ingest-all-accounts")
+
+        # Validate using adapter before execution
+        adapter = MeltanoAdapter(
+            meltano_dir=self.config.repo_path,
+            config_cache=Path("config/tools/meltano.yaml"),
+        )
+
+        validation = adapter.validate()
+
+        if not validation["valid"]:
+            error_msg = f"Pre-execution validation failed: {'; '.join(validation['errors'])}"
+            self.logger.error(
+                error_msg,
+                extra={
+                    "stage": self.name,
+                    "event": "validation_failed",
+                    "metadata": {"errors": validation["errors"]},
+                },
+            )
+            raise ValueError(error_msg)
+
+        # Log any warnings
+        for warning in validation.get("warnings", []):
+            self.logger.warning(
+                f"Validation warning: {warning}",
+                extra={
+                    "stage": self.name,
+                    "event": "validation_warning",
+                    "metadata": {"warning": warning},
+                },
+            )
 
         self.logger.info(
             f"Running Meltano job: {job_name}",
