@@ -1,5 +1,5 @@
 """
-Utility functions for lorch pipeline.
+Utility functions for lorchestra pipeline.
 
 Includes logging, retries, validation, and file operations.
 """
@@ -41,7 +41,7 @@ def setup_logging(log_file: Path, log_level: str = "INFO", log_format: str = "st
     log_file.parent.chmod(0o700)
 
     # Create logger
-    logger = logging.getLogger("lorch")
+    logger = logging.getLogger("lorchestra")
     logger.setLevel(getattr(logging, log_level.upper()))
     logger.handlers = []  # Clear existing handlers
 

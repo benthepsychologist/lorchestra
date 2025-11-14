@@ -2,7 +2,7 @@
 
 ## Overview
 
-lorch uses a time-series vault storage system with LATEST pointers to provide deterministic, idempotent data processing while maintaining a complete audit trail.
+lorchestra uses a time-series vault storage system with LATEST pointers to provide deterministic, idempotent data processing while maintaining a complete audit trail.
 
 ## Design Principles
 
@@ -116,7 +116,7 @@ Each run directory contains a manifest.json with complete metadata:
 ### 1. Start Extraction
 
 ```bash
-lorch extract tap-gmail--acct1-personal
+lorchestra extract tap-gmail--acct1-personal
 ```
 
 - Auto-selects target: `target-jsonl-chunked--acct1-ben-mensio`
@@ -132,7 +132,7 @@ target-jsonl-chunked creates:
 4. On success: Move chunks from `_tmp/` to run directory
 5. Write manifest.json with status="completed"
 
-### 3. lorch Updates LATEST
+### 3. lorchestra Updates LATEST
 
 After successful extraction:
 1. Find manifests with this run_id
@@ -155,7 +155,7 @@ If extraction fails:
 ### 1. Start Canonization
 
 ```bash
-lorch run --stage canonize
+lorchestra run --stage canonize
 ```
 
 ### 2. Discover LATEST Runs
@@ -203,7 +203,7 @@ Each creates new vault run, LATEST points to most recent.
 
 ### Canonization State (LATEST)
 
-lorch uses LATEST pointer for canonization state:
+lorchestra uses LATEST pointer for canonization state:
 - LATEST points to which run to process
 - Canonize doesn't track state internally
 - Rerunning canonize = rebuild from LATEST
@@ -241,7 +241,7 @@ For now: Keep all runs
 Future: Add retention policy
 ```bash
 # Future command (not implemented)
-lorch clean --vault --older-than 90d
+lorchestra clean --vault --older-than 90d
 ```
 
 ## Idempotency Guarantees
@@ -276,7 +276,7 @@ Safe to rerun - deterministic output.
 
 Enforced by:
 - target-jsonl-chunked on write
-- lorch validation before read
+- lorchestra validation before read
 - System-level PHI directory checks
 
 ### PHI Protection
@@ -396,7 +396,7 @@ ls -la vault/email/gmail/account/dt=*/run_id=*/manifest.json
 rm -rf vault/email/gmail/account/dt=DATE/run_id=ID/
 
 # Rerun extraction
-lorch extract tap-gmail--account
+lorchestra extract tap-gmail--account
 ```
 
 LATEST won't point to corrupted run if extraction failed.
@@ -422,6 +422,6 @@ LATEST won't point to corrupted run if extraction failed.
 ## References
 
 - [target-jsonl-chunked](../../meltano-ingest/targets/target-jsonl-chunked/)
-- [lorch/stages/canonize.py](../lorch/stages/canonize.py)
-- [lorch/cli.py](../lorch/cli.py)
+- [lorchestra/stages/canonize.py](../lorchestra/stages/canonize.py)
+- [lorchestra/cli.py](../lorchestra/cli.py)
 - [config/pipeline.yaml](../config/pipeline.yaml)

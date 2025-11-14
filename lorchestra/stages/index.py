@@ -7,9 +7,9 @@ Future: Will use full vector-projector with SQLite + inode storage.
 
 from pathlib import Path
 
-from lorch.config import StageConfig
-from lorch.stages.base import Stage, StageResult
-from lorch.tools.vector_projector import VectorProjectorAdapter
+from lorchestra.config import StageConfig
+from lorchestra.stages.base import Stage, StageResult
+from lorchestra.tools.vector_projector import VectorProjectorAdapter
 
 
 class IndexStage(Stage):

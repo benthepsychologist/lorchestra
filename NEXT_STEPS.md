@@ -1,6 +1,6 @@
-# Next Steps for lorch Development
+# Next Steps for lorchestraestra Development
 
-This document tracks TODOs, roadmap, and implementation priorities for the lorch orchestrator.
+This document tracks TODOs, roadmap, and implementation priorities for the lorchestra orchestrator.
 
 ## 🎯 Current Status
 
@@ -13,8 +13,8 @@ This document tracks TODOs, roadmap, and implementation priorities for the lorch
 - [x] **Pipeline orchestration framework**
 - [x] **Vault storage**: Time-series with LATEST pointers
 - [x] **CLI interface**: run, extract, list, status, validate, clean
-- [x] **Granular extraction**: `lorch extract <tap>` for individual sources
-- [x] **Discovery commands**: `lorch list extractors/jobs/transforms/mappings`
+- [x] **Granular extraction**: `lorchestra extract <tap>` for individual sources
+- [x] **Discovery commands**: `lorchestra list extractors/jobs/transforms/mappings`
 - [x] **Extract stage**: Meltano integration with chunked targets (12 extractors)
 - [x] **Canonize stage**: LATEST-only, deterministic, idempotent
 - [x] **Per-account canonical output**: `canonical/{source}/{account}.jsonl`
@@ -211,7 +211,7 @@ This document tracks TODOs, roadmap, and implementation priorities for the lorch
    - `get_object(obj_id)`
 
 4. **Update index stage to use SQLite:**
-   - Modify `/home/user/lorch/lorch/stages/index.py`
+   - Modify `/home/user/lorchestra/lorchestra/stages/index.py`
    - Replace file copy with SQLite insert
    - Store files in inode-style directory structure
 
@@ -358,7 +358,7 @@ def test_extract_stage_validates():
 **Implementation:**
 
 ```python
-# lorch/metrics.py
+# lorchestra/metrics.py
 class MetricsCollector:
     def record_pipeline_run(self, result: PipelineResult):
         """Record metrics for pipeline run."""
@@ -429,7 +429,7 @@ behavior:
   parallel_execution: true
   max_workers: 4
 
-# lorch/pipeline.py
+# lorchestra/pipeline.py
 with ThreadPoolExecutor(max_workers=4) as executor:
     futures = [executor.submit(stage.run) for stage in stages]
     results = [f.result() for f in futures]
@@ -473,7 +473,7 @@ with ThreadPoolExecutor(max_workers=4) as executor:
 **Create Dockerfiles:**
 
 ```bash
-# /home/user/lorch/Dockerfile
+# /home/user/lorchestra/Dockerfile
 FROM python:3.12-slim
 COPY . /app
 WORKDIR /app
@@ -527,7 +527,7 @@ main:
 cd /home/user/lorch
 pip install sphinx sphinx-rtd-theme
 sphinx-quickstart docs/api
-sphinx-apidoc -o docs/api lorch/
+sphinx-apidoc -o docs/api lorchestra/
 make html
 ```
 
@@ -603,4 +603,4 @@ For questions about this roadmap:
 ---
 
 **Last Updated:** 2025-11-12
-**Maintained By:** lorch development team
+**Maintained By:** lorchestra development team

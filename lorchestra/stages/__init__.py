@@ -1,5 +1,5 @@
 """
-Pipeline stages for lorch orchestrator.
+Pipeline stages for lorchestra orchestrator.
 
 Each stage is responsible for one part of the pipeline:
 - extract: Run Meltano jobs to pull data from sources

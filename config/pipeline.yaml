@@ -1,4 +1,4 @@
-# lorch Pipeline Configuration
+# lorchestra Pipeline Configuration
 #
 # This file defines the three-stage data pipeline:
 # 1. Extract (Meltano) - Pull data from sources

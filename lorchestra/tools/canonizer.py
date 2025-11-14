@@ -1,4 +1,4 @@
-"""Canonizer tool adapter for lorch."""
+"""Canonizer tool adapter for lorchestra."""
 
 import gzip
 import json
@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from lorch.tools.base import ToolAdapter
+from lorchestra.tools.base import ToolAdapter
 
 
 class CanonizerAdapter(ToolAdapter):
@@ -71,7 +71,7 @@ class CanonizerAdapter(ToolAdapter):
 
     def sync_config(self) -> None:
         """
-        Sync configuration from transform registry to lorch's cached config.
+        Sync configuration from transform registry to lorchestra's cached config.
 
         Discovers all transforms in the registry and writes them to cache.
 

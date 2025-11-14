@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from lorch.config import StageConfig
+from lorchestra.config import StageConfig
 
 
 @dataclass
@@ -197,7 +197,7 @@ class Stage(ABC):
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Test writability
-        test_file = output_dir / ".lorch_write_test"
+        test_file = output_dir / ".lorchestra_write_test"
         try:
             test_file.write_text("test")
             test_file.unlink()

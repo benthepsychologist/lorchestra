@@ -1,4 +1,4 @@
-"""Meltano tool adapter for lorch."""
+"""Meltano tool adapter for lorchestra."""
 
 import subprocess
 from pathlib import Path
@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from lorch.tools.base import ToolAdapter
+from lorchestra.tools.base import ToolAdapter
 
 
 class MeltanoAdapter(ToolAdapter):
@@ -65,7 +65,7 @@ class MeltanoAdapter(ToolAdapter):
 
     def sync_config(self) -> None:
         """
-        Sync configuration from meltano.yml to lorch's cached config.
+        Sync configuration from meltano.yml to lorchestra's cached config.
 
         Parses meltano.yml and extracts:
         - extractors configuration
@@ -147,7 +147,7 @@ class MeltanoAdapter(ToolAdapter):
         # Check if config has been synced
         if not self.config or not self.config.get("extractors"):
             warnings.append(
-                "Config cache is empty or not synced. Run 'lorch config sync meltano' first."
+                "Config cache is empty or not synced. Run 'lorchestra config sync meltano' first."
             )
 
         # Check if meltano executable exists

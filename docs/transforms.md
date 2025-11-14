@@ -1,6 +1,6 @@
 # Transform Creation Guide
 
-Complete guide for creating JSONata transforms for the lorch pipeline.
+Complete guide for creating JSONata transforms for the lorchestra pipeline.
 
 ## 📋 Table of Contents
 
@@ -296,7 +296,7 @@ Test with full pipeline:
 
 ```bash
 # Run canonize stage only
-lorch run --stage canonize
+lorchestra run --stage canonize
 
 # Check output
 ls -lh /home/user/phi-data/canonical/

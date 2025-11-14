@@ -1,5 +1,5 @@
 """
-Configuration management for lorch pipeline.
+Configuration management for lorchestra pipeline.
 
 Loads and validates pipeline.yaml configuration file.
 """

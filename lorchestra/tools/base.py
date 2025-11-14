@@ -9,7 +9,7 @@ class ToolAdapter(ABC):
     """
     Base class for tool adapters.
 
-    Tool adapters provide a standardized interface for lorch to interact with
+    Tool adapters provide a standardized interface for lorchestra to interact with
     external tools (meltano, canonizer, vector-projector, etc.). Each adapter
     handles configuration sync, validation, and execution for its specific tool.
     """
@@ -19,7 +19,7 @@ class ToolAdapter(ABC):
         Initialize the tool adapter.
 
         Args:
-            config_path: Path to the tool's configuration file in lorch's cache
+            config_path: Path to the tool's configuration file in lorchestra's cache
         """
         self.config_path = config_path
         self.config = self.load_config()
@@ -41,7 +41,7 @@ class ToolAdapter(ABC):
     @abstractmethod
     def sync_config(self) -> None:
         """
-        Sync configuration from the tool's native source to lorch's cache.
+        Sync configuration from the tool's native source to lorchestra's cache.
 
         This is typically a one-way sync from the tool's config file
         (e.g., meltano.yml) to lorch's cached version (e.g., config/tools/meltano.yaml).

@@ -1,4 +1,4 @@
-# Contributing to lorch
+# Contributing to lorchestra
 
 Thank you for contributing to lorch! This guide will help you get started with development.
 
@@ -41,7 +41,7 @@ source .venv/bin/activate
 uv pip install -e ".[dev]"
 
 # Verify installation
-lorch --version
+lorchestra --version
 ```
 
 ---
@@ -51,8 +51,8 @@ lorch --version
 ### Project Structure
 
 ```
-lorch/
-├── lorch/                  # Main package
+lorchestra/
+├── lorchestra/                  # Main package
 │   ├── __init__.py
 │   ├── cli.py             # CLI interface
 │   ├── pipeline.py        # Pipeline orchestrator
@@ -98,13 +98,13 @@ We follow **PEP 8** with these tools:
 
 ```bash
 # Format with Black
-black lorch/
+black lorchestra/
 
 # Lint with Ruff
-ruff check lorch/
+ruff check lorchestra/
 
 # Fix linting issues automatically
-ruff check --fix lorch/
+ruff check --fix lorchestra/
 ```
 
 ### Type Hints
@@ -206,7 +206,7 @@ pytest tests/
 pytest tests/unit/test_config.py
 
 # Run with coverage
-pytest --cov=lorch --cov-report=html tests/
+pytest --cov=lorchestra --cov-report=html tests/
 
 # View coverage report
 open htmlcov/index.html
@@ -217,7 +217,7 @@ open htmlcov/index.html
 ```python
 import pytest
 from pathlib import Path
-from lorch.config import load_config, ConfigError
+from lorchestra.config import load_config, ConfigError
 
 def test_config_loads_valid_file():
     """Test that valid config file loads successfully."""
@@ -250,16 +250,16 @@ def test_config_raises_on_invalid_file():
 3. **Test locally:**
    ```bash
    # Format code
-   black lorch/
+   black lorchestra/
 
    # Run linter
-   ruff check lorch/
+   ruff check lorchestra/
 
    # Run tests
    pytest tests/
 
    # Test manually
-   lorch run --dry-run
+   lorchestra run --dry-run
    ```
 
 4. **Commit changes:**
@@ -389,14 +389,14 @@ Added troubleshooting section for common setup issues.
    raise ValueError(f"Invalid email: {email}")
 
    # ✅ GOOD
-   from lorch.utils import sanitize_error_message
+   from lorchestra.utils import sanitize_error_message
    raise ValueError(sanitize_error_message(f"Invalid email: {email}"))
    ```
 
 3. **Validate permissions:**
    ```python
    # Always validate before PHI operations
-   from lorch.utils import validate_phi_permissions
+   from lorchestra.utils import validate_phi_permissions
    validate_phi_permissions(phi_dir, "700")
    ```
 
@@ -430,7 +430,7 @@ Before committing:
 ### Enable Debug Logging
 
 ```bash
-lorch run --verbose
+lorchestra run --verbose
 ```
 
 ### Check Logs
@@ -487,20 +487,20 @@ uv venv && source .venv/bin/activate
 uv pip install -e ".[dev]"
 
 # Code quality
-black lorch/
-ruff check --fix lorch/
+black lorchestra/
+ruff check --fix lorchestra/
 
 # Testing
 pytest tests/
-pytest --cov=lorch tests/
+pytest --cov=lorchestra tests/
 
 # Running
-lorch run --dry-run
-lorch validate
-lorch status
+lorchestra run --dry-run
+lorchestra validate
+lorchestra status
 
 # Debugging
-lorch run --verbose --stage canonize
+lorchestra run --verbose --stage canonize
 tail -f logs/pipeline-*.log | jq .
 ```
 

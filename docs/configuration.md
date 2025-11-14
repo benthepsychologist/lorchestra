@@ -319,7 +319,7 @@ stages:
 export MELTANO_REPO_PATH=/home/user/meltano-ingest
 export PHI_DATA_DIR=/home/user/phi-data
 
-lorch run
+lorchestra run
 ```
 
 ---
@@ -525,7 +525,7 @@ behavior:
 Validate your configuration:
 
 ```bash
-lorch validate --config config/pipeline.yaml
+lorchestra validate --config config/pipeline.yaml
 ```
 
 **Common Errors:**

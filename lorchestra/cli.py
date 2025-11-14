@@ -1,5 +1,5 @@
 """
-CLI interface for lorch pipeline orchestrator.
+CLI interface for lorchestra pipeline orchestrator.
 
 Provides commands: run, status, validate, clean.
 """
@@ -8,10 +8,10 @@ from pathlib import Path
 
 import click
 
-from lorch import __version__
-from lorch.config import load_config
-from lorch.pipeline import Pipeline
-from lorch.utils import (
+from lorchestra import __version__
+from lorchestra.config import load_config
+from lorchestra.pipeline import Pipeline
+from lorchestra.utils import (
     format_duration,
     print_banner,
     print_error,
@@ -22,10 +22,10 @@ from lorch.utils import (
 
 
 @click.group()
-@click.version_option(version=__version__, prog_name="lorch")
+@click.version_option(version=__version__, prog_name="lorchestra")
 def main():
     """
-    lorch - Local Orchestrator for PHI data pipeline.
+    lorchestra - Local Orchestrator for PHI data pipeline.
 
     Coordinates extract → canonize → index stages.
     """
@@ -60,19 +60,19 @@ def run(stage, config, dry_run, verbose):
     Examples:
 
       # Run full pipeline
-      lorch run
+      lorchestra run
 
       # Run single stage
-      lorch run --stage extract
+      lorchestra run --stage extract
 
       # Dry run (validation only)
-      lorch run --dry-run
+      lorchestra run --dry-run
 
       # Verbose logging
-      lorch run --verbose
+      lorchestra run --verbose
 
       # Custom config
-      lorch run --config /path/to/pipeline.yaml
+      lorchestra run --config /path/to/pipeline.yaml
     """
     try:
         # Load configuration
@@ -116,10 +116,10 @@ def status(config):
     Examples:
 
       # Show status
-      lorch status
+      lorchestra status
 
       # Status with custom config
-      lorch status --config /path/to/pipeline.yaml
+      lorchestra status --config /path/to/pipeline.yaml
     """
     try:
         # Load configuration
@@ -192,13 +192,13 @@ def validate(config, skip_permissions):
     Examples:
 
       # Validate default config
-      lorch validate
+      lorchestra validate
 
       # Validate custom config
-      lorch validate --config /path/to/pipeline.yaml
+      lorchestra validate --config /path/to/pipeline.yaml
 
       # Skip permission checks
-      lorch validate --skip-permissions
+      lorchestra validate --skip-permissions
     """
     try:
         # Load configuration
@@ -250,13 +250,13 @@ def clean(stage, clean_all, dry_run, config):
     Examples:
 
       # Clean specific stage
-      lorch clean --stage extract
+      lorchestra clean --stage extract
 
       # Clean all stages (prompts for confirmation)
-      lorch clean --all
+      lorchestra clean --all
 
       # Dry run (show what would be deleted)
-      lorch clean --all --dry-run
+      lorchestra clean --all --dry-run
     """
     try:
         import shutil
@@ -376,31 +376,31 @@ def extract(tap_name, config, target, query, since, from_date, to_date, last, ve
     Examples:
 
       # Extract from single Gmail account (auto-selects chunked target)
-      lorch extract tap-gmail--acct1-personal
+      lorchestra extract tap-gmail--acct1-personal
 
       # Extract last 7 days from Gmail
-      lorch extract tap-gmail--acct1-personal --last 7d
+      lorchestra extract tap-gmail--acct1-personal --last 7d
 
       # Extract since specific date
-      lorch extract tap-gmail--acct1-personal --since 2025-11-01
+      lorchestra extract tap-gmail--acct1-personal --since 2025-11-01
 
       # Extract date range
-      lorch extract tap-gmail--acct1-personal --from 2025-11-01 --to 2025-11-15
+      lorchestra extract tap-gmail--acct1-personal --from 2025-11-01 --to 2025-11-15
 
       # Custom query (provider-specific syntax)
-      lorch extract tap-gmail--acct1-personal -q "label:inbox after:2025/11/12"
+      lorchestra extract tap-gmail--acct1-personal -q "label:inbox after:2025/11/12"
 
       # Extract from Exchange with time filter
-      lorch extract tap-msgraph-mail--ben-mensio --last 30d
+      lorchestra extract tap-msgraph-mail--ben-mensio --last 30d
 
       # Override target
-      lorch extract tap-dataverse --target target-jsonl
+      lorchestra extract tap-dataverse --target target-jsonl
     """
     try:
         import subprocess
         import time
         import os
-        from lorch.utils import (
+        from lorchestra.utils import (
             parse_date_string,
             format_date_for_provider,
             detect_provider_from_tap_name,
@@ -684,16 +684,16 @@ def list():
     Examples:
 
       # List all extractors
-      lorch list extractors
+      lorchestra list extractors
 
       # List all jobs
-      lorch list jobs
+      lorchestra list jobs
 
       # List all transforms
-      lorch list transforms
+      lorchestra list transforms
 
       # List configured mappings
-      lorch list mappings
+      lorchestra list mappings
     """
     pass
 
@@ -945,10 +945,10 @@ def config():
     Examples:
 
       # Show meltano configuration
-      lorch config show meltano
+      lorchestra config show meltano
 
       # Sync from meltano.yml to lorch cache
-      lorch config sync meltano
+      lorchestra config sync meltano
     """
     pass
 
@@ -970,9 +970,9 @@ def show(tool, config):
     try:
         from datetime import datetime
         import yaml
-        from lorch.tools.meltano import MeltanoAdapter
-        from lorch.tools.canonizer import CanonizerAdapter
-        from lorch.tools.vector_projector import VectorProjectorAdapter
+        from lorchestra.tools.meltano import MeltanoAdapter
+        from lorchestra.tools.canonizer import CanonizerAdapter
+        from lorchestra.tools.vector_projector import VectorProjectorAdapter
 
         # Load pipeline configuration
         pipeline_config = load_config(config) if config else load_config()
@@ -1131,9 +1131,9 @@ def sync(tool, config):
     try:
         from datetime import datetime
         import yaml
-        from lorch.tools.meltano import MeltanoAdapter
-        from lorch.tools.canonizer import CanonizerAdapter
-        from lorch.tools.vector_projector import VectorProjectorAdapter
+        from lorchestra.tools.meltano import MeltanoAdapter
+        from lorchestra.tools.canonizer import CanonizerAdapter
+        from lorchestra.tools.vector_projector import VectorProjectorAdapter
 
         # Load pipeline configuration
         pipeline_config = load_config(config) if config else load_config()
@@ -1249,10 +1249,10 @@ def tools():
     Examples:
 
       # List available tool adapters
-      lorch tools list
+      lorchestra tools list
 
       # Validate meltano configuration
-      lorch tools validate meltano
+      lorchestra tools validate meltano
     """
     pass
 
@@ -1333,15 +1333,15 @@ def validate(tool, config, tap, target):
     Examples:
 
       # Validate meltano setup
-      lorch tools validate meltano
+      lorchestra tools validate meltano
 
       # Validate specific tap-target pair
-      lorch tools validate meltano --tap tap-gmail--acct1-personal --target target-jsonl-chunked--gmail-ben-mensio
+      lorchestra tools validate meltano --tap tap-gmail--acct1-personal --target target-jsonl-chunked--gmail-ben-mensio
     """
     try:
-        from lorch.tools.meltano import MeltanoAdapter
-        from lorch.tools.canonizer import CanonizerAdapter
-        from lorch.tools.vector_projector import VectorProjectorAdapter
+        from lorchestra.tools.meltano import MeltanoAdapter
+        from lorchestra.tools.canonizer import CanonizerAdapter
+        from lorchestra.tools.vector_projector import VectorProjectorAdapter
 
         # Load pipeline configuration
         pipeline_config = load_config(config) if config else load_config()

@@ -8,12 +8,5 @@ user:
   default_owner: benthepsychologist
   default_tier: C
 current:
-  spec: .specwright/specs/lorch-adapter-refactor.md
-  aip: /home/user/lorch/.specwright/aips/lorch-adapter-refactor.yaml
-
-
-
-
-
-
-
+  spec: .specwright/specs/rename-lorch-to-lorchestra.md
+  aip: /home/user/lorchestra/.specwright/aips/rename-lorch-to-lorchestra.yaml

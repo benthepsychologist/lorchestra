@@ -1,7 +1,7 @@
 [project]
-name = "lorch"
+name = "lorchestra"
 version = "0.1.0"
-description = "Local Orchestrator for PHI data pipeline (meltano → canonizer → vector-projector)"
+description = "lorchestra: Local Orchestrator for PHI data pipeline (meltano → canonizer → vector-projector)"
 authors = [{name = "Local Pipeline Team"}]
 readme = "README.md"
 requires-python = ">=3.12"
@@ -21,7 +21,7 @@ dev = [
 ]
 
 [project.scripts]
-lorch = "lorch.cli:main"
+lorchestra = "lorchestra.cli:main"
 
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
@@ -29,7 +29,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["lorch*"]
+include = ["lorchestra*"]
 
 [tool.black]
 line-length = 100

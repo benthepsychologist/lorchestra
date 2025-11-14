@@ -1,5 +1,5 @@
 """
-Pipeline orchestrator for lorch.
+Pipeline orchestrator for lorchestra.
 
 Coordinates execution of extract → canonize → index stages.
 """
@@ -11,12 +11,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from lorch.config import PipelineConfig, load_config
-from lorch.stages.base import Stage, StageResult
-from lorch.stages.canonize import CanonizeStage
-from lorch.stages.extract import ExtractStage
-from lorch.stages.index import IndexStage
-from lorch.utils import (
+from lorchestra.config import PipelineConfig, load_config
+from lorchestra.stages.base import Stage, StageResult
+from lorchestra.stages.canonize import CanonizeStage
+from lorchestra.stages.extract import ExtractStage
+from lorchestra.stages.index import IndexStage
+from lorchestra.utils import (
     format_duration,
     print_banner,
     print_error,

@@ -1,12 +1,12 @@
-# lorch Architecture
+# lorchestra Architecture
 
 ## System Overview
 
-lorch is a **local-first orchestrator** that coordinates a three-stage data pipeline for PHI (Protected Health Information) processing.
+lorchestra is a **local-first orchestrator** that coordinates a three-stage data pipeline for PHI (Protected Health Information) processing.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                         lorch Orchestrator                        │
+│                         lorchestra Orchestrator                        │
 │                                                                   │
 │  ┌─────────────┐      ┌────────────┐      ┌─────────────────┐  │
 │  │   Stage 1   │  →   │  Stage 2   │  →   │    Stage 3      │  │
@@ -31,12 +31,12 @@ Each component has a single, well-defined responsibility:
 - **vector-projector**: Local storage and indexing
 - **lorch**: Orchestration and coordination only
 
-lorch does NOT:
+lorchestra does NOT:
 - Extract data itself
 - Transform data itself
 - Store data itself
 
-lorch DOES:
+lorchestra DOES:
 - Call other components via CLI/subprocess
 - Validate between stages
 - Handle retries and error recovery
@@ -67,7 +67,7 @@ Design decisions prioritize local execution but enable cloud migration:
 | Meltano CLI | Cloud Run Job | Containerize meltano, run on schedule |
 | Canonizer subprocess | Cloud Function | Package canonizer, trigger on GCS upload |
 | Vector-projector files | BigQuery table | Change output from files to BQ client |
-| lorch orchestrator | Cloud Workflows | Convert Python logic to YAML workflow |
+| lorchestra orchestrator | Cloud Workflows | Convert Python logic to YAML workflow |
 | Subprocess calls | HTTP/PubSub | Replace `subprocess.run()` with API calls |
 | File I/O | GCS buckets | Replace local paths with `gs://` URIs |
 
@@ -118,7 +118,7 @@ meltano run ingest-all-accounts
 **Failure Handling:**
 - Meltano maintains state bookmarks for incremental extraction
 - Failed sources continue to next source
-- lorch validates at least one file produced before proceeding
+- lorchestra validates at least one file produced before proceeding
 
 ### Stage 2: Canonize (Canonizer)
 
@@ -269,7 +269,7 @@ Examples:
 
 ### State Management
 
-lorch maintains pipeline state in `logs/state.json`:
+lorchestra maintains pipeline state in `logs/state.json`:
 
 ```json
 {
@@ -370,10 +370,10 @@ stages:
 ├── canonizer/                # 755 (no PHI)
 ├── vector-projector/         # 755 (no PHI)
 ├── transforms/               # 755 (no PHI)
-└── lorch/                    # 755 (no PHI)
+└── lorchestra/                    # 755 (no PHI)
 ```
 
-**Validation:** lorch checks permissions before each run:
+**Validation:** lorchestra checks permissions before each run:
 
 ```python
 def validate_phi_permissions(path: Path):
@@ -438,13 +438,13 @@ Uses test fixtures from `/home/user/meltano-ingest/tests/fixtures/`
 
 ```bash
 # Dry run (validation only)
-lorch run --dry-run
+lorchestra run --dry-run
 
 # Single stage
-lorch run --stage extract
+lorchestra run --stage extract
 
 # Full pipeline with verbose logging
-lorch run --verbose
+lorchestra run --verbose
 ```
 
 ## Future Enhancements

@@ -93,14 +93,14 @@ Verify that `messages.q: after:2025/11/12` is set in the tap configuration (upda
 After making these changes, validate the configuration using lorch:
 
 ```bash
-# Sync meltano config to lorch cache
-lorch config sync meltano
+# Sync meltano config to lorchestra cache
+lorchestra config sync meltano
 
 # Validate the tap-target pair
-lorch tools validate meltano --tap tap-gmail--acct1-personal --target target-jsonl-chunked--gmail-ben-mensio
+lorchestra tools validate meltano --tap tap-gmail--acct1-personal --target target-jsonl-chunked--gmail-ben-mensio
 
 # Run extraction
-lorch extract tap-gmail--acct1-personal
+lorchestra extract tap-gmail--acct1-personal
 ```
 
 The validation command should now show:
@@ -110,8 +110,8 @@ The validation command should now show:
 ## Related Files
 
 - Meltano config: `/home/user/meltano-ingest/meltano.yml`
-- Lorch adapter: `lorch/tools/meltano.py` (includes Gmail-specific validation)
-- Lorch CLI: `lorch/cli.py` (config sync and validation commands)
+- Lorch adapter: `lorchestra/tools/meltano.py` (includes Gmail-specific validation)
+- Lorch CLI: `lorchestra/cli.py` (config sync and validation commands)
 
 ## Notes
 

@@ -239,7 +239,7 @@ plan:
     - Future extensibility plan'
   role: coding_agent
   step_id: step-009
-project_slug: lorch
+project_slug: lorchestra
 repo:
   default_branch: main
   url: git@github.com:benthepsychologist/lorch.git

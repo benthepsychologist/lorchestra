@@ -6,9 +6,9 @@ Uses CanonizerAdapter to apply JSONata transforms with vault LATEST pointer supp
 
 from pathlib import Path
 
-from lorch.config import StageConfig
-from lorch.stages.base import Stage, StageResult
-from lorch.tools.canonizer import CanonizerAdapter
+from lorchestra.config import StageConfig
+from lorchestra.stages.base import Stage, StageResult
+from lorchestra.tools.canonizer import CanonizerAdapter
 
 
 class CanonizeStage(Stage):

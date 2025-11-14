@@ -1,6 +1,6 @@
 # Cloud Migration Guide
 
-This guide explains how to translate the local lorch pipeline to Google Cloud Platform while preserving the architecture and design decisions.
+This guide explains how to translate the local lorchestra pipeline to Google Cloud Platform while preserving the architecture and design decisions.
 
 ## Migration Strategy
 
@@ -9,7 +9,7 @@ This guide explains how to translate the local lorch pipeline to Google Cloud Pl
 ```
 Local                          Cloud
 ─────────────────────────────────────────────────────────────
-lorch orchestrator       →     Cloud Workflows / Cloud Composer
+lorchestra orchestrator       →     Cloud Workflows / Cloud Composer
 meltano CLI              →     Cloud Run Job (scheduled)
 canonizer subprocess     →     Cloud Function (event-triggered)
 vector-projector files   →     BigQuery table
@@ -24,7 +24,7 @@ File I/O                 →     GCS client library
 
 **Current (Local):**
 ```python
-# lorch/stages/extract.py
+# lorchestra/stages/extract.py
 def run_extract(config):
     subprocess.run([
         "/home/user/meltano-ingest/.venv/bin/meltano",
@@ -100,7 +100,7 @@ environments:
 
 **Current (Local):**
 ```python
-# lorch/stages/canonize.py
+# lorchestra/stages/canonize.py
 def run_canonize(input_file, transform_meta):
     subprocess.run([
         "/home/user/canonizer/.venv/bin/can",
@@ -185,7 +185,7 @@ gsutil -m cp -r /home/user/transforms/* gs://org1-transforms/
 
 **Current (Local):**
 ```python
-# lorch/stages/index.py (stub)
+# lorchestra/stages/index.py (stub)
 def run_index(canonical_dir, output_dir):
     # Copy files (placeholder)
     shutil.copytree(canonical_dir, output_dir)
@@ -270,11 +270,11 @@ CREATE TABLE `PROJECT_ID.canonical.contact` (
 
 ---
 
-### 4. Orchestrator: lorch → Cloud Workflows
+### 4. Orchestrator: lorchestra → Cloud Workflows
 
 **Current (Local):**
 ```python
-# lorch/pipeline.py
+# lorchestra/pipeline.py
 def run_pipeline():
     extract_result = run_stage('extract')
     validate(extract_result)
@@ -581,8 +581,8 @@ gcloud workflows executions describe EXECUTION_ID \
 
 If cloud migration fails, local pipeline remains functional:
 
-1. Update lorch config to point to local paths
-2. Restart lorch on local workstation
+1. Update lorchestra config to point to local paths
+2. Restart lorchestra on local workstation
 3. Copy any cloud data back to local: `gsutil -m cp -r gs://org1-raw-prod/ /home/user/phi-data/`
 
 ---

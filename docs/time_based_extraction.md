@@ -1,8 +1,8 @@
-# Time-Based Extraction with lorch
+# Time-Based Extraction with lorchestra
 
 ## Overview
 
-The `lorch extract` command now supports convenient time-based filtering flags that make it easy to extract data for specific time ranges without manually editing configuration files.
+The `lorchestra extract` command now supports convenient time-based filtering flags that make it easy to extract data for specific time ranges without manually editing configuration files.
 
 ## New CLI Flags
 
@@ -19,13 +19,13 @@ Extract data from the last N days/weeks/months.
 **Examples:**
 ```bash
 # Extract last 7 days from Gmail
-lorch extract tap-gmail--acct1-personal --last 7d
+lorchestra extract tap-gmail--acct1-personal --last 7d
 
 # Extract last 30 days from Exchange
-lorch extract tap-msgraph-mail--ben-mensio --last 30d
+lorchestra extract tap-msgraph-mail--ben-mensio --last 30d
 
 # Extract last 2 weeks from Dataverse
-lorch extract tap-dataverse --last 2w
+lorchestra extract tap-dataverse --last 2w
 ```
 
 ### 2. `--since <date>`
@@ -39,10 +39,10 @@ Extract data since a specific date (inclusive).
 **Examples:**
 ```bash
 # Extract since November 1st
-lorch extract tap-gmail--acct1-personal --since 2025-11-01
+lorchestra extract tap-gmail--acct1-personal --since 2025-11-01
 
 # Extract since 7 days ago
-lorch extract tap-gmail--acct1-personal --since 7d
+lorchestra extract tap-gmail--acct1-personal --since 7d
 ```
 
 ### 3. `--from <date> --to <date>`
@@ -54,10 +54,10 @@ Extract data for a specific date range (inclusive).
 **Examples:**
 ```bash
 # Extract November 1-15
-lorch extract tap-gmail--acct1-personal --from 2025-11-01 --to 2025-11-15
+lorchestra extract tap-gmail--acct1-personal --from 2025-11-01 --to 2025-11-15
 
 # Extract last week using relative dates
-lorch extract tap-msgraph-mail--ben-mensio --from 14d --to 7d
+lorchestra extract tap-msgraph-mail--ben-mensio --from 14d --to 7d
 ```
 
 ### 4. `-q, --query <query>`
@@ -67,10 +67,10 @@ Provide a custom query string in provider-specific syntax. This overrides all ti
 **Examples:**
 ```bash
 # Gmail: custom query with label filter
-lorch extract tap-gmail--acct1-personal -q "label:inbox after:2025/11/12"
+lorchestra extract tap-gmail--acct1-personal -q "label:inbox after:2025/11/12"
 
 # Gmail: search for specific subject
-lorch extract tap-gmail--acct1-personal -q "subject:invoice after:2025/11/01"
+lorchestra extract tap-gmail--acct1-personal -q "subject:invoice after:2025/11/01"
 ```
 
 ## Provider-Specific Query Formats
@@ -128,10 +128,10 @@ The CLI enforces mutual exclusivity to prevent conflicts:
 **Examples of invalid usage:**
 ```bash
 # ERROR: Cannot mix --last with --since
-lorch extract tap-gmail--acct1-personal --last 7d --since 2025-11-01
+lorchestra extract tap-gmail--acct1-personal --last 7d --since 2025-11-01
 
 # ERROR: Must specify both --from and --to
-lorch extract tap-gmail--acct1-personal --from 2025-11-01
+lorchestra extract tap-gmail--acct1-personal --from 2025-11-01
 ```
 
 ## Complete Examples
@@ -140,38 +140,38 @@ lorch extract tap-gmail--acct1-personal --from 2025-11-01
 
 ```bash
 # Extract last 30 days from all Gmail accounts
-lorch extract tap-gmail--acct1-personal --last 30d
-lorch extract tap-gmail--acct2-business1 --last 30d
-lorch extract tap-gmail--acct3-bfarmstrong --last 30d
+lorchestra extract tap-gmail--acct1-personal --last 30d
+lorchestra extract tap-gmail--acct2-business1 --last 30d
+lorchestra extract tap-gmail--acct3-bfarmstrong --last 30d
 ```
 
 ### Example 2: Extract Specific Week
 
 ```bash
 # Extract November 1-7, 2025
-lorch extract tap-msgraph-mail--ben-mensio --from 2025-11-01 --to 2025-11-07
+lorchestra extract tap-msgraph-mail--ben-mensio --from 2025-11-01 --to 2025-11-07
 ```
 
 ### Example 3: Recent Data Only
 
 ```bash
 # Extract last 7 days for testing
-lorch extract tap-gmail--acct1-personal --last 7d
+lorchestra extract tap-gmail--acct1-personal --last 7d
 ```
 
 ### Example 4: Custom Query with Additional Filters
 
 ```bash
 # Gmail: Only inbox messages from last 14 days
-lorch extract tap-gmail--acct1-personal -q "label:inbox after:2025/10/30"
+lorchestra extract tap-gmail--acct1-personal -q "label:inbox after:2025/10/30"
 
 # Gmail: Unread messages from last week
-lorch extract tap-gmail--acct1-personal -q "is:unread after:2025/11/06"
+lorchestra extract tap-gmail--acct1-personal -q "is:unread after:2025/11/06"
 ```
 
 ## Checking Query in Output
 
-When you run `lorch extract` with a time filter, the query string is displayed in the output:
+When you run `lorchestra extract` with a time filter, the query string is displayed in the output:
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -196,8 +196,8 @@ When you run `lorch extract` with a time filter, the query string is displayed i
 
 ### Files Modified
 
-- `lorch/utils.py` - Added date parsing and formatting utilities (~180 lines)
-- `lorch/cli.py` - Added CLI options and query building logic (~60 lines)
+- `lorchestra/utils.py` - Added date parsing and formatting utilities (~180 lines)
+- `lorchestra/cli.py` - Added CLI options and query building logic (~60 lines)
 
 ## Future Enhancements
 

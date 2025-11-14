@@ -1,10 +1,10 @@
-# lorch - Local Orchestrator
+# lorchestraestra - Local Orchestrator
 
 **Local Orchestrator** for the PHI data pipeline. Coordinates three-stage data processing from extraction to indexed storage.
 
 ## 🎯 Overview
 
-lorch orchestrates the local-first data pipeline with time-series vault storage:
+lorchestra orchestrates the local-first data pipeline with time-series vault storage:
 
 ```
 ┌─────────────┐      ┌────────────┐      ┌──────────────────┐
@@ -47,55 +47,55 @@ cd /home/user/lorch
 uv venv
 source .venv/bin/activate
 
-# Install lorch
+# Install lorchestra
 uv pip install -e .
 
 # Verify installation
-lorch --version
+lorchestra --version
 ```
 
 ### Basic Usage
 
 ```bash
 # List available extractors
-lorch list extractors
+lorchestra list extractors
 
 # Extract from individual source
-lorch extract tap-gmail--acct1-personal
+lorchestra extract tap-gmail--acct1-personal
 
 # List available transforms
-lorch list transforms
+lorchestra list transforms
 
 # List configured mappings
-lorch list mappings
+lorchestra list mappings
 
 # Run canonization (processes LATEST runs only)
-lorch run --stage canonize
+lorchestra run --stage canonize
 
 # Validate configuration
-lorch validate
+lorchestra validate
 
 # Check status
-lorch status
+lorchestra status
 
 # Clean outputs
-lorch clean --stage canonize
+lorchestra clean --stage canonize
 ```
 
 ### First Run
 
 ```bash
 # 1. Validate setup
-lorch validate
+lorchestra validate
 
 # 2. List what's available
-lorch list extractors
+lorchestra list extractors
 
 # 3. Extract from a single source
-lorch extract tap-gmail--acct1-personal
+lorchestra extract tap-gmail--acct1-personal
 
 # 4. Run canonization (LATEST-only, idempotent)
-lorch run --stage canonize
+lorchestra run --stage canonize
 
 # 5. Check logs
 tail -f logs/pipeline-*.log
@@ -142,7 +142,7 @@ See [docs/configuration.md](docs/configuration.md) for complete reference.
 
 ## 🗄️ Vault Structure
 
-lorch uses a time-series vault with LATEST pointers for deterministic, idempotent processing:
+lorchestra uses a time-series vault with LATEST pointers for deterministic, idempotent processing:
 
 ```
 vault/{domain}/{source}/{account}/
@@ -174,19 +174,19 @@ vault/{domain}/{source}/{account}/
 - **Safe**: Failed runs don't update LATEST pointer
 
 **Workflow:**
-1. `lorch extract` → creates new `dt=/run_id=` directory
+1. `lorchestra extract` → creates new `dt=/run_id=` directory
 2. On success → updates `LATEST.json` to point to new run
-3. `lorch run --stage canonize` → processes LATEST run only
+3. `lorchestra run --stage canonize` → processes LATEST run only
 4. Historical runs kept for audit, but ignored by canonize
 
 ## 📊 CLI Commands
 
-### `lorch extract`
+### `lorchestra extract`
 
 Run a single extractor (auto-selects chunked target).
 
 ```bash
-lorch extract TAP_NAME [OPTIONS]
+lorchestra extract TAP_NAME [OPTIONS]
 
 Options:
   --target TEXT     Override target (default: auto-select)
@@ -198,18 +198,18 @@ Options:
 
 ```bash
 # Extract from single Gmail account
-lorch extract tap-gmail--acct1-personal
+lorchestra extract tap-gmail--acct1-personal
 
 # Extract from Exchange
-lorch extract tap-msgraph-mail--ben-mensio
+lorchestra extract tap-msgraph-mail--ben-mensio
 
 # Extract from all Gmail accounts (run 3 times)
-lorch extract tap-gmail--acct1-personal
-lorch extract tap-gmail--acct2-business1
-lorch extract tap-gmail--acct3-bfarmstrong
+lorchestra extract tap-gmail--acct1-personal
+lorchestra extract tap-gmail--acct2-business1
+lorchestra extract tap-gmail--acct3-bfarmstrong
 
 # Override target
-lorch extract tap-dataverse --target target-jsonl
+lorchestra extract tap-dataverse --target target-jsonl
 ```
 
 **Output:**
@@ -217,12 +217,12 @@ lorch extract tap-dataverse --target target-jsonl
 - Updates: `LATEST.json` on success
 - Shows: Manifest summary with records, size, parts
 
-### `lorch list`
+### `lorchestra list`
 
 Discover available extractors, transforms, jobs, and mappings.
 
 ```bash
-lorch list COMMAND
+lorchestra list COMMAND
 
 Commands:
   extractors    List all configured meltano taps
@@ -235,24 +235,24 @@ Commands:
 
 ```bash
 # List all extractors
-lorch list extractors
+lorchestra list extractors
 
 # List meltano jobs
-lorch list jobs
+lorchestra list jobs
 
 # List available transforms
-lorch list transforms
+lorchestra list transforms
 
 # List configured mappings
-lorch list mappings
+lorchestra list mappings
 ```
 
-### `lorch run`
+### `lorchestra run`
 
 Execute pipeline stages.
 
 ```bash
-lorch run [OPTIONS]
+lorchestra run [OPTIONS]
 
 Options:
   --stage TEXT       Run specific stage (extract|canonize|index)
@@ -265,27 +265,27 @@ Options:
 
 ```bash
 # Run full pipeline
-lorch run
+lorchestra run
 
 # Run single stage
-lorch run --stage extract
+lorchestra run --stage extract
 
 # Dry run with validation
-lorch run --dry-run
+lorchestra run --dry-run
 
 # Verbose logging
-lorch run --verbose
+lorchestra run --verbose
 
 # Custom config
-lorch run --config /path/to/pipeline.yaml
+lorchestra run --config /path/to/pipeline.yaml
 ```
 
-### `lorch status`
+### `lorchestra status`
 
 Show pipeline state and last run information.
 
 ```bash
-lorch status
+lorchestra status
 ```
 
 **Output:**
@@ -305,12 +305,12 @@ Stages:
 Logs: logs/pipeline-2025-11-12.log
 ```
 
-### `lorch validate`
+### `lorchestra validate`
 
 Validate configuration and dependencies.
 
 ```bash
-lorch validate [OPTIONS]
+lorchestra validate [OPTIONS]
 
 Options:
   --skip-permissions    Skip PHI directory permission checks
@@ -323,12 +323,12 @@ Options:
 - Output directories writable
 - PHI directory permissions (700)
 
-### `lorch clean`
+### `lorchestra clean`
 
 Clean stage outputs.
 
 ```bash
-lorch clean [OPTIONS]
+lorchestra clean [OPTIONS]
 
 Options:
   --stage TEXT    Clean specific stage output
@@ -340,13 +340,13 @@ Options:
 
 ```bash
 # Clean specific stage
-lorch clean --stage canonize
+lorchestra clean --stage canonize
 
 # Clean all (prompts for confirmation)
-lorch clean --all
+lorchestra clean --all
 
 # Dry run
-lorch clean --all --dry-run
+lorchestra clean --all --dry-run
 ```
 
 ## 🔐 Security
@@ -356,14 +356,14 @@ lorch clean --all --dry-run
 All PHI data is stored with restrictive permissions:
 
 ```bash
-# Required permissions (enforced by lorch)
+# Required permissions (enforced by lorchestra)
 chmod 700 /home/user/phi-data
 chmod 700 /home/user/phi-data/meltano-extracts
 chmod 700 /home/user/phi-data/canonical
 chmod 700 /home/user/phi-data/vector-store
 ```
 
-lorch validates these permissions before each run.
+lorchestra validates these permissions before each run.
 
 ### Logging
 
@@ -382,8 +382,8 @@ Logs are written to `logs/pipeline-YYYY-MM-DD.log` with structured JSON format.
 - [x] **Pipeline orchestration framework**
 - [x] **Vault storage**: Time-series with LATEST pointers
 - [x] **Extract stage**: Meltano integration with chunked targets
-- [x] **Granular extraction**: `lorch extract <tap>` for individual sources
-- [x] **Discovery commands**: `lorch list extractors/jobs/transforms/mappings`
+- [x] **Granular extraction**: `lorchestra extract <tap>` for individual sources
+- [x] **Discovery commands**: `lorchestra list extractors/jobs/transforms/mappings`
 - [x] **Canonize stage**: LATEST-only, deterministic, idempotent
 - [x] **Per-account canonical output**: `canonical/{source}/{account}.jsonl`
 - [x] **Index stage**: Stub (file copy)
@@ -436,8 +436,8 @@ See [NEXT_STEPS.md](NEXT_STEPS.md) for complete roadmap.
 ### Project Structure
 
 ```
-lorch/
-├── lorch/                      # Main package
+lorchestra/
+├── lorchestra/                      # Main package
 │   ├── __init__.py            # Package entry point
 │   ├── cli.py                 # CLI interface
 │   ├── pipeline.py            # Orchestrator
@@ -466,17 +466,17 @@ uv pip install -e ".[dev]"
 pytest tests/
 
 # Run with coverage
-pytest --cov=lorch tests/
+pytest --cov=lorchestra tests/
 ```
 
 ### Code Style
 
 ```bash
 # Format code
-black lorch/
+black lorchestra/
 
 # Lint code
-ruff check lorch/
+ruff check lorchestra/
 ```
 
 ## 🐛 Troubleshooting
@@ -559,7 +559,7 @@ This pipeline is designed for easy cloud migration. See [docs/cloud-migration.md
 - `meltano` → Cloud Run Job
 - `canonizer` → Cloud Function
 - `vector-projector` → BigQuery
-- `lorch` → Cloud Workflows
+- `lorchestra` → Cloud Workflows
 - Files → GCS buckets
 
 ## 📚 Related Repositories

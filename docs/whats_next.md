@@ -4,7 +4,7 @@
 
 **Extraction Pipeline: ✅ COMPLETE**
 
-lorch successfully handles data ingestion with:
+lorchestra successfully handles data ingestion with:
 - Vault storage with time-series + LATEST pointers
 - Tool adapter pattern for meltano integration
 - Time-based extraction CLI (`--last 7d`, `--since`, `--from/--to`)
@@ -143,7 +143,7 @@ CREATE INDEX idx_created_at ON objects(created_at);
 
 Implement:
 - `vector_projector/db.py` with insert/query functions
-- Update `lorch/stages/index.py` to use SQLite
+- Update `lorchestra/stages/index.py` to use SQLite
 - Store files in inode-style directory structure
 
 #### 2.2 Inode-Style Storage
@@ -246,7 +246,7 @@ Test scenarios:
 **Phase 1 Complete When:**
 - [ ] All 3 transforms exist and tested
 - [ ] Canonical schemas documented
-- [ ] `lorch run --stage canonize` produces all 3 canonical types
+- [ ] `lorchestra run --stage canonize` produces all 3 canonical types
 
 **Phase 2 Complete When:**
 - [ ] SQLite database indexes all canonical objects

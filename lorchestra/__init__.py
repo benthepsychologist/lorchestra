@@ -1,5 +1,5 @@
 """
-lorch - Local Orchestrator for PHI Data Pipeline
+lorchestra - Local Orchestrator for PHI Data Pipeline
 
 Coordinates the three-stage local data pipeline:
 1. Extract (Meltano) - Pull data from sources

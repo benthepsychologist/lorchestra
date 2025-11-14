@@ -1,4 +1,4 @@
-"""Vector-projector tool adapter for lorch (STUB IMPLEMENTATION)."""
+"""Vector-projector tool adapter for lorchestra (STUB IMPLEMENTATION)."""
 
 import json
 import shutil
@@ -6,8 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from lorch.tools.base import ToolAdapter
-from lorch.utils import count_jsonl_records
+from lorchestra.tools.base import ToolAdapter
+from lorchestra.utils import count_jsonl_records
 
 
 class VectorProjectorAdapter(ToolAdapter):

@@ -8,10 +8,10 @@ import subprocess
 from pathlib import Path
 from typing import List
 
-from lorch.config import StageConfig
-from lorch.stages.base import Stage, StageResult
-from lorch.tools.meltano import MeltanoAdapter
-from lorch.utils import count_jsonl_records, retry_with_backoff
+from lorchestra.config import StageConfig
+from lorchestra.stages.base import Stage, StageResult
+from lorchestra.tools.meltano import MeltanoAdapter
+from lorchestra.utils import count_jsonl_records, retry_with_backoff
 
 
 class ExtractStage(Stage):
