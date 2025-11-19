@@ -1,0 +1,92 @@
+aip_id: AIP-lorchestra-2025-11-18-001
+context:
+  background: 'Per ARCH-GOAL-MINIMAL-EVENT-PIPELINE.md, lorchestra needs an `event_client` to write events
+    to BigQuery as the primary WAL (write-ahead log). This is the foundation for the three working lanes:
+
+
+    1. Sales pipeline via email
+
+    2. Measurement pipeline via questionnaires
+
+    3. Automated reporting
+
+
+    For v0, `event_client.emit()` does ONE thing: take an envelope-shaped dict and write it to the events
+    table in BigQuery. Full stop. All schema validation, policy enforcement, and cleverness lives elsewhere
+    or later.'
+  constraints:
+  - No schema lookup or validation (callers provide schema_ref as optional string)
+  - No policy engine integration
+  - No JSONL backup (will be added later)
+  - No auto-gov integration
+  - Must use google-cloud-bigquery client (passed in by caller)
+  - Environment-based configuration only (EVENTS_BQ_DATASET, EVENTS_BQ_TABLE)
+  - No existing job refactoring in this task (event_client only)
+created: '2025-11-18T17:28:20.603189+00:00'
+meta:
+  created_at: '2025-11-18T17:28:20.603189+00:00'
+  created_by: benthepsychologist
+objective:
+  acceptance_criteria:
+  - '`lorc.stack_clients.event_client` module created with `emit()` function'
+  - '`emit()` writes event envelopes to BigQuery events table'
+  - 'Envelope shape includes: event_id, event_type, source, schema_ref, created_at, correlation_id, subject_id,
+    payload'
+  - Environment variables EVENTS_BQ_DATASET and EVENTS_BQ_TABLE are used for table config
+  - All tests pass (pytest)
+  - Code passes linting (ruff check)
+  - 80%+ test coverage for event_client module
+  - No JSONL backup (deferred to future work)
+  - No existing jobs refactored (only creates new event_client)
+  goal: Create minimal event_client.emit() that writes event envelopes to BigQuery
+orchestrator_contract:
+  artifacts_dir: .aip_artifacts/AIP-lorchestra-2025-11-18-001
+  logging: jsonl
+  state_machine:
+    events:
+    - run_step
+    - await_gate
+    - approve
+    - reject
+    - retry
+    - escalate
+    - complete
+    states:
+    - pending
+    - running
+    - awaiting_human
+    - failed
+    - succeeded
+    - rolled_back
+plan:
+- description: File Structure & Envelope Design
+  kind: code
+  role: coding_agent
+  step_id: step-001
+- description: Implementation Details
+  kind: code
+  role: coding_agent
+  step_id: step-002
+- description: Test Implementation (`tests/test_event_client.py`)
+  kind: code
+  role: coding_agent
+  step_id: step-003
+- description: Validation & Testing
+  kind: code
+  role: coding_agent
+  step_id: step-004
+- description: Integration Verification (Manual)
+  kind: code
+  role: coding_agent
+  step_id: step-005
+project_slug: lorchestra
+repo:
+  default_branch: main
+  url: git@github.com:benthepsychologist/lorch.git
+  working_branch: feat/minimal-event-client
+spec_version: 1.0.0
+tier: C
+title: Minimal event_client Implementation
+updated: '2025-11-18T20:45:00+00:00'
+version: '0.1'
+

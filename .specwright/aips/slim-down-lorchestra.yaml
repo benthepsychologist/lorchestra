@@ -1,0 +1,70 @@
+aip_id: AIP-lorchestra-2025-11-18-001
+context:
+  background: ''
+  constraints: []
+created: '2025-11-18T21:30:00+00:00'
+meta:
+  created_at: '2025-11-18T21:30:00+00:00'
+  created_by: benthepsychologist
+objective:
+  acceptance_criteria:
+  - '`lorchestra/jobs.py` created with `discover_jobs()`, `get_job()`, `execute_job()`'
+  - '`lorc run package job` command with common options (--account, --since, --until)'
+  - '`lorc jobs list [package]` command'
+  - '`lorc jobs show package job` command'
+  - BigQuery client created once per `lorc run` invocation, passed to job
+  - '`lorchestra/stages/` directory DELETED'
+  - '`lorchestra/tools/` directory DELETED'
+  - '`lorchestra/pipeline.py` DELETED (or heavily simplified if kept)'
+  - Old CLI commands removed (`extract`, `canonize`, `index`, etc.)
+  - All tests pass
+  - Linting passes (ruff check)
+  - Job discovery tests (mock entrypoints)
+  - CLI tests for `lorc run` and `lorc jobs`
+  - README updated to reflect thin orchestrator role
+  - '`docs/jobs.md` created with job ABI documentation'
+  - 'Note: actual jobs live in external packages (ingester, canonizer, etc.)'
+  goal: Remove vault code and implement minimal job orchestration
+orchestrator_contract:
+  artifacts_dir: .aip_artifacts/AIP-lorchestra-2025-11-18-001
+  logging: jsonl
+  state_machine:
+    events:
+    - run_step
+    - await_gate
+    - approve
+    - reject
+    - retry
+    - escalate
+    - complete
+    states:
+    - pending
+    - running
+    - awaiting_human
+    - failed
+    - succeeded
+    - rolled_back
+plan:
+- description: Implement Job Orchestration
+  kind: code
+  role: coding_agent
+  step_id: step-001
+- description: Remove Vault and Domain Code
+  kind: code
+  role: coding_agent
+  step_id: step-002
+- description: Documentation
+  kind: code
+  role: coding_agent
+  step_id: step-003
+project_slug: lorchestra
+repo:
+  default_branch: main
+  url: git@github.com:benthepsychologist/lorch.git
+  working_branch: feat/slim-orchestrator
+spec_version: 1.0.0
+tier: C
+title: Slim Down lorchestra - Thin Orchestrator
+updated: '2025-11-18T21:30:00+00:00'
+version: '0.1'
+
