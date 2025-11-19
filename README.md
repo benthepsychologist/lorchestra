@@ -1,47 +1,46 @@
-# lorchestraestra - Local Orchestrator
+# lorchestra - Lightweight Job Orchestrator
 
-**Local Orchestrator** for the PHI data pipeline. Coordinates three-stage data processing from extraction to indexed storage.
+**Lightweight job orchestrator** that discovers and runs jobs from installed packages via Python entrypoints. Jobs emit events to BigQuery for tracking and observability.
 
 ## 🎯 Overview
 
-lorchestra orchestrates the local-first data pipeline with time-series vault storage:
+lorchestra is a minimalist orchestrator that:
+
+1. **Discovers jobs** via Python entrypoints (`lorchestra.jobs.<package_name>`)
+2. **Runs jobs** with a common interface (BigQuery client + kwargs)
+3. **Tracks execution** via BigQuery event emission
 
 ```
-┌─────────────┐      ┌────────────┐      ┌──────────────────┐
-│   meltano   │  →   │ canonizer  │  →   │ vector-projector │
-│  (extract)  │      │(transform) │      │    (index)       │
-└─────────────┘      └────────────┘      └──────────────────┘
- Chunked Vault    Canonical/Account      SQLite + Files
+┌─────────────────────┐
+│  Installed Package  │
+│  (via entrypoints)  │
+└─────────┬───────────┘
+          │
+          ↓
+    ┌─────────────┐
+    │ lorchestra  │  ← Discovers & runs jobs
+    └──────┬──────┘
+           │
+           ↓
+    ┌──────────────┐
+    │   BigQuery   │  ← Event emission
+    └──────────────┘
 ```
-
-### Pipeline Stages
-
-1. **Extract** - Pulls data from 12 sources (Gmail, Exchange, Dataverse, Sheets, QuickBooks)
-   - Writes to time-series vault with LATEST pointer
-   - Chunked, compressed, auditable
-2. **Canonize** - Transforms LATEST vault runs to canonical schemas via JSONata
-   - Deterministic: same LATEST → same output
-   - Idempotent: clears and rebuilds per account
-3. **Index** - Stores canonical data in local document store with SQLite indexing
 
 ### Key Features
 
-- ✅ **Vault Storage**: Time-series extraction with LATEST pointers
-- ✅ **Deterministic**: Canonization always produces same output from LATEST
-- ✅ **Idempotent**: Safe to rerun - clears and rebuilds
-- ✅ **Auditable**: Historical runs preserved for audit trail
-- ✅ **Security-First**: PHI data protection with 700/600 permissions
-- ✅ **Granular Control**: Extract individual accounts or run batch jobs
-- ✅ **Error Handling**: Retry logic, failed runs don't update LATEST
-- ✅ **Structured Logging**: JSON logs with no PHI data
-- ✅ **Cloud-Ready**: Design enables easy cloud migration
+- ✅ **Entrypoint-based discovery**: Jobs registered via `pyproject.toml`
+- ✅ **Common interface**: All jobs receive `bq_client` and optional kwargs
+- ✅ **Event emission**: Jobs emit structured events to BigQuery
+- ✅ **CLI tools**: List, inspect, and run jobs
+- ✅ **Minimal dependencies**: Just Click, BigQuery client, and logging
 
 ## 🚀 Quick Start
 
 ### Installation
 
 ```bash
-cd /home/user/lorch
+cd /home/user/lorchestra
 
 # Create virtual environment
 uv venv
@@ -57,379 +56,209 @@ lorchestra --version
 ### Basic Usage
 
 ```bash
-# List available extractors
-lorchestra list extractors
+# List all available jobs
+lorchestra jobs list
 
-# Extract from individual source
-lorchestra extract tap-gmail--acct1-personal
+# List jobs for a specific package
+lorchestra jobs list ingester
 
-# List available transforms
-lorchestra list transforms
+# Show job details
+lorchestra jobs show ingester extract_gmail
 
-# List configured mappings
-lorchestra list mappings
+# Run a job
+lorchestra run-job ingester extract_gmail --account acct1-personal
 
-# Run canonization (processes LATEST runs only)
-lorchestra run --stage canonize
-
-# Validate configuration
-lorchestra validate
-
-# Check status
-lorchestra status
-
-# Clean outputs
-lorchestra clean --stage canonize
-```
-
-### First Run
-
-```bash
-# 1. Validate setup
-lorchestra validate
-
-# 2. List what's available
-lorchestra list extractors
-
-# 3. Extract from a single source
-lorchestra extract tap-gmail--acct1-personal
-
-# 4. Run canonization (LATEST-only, idempotent)
-lorchestra run --stage canonize
-
-# 5. Check logs
-tail -f logs/pipeline-*.log
+# Run with time range
+lorchestra run-job ingester extract_gmail --since 2024-01-01 --until 2024-01-31
+lorchestra run-job ingester extract_gmail --since -7d
 ```
 
 ## 📖 Documentation
 
 Comprehensive documentation in the `docs/` directory:
 
-- **[docs/architecture.md](docs/architecture.md)** - System architecture and design
-- **[docs/configuration.md](docs/configuration.md)** - Configuration reference
-- **[docs/cloud-migration.md](docs/cloud-migration.md)** - Cloud migration guide
-- **[NEXT_STEPS.md](NEXT_STEPS.md)** - TODOs and implementation roadmap
-- **[CONTRIBUTING.md](CONTRIBUTING.md)** - Development guide
+- **[docs/jobs.md](docs/jobs.md)** - Job development guide
+- **[docs/architecture.md](docs/architecture.md)** - System architecture (historical)
+- **[docs/configuration.md](docs/configuration.md)** - Configuration reference (historical)
 
-## 🔧 Configuration
+## 🔧 Writing Jobs
 
-Default configuration: `config/pipeline.yaml`
+### Job Interface
 
-### Key Configuration Sections
+Jobs must follow this interface:
 
-```yaml
-pipeline:
-  name: phi-local-pipeline
-  version: 1.0.0
+```python
+def my_job(bq_client, **kwargs):
+    """
+    Job description.
 
-stages:
-  extract:
-    type: meltano
-    repo_path: /home/user/meltano-ingest
-    job: ingest-all-accounts
-    output_dir: /home/user/phi-data/meltano-extracts
-
-  canonize:
-    type: canonizer
-    repo_path: /home/user/canonizer
-    transform_registry: /home/user/transforms
-    mappings:
-      - source_pattern: "*gmail*.jsonl"
-        transform: email/gmail_to_canonical_v1
+    Args:
+        bq_client: BigQuery client for event emission
+        **kwargs: Optional args (account, since, until)
+    """
+    # Your job logic here
+    pass
 ```
 
-See [docs/configuration.md](docs/configuration.md) for complete reference.
+### Registering Jobs
 
-## 🗄️ Vault Structure
+Add to your package's `pyproject.toml`:
 
-lorchestra uses a time-series vault with LATEST pointers for deterministic, idempotent processing:
-
-```
-vault/{domain}/{source}/{account}/
-├── dt=2025-11-12/run_id=20251112T205433Z/
-│   ├── manifest.json               # Run metadata, checksums
-│   ├── part-000.jsonl.gz          # Compressed data chunks
-│   └── part-001.jsonl.gz
-├── dt=2025-11-13/run_id=20251113T103045Z/  # Next day's run
-│   ├── manifest.json
-│   └── part-000.jsonl.gz
-└── LATEST.json  ← Points to most recent successful run
+```toml
+[project.entry-points."lorchestra.jobs.my_package"]
+my_job = "my_package.jobs:my_job"
 ```
 
-**LATEST.json** format:
-```json
-{
-  "dt": "2025-11-13",
-  "run_id": "20251113T103045Z",
-  "updated_at": "2025-11-13T10:31:05.123456+00:00",
-  "records": 295
-}
+### Complete Example
+
+**my_package/jobs.py:**
+```python
+import logging
+from lorchestra.stack_clients.event_client import emit
+
+logger = logging.getLogger(__name__)
+
+def extract_gmail(bq_client, account=None, since=None, until=None):
+    """Extract emails from Gmail."""
+    logger.info(f"Extracting Gmail for account={account}")
+
+    emit(
+        bq_client=bq_client,
+        event_type="extraction.started",
+        source="my_package/extract_gmail",
+        data={"account": account, "since": since}
+    )
+
+    try:
+        # Extraction logic
+        emails = fetch_emails(account, since, until)
+
+        emit(
+            bq_client=bq_client,
+            event_type="extraction.completed",
+            source="my_package/extract_gmail",
+            data={"records_count": len(emails)}
+        )
+
+        logger.info(f"Extracted {len(emails)} emails")
+
+    except Exception as e:
+        emit(
+            bq_client=bq_client,
+            event_type="extraction.failed",
+            source="my_package/extract_gmail",
+            data={"error": str(e)}
+        )
+        raise
 ```
 
-**Key Properties:**
-- **Time-Series**: All historical runs preserved
-- **LATEST Pointer**: Determines which run to canonize
-- **Deterministic**: Same LATEST → same canonical output
-- **Idempotent**: Rerun canonize safely, clears and rebuilds
-- **Safe**: Failed runs don't update LATEST pointer
+**pyproject.toml:**
+```toml
+[project.entry-points."lorchestra.jobs.my_package"]
+extract_gmail = "my_package.jobs:extract_gmail"
+```
 
-**Workflow:**
-1. `lorchestra extract` → creates new `dt=/run_id=` directory
-2. On success → updates `LATEST.json` to point to new run
-3. `lorchestra run --stage canonize` → processes LATEST run only
-4. Historical runs kept for audit, but ignored by canonize
+See **[docs/jobs.md](docs/jobs.md)** for complete guide.
 
 ## 📊 CLI Commands
 
-### `lorchestra extract`
+### `lorchestra run-job`
 
-Run a single extractor (auto-selects chunked target).
+Run a job from an installed package.
 
 ```bash
-lorchestra extract TAP_NAME [OPTIONS]
+lorchestra run-job PACKAGE JOB [OPTIONS]
 
 Options:
-  --target TEXT     Override target (default: auto-select)
-  --config PATH     Custom configuration file
-  --verbose         Enable debug logging
+  --account TEXT    Account identifier
+  --since TEXT      Start time (ISO or relative like "-7d")
+  --until TEXT      End time (ISO format)
 ```
 
 **Examples:**
 
 ```bash
-# Extract from single Gmail account
-lorchestra extract tap-gmail--acct1-personal
+# Basic usage
+lorchestra run-job ingester extract_gmail
 
-# Extract from Exchange
-lorchestra extract tap-msgraph-mail--ben-mensio
+# With account
+lorchestra run-job ingester extract_gmail --account acct1-personal
 
-# Extract from all Gmail accounts (run 3 times)
-lorchestra extract tap-gmail--acct1-personal
-lorchestra extract tap-gmail--acct2-business1
-lorchestra extract tap-gmail--acct3-bfarmstrong
+# With time range
+lorchestra run-job ingester extract_gmail --since 2024-01-01 --until 2024-01-31
 
-# Override target
-lorchestra extract tap-dataverse --target target-jsonl
+# Relative time
+lorchestra run-job ingester extract_gmail --since -7d
 ```
 
-**Output:**
-- Creates: `vault/{domain}/{source}/{account}/dt=YYYY-MM-DD/run_id=TIMESTAMP/`
-- Updates: `LATEST.json` on success
-- Shows: Manifest summary with records, size, parts
+### `lorchestra jobs list`
 
-### `lorchestra list`
-
-Discover available extractors, transforms, jobs, and mappings.
+List available jobs.
 
 ```bash
-lorchestra list COMMAND
-
-Commands:
-  extractors    List all configured meltano taps
-  jobs          List all configured meltano jobs
-  transforms    List available transforms
-  mappings      List source → transform mappings
+lorchestra jobs list [PACKAGE]
 ```
 
 **Examples:**
 
 ```bash
-# List all extractors
-lorchestra list extractors
+# List all jobs
+lorchestra jobs list
 
-# List meltano jobs
-lorchestra list jobs
+# Output:
+# ingester:
+#   extract_gmail
+#   extract_slack
+# canonizer:
+#   canonicalize_email
 
-# List available transforms
-lorchestra list transforms
+# List jobs for specific package
+lorchestra jobs list ingester
 
-# List configured mappings
-lorchestra list mappings
+# Output:
+# Jobs in ingester:
+#   extract_gmail
+#   extract_slack
 ```
 
-### `lorchestra run`
+### `lorchestra jobs show`
 
-Execute pipeline stages.
+Show job details.
 
 ```bash
-lorchestra run [OPTIONS]
-
-Options:
-  --stage TEXT       Run specific stage (extract|canonize|index)
-  --config PATH      Custom configuration file
-  --dry-run          Validate without executing
-  --verbose          Enable debug logging
+lorchestra jobs show PACKAGE JOB
 ```
 
-**Examples:**
+**Example:**
 
 ```bash
-# Run full pipeline
-lorchestra run
+$ lorchestra jobs show ingester extract_gmail
+ingester/extract_gmail
+Location: /path/to/my_package/jobs.py
+Signature: (bq_client, account=None, since=None, until=None)
 
-# Run single stage
-lorchestra run --stage extract
-
-# Dry run with validation
-lorchestra run --dry-run
-
-# Verbose logging
-lorchestra run --verbose
-
-# Custom config
-lorchestra run --config /path/to/pipeline.yaml
+Extract emails from Gmail.
 ```
-
-### `lorchestra status`
-
-Show pipeline state and last run information.
-
-```bash
-lorchestra status
-```
-
-**Output:**
-
-```
-Pipeline Status: phi-local-pipeline v1.0.0
-
-Last Run: 2025-11-12 10:30:45
-Status: ✅ SUCCESS
-Duration: 4m 32s
-
-Stages:
-  ✅ extract      1m 45s    27 records
-  ✅ canonize     2m 12s    27 records
-  ✅ index          35s    27 records
-
-Logs: logs/pipeline-2025-11-12.log
-```
-
-### `lorchestra validate`
-
-Validate configuration and dependencies.
-
-```bash
-lorchestra validate [OPTIONS]
-
-Options:
-  --skip-permissions    Skip PHI directory permission checks
-```
-
-**Checks:**
-- Configuration file syntax
-- Component paths exist
-- Transform registry accessible
-- Output directories writable
-- PHI directory permissions (700)
-
-### `lorchestra clean`
-
-Clean stage outputs.
-
-```bash
-lorchestra clean [OPTIONS]
-
-Options:
-  --stage TEXT    Clean specific stage output
-  --all           Clean all stage outputs
-  --dry-run       Show what would be deleted
-```
-
-**Examples:**
-
-```bash
-# Clean specific stage
-lorchestra clean --stage canonize
-
-# Clean all (prompts for confirmation)
-lorchestra clean --all
-
-# Dry run
-lorchestra clean --all --dry-run
-```
-
-## 🔐 Security
-
-### PHI Data Protection
-
-All PHI data is stored with restrictive permissions:
-
-```bash
-# Required permissions (enforced by lorchestra)
-chmod 700 /home/user/phi-data
-chmod 700 /home/user/phi-data/meltano-extracts
-chmod 700 /home/user/phi-data/canonical
-chmod 700 /home/user/phi-data/vector-store
-```
-
-lorchestra validates these permissions before each run.
-
-### Logging
-
-Logs contain **no PHI data** - only:
-- Timestamps and durations
-- Record counts
-- File paths
-- Error messages (sanitized)
-
-Logs are written to `logs/pipeline-YYYY-MM-DD.log` with structured JSON format.
 
 ## 🎯 Current Status
 
 ### ✅ Implemented (v0.1.0)
 
-- [x] **Pipeline orchestration framework**
-- [x] **Vault storage**: Time-series with LATEST pointers
-- [x] **Extract stage**: Meltano integration with chunked targets
-- [x] **Granular extraction**: `lorchestra extract <tap>` for individual sources
-- [x] **Discovery commands**: `lorchestra list extractors/jobs/transforms/mappings`
-- [x] **Canonize stage**: LATEST-only, deterministic, idempotent
-- [x] **Per-account canonical output**: `canonical/{source}/{account}.jsonl`
-- [x] **Index stage**: Stub (file copy)
-- [x] **CLI interface**: run, extract, list, status, validate, clean
-- [x] **Structured logging**: JSON logs with no PHI
-- [x] **Error handling**: Retries, failed runs don't update LATEST
-- [x] **Configuration management**: YAML-based
-- [x] **PHI security validation**: 700/600 permissions enforced
-- [x] **Transform registry**: `/home/user/transforms/`
-- [x] **Manifest tracking**: Records, checksums, compression stats
+- [x] **Job discovery** via entrypoints
+- [x] **Job execution** with error handling
+- [x] **CLI interface**: run-job, jobs list, jobs show
+- [x] **Event emission** to BigQuery
+- [x] **Structured logging**
+- [x] **Comprehensive tests** (26 tests, all passing)
 
-### ⚠️ Partially Implemented
+### 🔧 Configuration
 
-- [ ] **Transform library**: Only 1/4 exist
-  - ✅ Gmail → canonical email
-  - ❌ Exchange → canonical email
-  - ❌ Dataverse contact → canonical contact
-  - ❌ Dataverse session → canonical clinical_session
-- [ ] **Vector-projector integration**: Stub mode (just copies files)
-- [ ] **Tests**: No unit or integration tests yet
+Jobs use environment variables for BigQuery event emission:
 
-### 🚧 TODO
+- `BQ_EVENTS_DATASET` - BigQuery dataset name (e.g., "events")
+- `BQ_EVENTS_TABLE` - BigQuery table name (e.g., "job_events")
 
-See [NEXT_STEPS.md](NEXT_STEPS.md) for complete roadmap.
-
-**Immediate next steps:**
-
-1. **Create missing transforms** (3 remaining):
-   - Exchange → canonical email
-   - Dataverse contact → canonical contact
-   - Dataverse session → canonical clinical_session
-
-2. **Implement full vector-projector**:
-   - SQLite indexing by message_id/entity_id
-   - Inode-style file storage
-   - Query API
-
-3. **Add tests**:
-   - Unit tests for stages
-   - Integration tests for full pipeline
-   - Vault LATEST pointer logic tests
-
-4. **Add monitoring**:
-   - Metrics collection (records/run, duration, errors)
-   - Alerting on failures
-   - Dashboard (optional)
+No other configuration is required. Jobs are discovered automatically via entrypoints.
 
 ## 🛠️ Development
 
@@ -437,23 +266,21 @@ See [NEXT_STEPS.md](NEXT_STEPS.md) for complete roadmap.
 
 ```
 lorchestra/
-├── lorchestra/                      # Main package
+├── lorchestra/                 # Main package
 │   ├── __init__.py            # Package entry point
-│   ├── cli.py                 # CLI interface
-│   ├── pipeline.py            # Orchestrator
-│   ├── config.py              # Configuration
+│   ├── cli.py                 # CLI interface (105 lines)
+│   ├── jobs.py                # Job discovery & execution
+│   ├── config.py              # Configuration utilities
 │   ├── utils.py               # Utilities
-│   └── stages/                # Pipeline stages
-│       ├── base.py            # Base classes
-│       ├── extract.py         # Meltano stage
-│       ├── canonize.py        # Canonizer stage
-│       └── index.py           # Vector-projector stage
-├── config/
-│   └── pipeline.yaml          # Configuration
-├── docs/                       # Documentation
-├── logs/                       # Runtime logs
-├── tests/                      # Tests (to be added)
-└── README.md                   # This file
+│   └── stack_clients/         # BigQuery event client
+│       └── event_client/
+├── docs/
+│   └── jobs.md                # Job development guide
+├── tests/                     # Tests
+│   ├── test_jobs.py          # Job system tests (9 tests)
+│   ├── test_cli_jobs.py      # CLI tests (8 tests)
+│   └── test_event_client.py  # Event client tests (9 tests)
+└── README.md                  # This file
 ```
 
 ### Running Tests
@@ -463,7 +290,7 @@ lorchestra/
 uv pip install -e ".[dev]"
 
 # Run tests
-pytest tests/
+python -m pytest tests/ -v
 
 # Run with coverage
 pytest --cov=lorchestra tests/
@@ -472,167 +299,116 @@ pytest --cov=lorchestra tests/
 ### Code Style
 
 ```bash
-# Format code
-black lorchestra/
-
 # Lint code
 ruff check lorchestra/
+
+# Fix linting issues
+ruff check lorchestra/ --fix
 ```
 
 ## 🐛 Troubleshooting
 
-### Pipeline Fails at Extract Stage
+### Job Not Found
 
-**Issue:** Meltano job fails
+**Issue:** "Unknown package" or "Unknown job"
 
 **Solution:**
-1. Check Meltano authentication:
-   ```bash
-   cd /home/user/meltano-ingest
-   source .venv/bin/activate
-   meltano invoke tap-gmail--acct1-personal
+1. Check job is registered in `pyproject.toml`:
+   ```toml
+   [project.entry-points."lorchestra.jobs.my_package"]
+   my_job = "my_package.jobs:my_job"
    ```
-2. Verify `.env` file has valid credentials
-3. Check logs: `tail -f /home/user/meltano-ingest/.meltano/logs/meltano.log`
-
-### Canonization Errors
-
-**Issue:** Transform fails or produces invalid output
-
-**Solution:**
-1. Check transform exists:
+2. Reinstall package:
    ```bash
-   ls -la /home/user/transforms/email/gmail_to_canonical_v1.meta.yaml
+   uv pip install -e .
    ```
-2. Validate transform manually:
+3. List jobs to verify:
    ```bash
-   cd /home/user/canonizer
-   source .venv/bin/activate
-   cat test.json | can transform run \
-     --meta /home/user/transforms/email/gmail_to_canonical_v1.meta.yaml
+   lorchestra jobs list
    ```
-3. Check canonizer logs for detailed errors
 
-### Permission Denied Errors
+### BigQuery Event Emission Fails
 
-**Issue:** Cannot write to PHI directories
-
-**Solution:**
-```bash
-chmod 700 /home/user/phi-data
-chmod 700 /home/user/phi-data/meltano-extracts
-chmod 700 /home/user/phi-data/canonical
-chmod 700 /home/user/phi-data/vector-store
-```
-
-### Missing Transform Files
-
-**Issue:** "Transform metadata not found"
+**Issue:** Events not appearing in BigQuery
 
 **Solution:**
+1. Check environment variables are set:
+   ```bash
+   echo $BQ_EVENTS_DATASET
+   echo $BQ_EVENTS_TABLE
+   ```
+2. Verify BigQuery authentication:
+   ```bash
+   gcloud auth application-default login
+   ```
+3. Check BigQuery table exists and has correct schema
 
-See [docs/transforms.md](docs/transforms.md) for guide on creating transforms.
+### Job Execution Fails
 
-Quick fix:
-```bash
-# Create missing transform
-cp /home/user/transforms/email/gmail_to_canonical_v1.jsonata \
-   /home/user/transforms/email/exchange_to_canonical_v1.jsonata
+**Issue:** Job raises exception
 
-# Update metadata
-cp /home/user/transforms/email/gmail_to_canonical_v1.meta.yaml \
-   /home/user/transforms/email/exchange_to_canonical_v1.meta.yaml
-
-# Edit to match Exchange schema
-```
-
-## 🌐 Cloud Migration
-
-This pipeline is designed for easy cloud migration. See [docs/cloud-migration.md](docs/cloud-migration.md) for:
-
-- Component mapping (local → cloud services)
-- Deployment steps
-- Cost estimates
-- Security configurations
-
-**Local → Cloud:**
-- `meltano` → Cloud Run Job
-- `canonizer` → Cloud Function
-- `vector-projector` → BigQuery
-- `lorchestra` → Cloud Workflows
-- Files → GCS buckets
+**Solution:**
+1. Check job logs for detailed error
+2. Run job with verbose logging
+3. Verify job parameters are correct
+4. Test job function directly in Python
 
 ## 📚 Related Repositories
 
-- **[meltano-ingest](../meltano-ingest/)** - Data extraction with Meltano
-- **[canonizer](../canonizer/)** - JSON transformation engine
-- **[vector-projector](../vector-projector/)** - Local document store
-- **[transforms](../transforms/)** - Transform registry
+- **[meltano-ingest](../meltano-ingest/)** - Data extraction (can define jobs)
+- **[canonizer](../canonizer/)** - JSON transformation (can define jobs)
+- **[vector-projector](../vector-projector/)** - Local document store (can define jobs)
 
 ## 🤝 Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
 
 ### Quick Contribution Guide
 
 1. Create feature branch
 2. Implement changes with tests
-3. Run `black` and `ruff` for formatting
+3. Run `ruff check` for linting
 4. Update documentation
 5. Submit pull request
 
-### Areas Needing Help
+### Code Style
 
-- [ ] Create missing transforms (Exchange, Dataverse)
-- [ ] Implement vector-projector integration
-- [ ] Add unit tests
-- [ ] Create integration tests
-- [ ] Add monitoring/metrics
-- [ ] Write migration scripts for cloud
+- Use Python 3.12+ features
+- Type hints for all functions
+- Docstrings in Google format
+- Ruff linting
 
 ## 📝 License
 
-Proprietary - For internal use only. Contains PHI data handling logic.
+Proprietary - For internal use only.
 
 ## 📞 Support
 
 For issues or questions:
 
-- **Documentation**: See `docs/` directory
-- **Configuration**: [docs/configuration.md](docs/configuration.md)
-- **Architecture**: [docs/architecture.md](docs/architecture.md)
-- **Next Steps**: [NEXT_STEPS.md](NEXT_STEPS.md)
-- **Cloud Migration**: [docs/cloud-migration.md](docs/cloud-migration.md)
+- **Documentation**: See `docs/jobs.md`
+- **Tests**: See `tests/` for examples
+- **Architecture**: See `docs/architecture.md` (historical)
 
-## 🎓 For LLM Assistants
+## 🎓 Migration Notes
 
-If you're an LLM helping to develop this project:
+This is a **slimmed-down version** of lorchestra. Previous versions included:
+- Pipeline orchestrator with stages (extract → canonize → index)
+- Vault storage with LATEST pointers
+- Complex CLI with many commands
 
-1. **Read these files first:**
-   - [NEXT_STEPS.md](NEXT_STEPS.md) - What needs to be done
-   - [docs/architecture.md](docs/architecture.md) - How it works
-   - [CONTRIBUTING.md](CONTRIBUTING.md) - Development guidelines
+The new version is **minimal** and **focused**:
+- Just job discovery and execution
+- No built-in stages or pipeline
+- Minimal CLI (run-job, jobs list, jobs show)
 
-2. **Current priorities:**
-   - Create missing transforms in `/home/user/transforms/`
-   - Implement vector-projector integration
-   - Add comprehensive tests
+**Migration path:**
+- Old pipeline stages → Create as jobs in separate packages
+- Old `lorchestra run` → `lorchestra run-job <package> <job>`
+- Old vault/stages → Implement in job packages as needed
 
-3. **Code style:**
-   - Use Python 3.12+ features
-   - Type hints for all functions
-   - Docstrings in Google format
-   - Black formatting, Ruff linting
-
-4. **Security:**
-   - Never log PHI data
-   - Validate permissions before file operations
-   - Sanitize error messages
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
+See git tag `pre-slim-lorchestra` for old code.
 
 ---
 
 **Version:** 0.1.0
-**Status:** Production-ready orchestrator, missing some transforms
-**Last Updated:** 2025-11-12
+**Status:** Production-ready
+**Last Updated:** 2025-11-19

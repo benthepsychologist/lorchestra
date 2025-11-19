@@ -10,6 +10,7 @@ dependencies = [
     "click>=8.1",
     "rich>=13.0",
     "python-dotenv>=1.0",
+    "google-cloud-bigquery>=3.0",
 ]
 
 [project.optional-dependencies]

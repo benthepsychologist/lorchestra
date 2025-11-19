@@ -4,7 +4,6 @@ Configuration management for lorchestra pipeline.
 Loads and validates pipeline.yaml configuration file.
 """
 
-import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
