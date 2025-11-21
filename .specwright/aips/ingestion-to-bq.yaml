@@ -1,0 +1,104 @@
+aip_id: AIP-lorchestra-2025-11-19-001
+context:
+  background: 'The `/home/user/ingestor` package contains a Meltano project with 11+ Singer taps (Gmail,
+    Exchange, Dataverse, Stripe, etc.) and a custom `target-event-emitter` that writes raw events to BigQuery.
+    Currently, these taps are run manually via `meltano run` commands.
+
+
+    We need to create lorchestra jobs that wrap these Meltano commands so they can be:
+
+    - Run on-demand via `lorchestra run-job`
+
+    - Scheduled via cron or cloud scheduler
+
+    - Monitored via BigQuery event tracking
+
+    - Orchestrated as part of larger pipelines
+
+
+    **Existing components:**
+
+    - `/home/user/ingestor/meltano.yml` - Tap configurations (Gmail, Exchange, Dataverse, Stripe)
+
+    - `/home/user/ingestor/targets/target-event-emitter` - Custom Singer target for BQ event emission
+
+    - `/home/user/lorchestra/lorchestra/stack_clients/event_client` - Event emission client
+
+    - BigQuery table: `raw_events.events` - Destination for raw events'
+  constraints:
+  - No modifications to existing Meltano tap configurations
+  - Job must use existing `target-event-emitter` (no direct BQ writes)
+  - Must work with Meltano state management (incremental extractions)
+  - Environment variables for credentials (no hardcoded secrets)
+  - Job must emit structured events for observability
+created: '2025-11-19T21:40:35.577860+00:00'
+meta:
+  created_at: '2025-11-19T21:40:35.577860+00:00'
+  created_by: benthepsychologist
+objective:
+  acceptance_criteria:
+  - Lorchestra slim-down complete (job orchestrator ready)
+  - Ingestion job created in `/home/user/ingestor/ingestor/jobs.py`
+  - Job registered in `/home/user/ingestor/pyproject.toml` entrypoints
+  - Job emits events to BigQuery (start, success, failure)
+  - Job supports tap selection and time-range parameters
+  - Integration test passes (run actual tap with test data)
+  - Documentation updated with usage examples
+  - CI green (lint + unit tests)
+  goal: Create lorchestra job to run Meltano taps and emit events to BigQuery
+orchestrator_contract:
+  artifacts_dir: .aip_artifacts/AIP-lorchestra-2025-11-19-001
+  logging: jsonl
+  state_machine:
+    events:
+    - run_step
+    - await_gate
+    - approve
+    - reject
+    - retry
+    - escalate
+    - complete
+    states:
+    - pending
+    - running
+    - awaiting_human
+    - failed
+    - succeeded
+    - rolled_back
+plan:
+- description: Design Job Interface
+  gate_ref: 'G0: Plan Approval'
+  kind: code
+  role: coding_agent
+  step_id: step-001
+- description: Implementation
+  gate_ref: 'G1: Code Readiness'
+  kind: code
+  outputs:
+  - ingestor/jobs.py
+  - pyproject.toml
+  role: coding_agent
+  step_id: step-002
+- description: Testing & Validation
+  gate_ref: 'G2: Pre-Release'
+  kind: code
+  outputs:
+  - tests/test_jobs.py
+  role: coding_agent
+  step_id: step-003
+- description: Documentation
+  gate_ref: 'G3: Documentation'
+  kind: code
+  role: coding_agent
+  step_id: step-004
+project_slug: lorchestra
+repo:
+  default_branch: main
+  url: git@github.com:benthepsychologist/lorch.git
+  working_branch: feat/ingestion-to-bq
+spec_version: 1.0.0
+tier: C
+title: Ingestion job for Meltano → BigQuery pipeline
+updated: '2025-11-19T21:40:35.577860+00:00'
+version: '0.1'
+
