@@ -8,7 +8,6 @@ This module demonstrates the clean three-layer architecture:
 This is the ONLY place event_client is called for Gmail ingestion.
 """
 
-import json
 import logging
 import sys
 from datetime import datetime, timezone
@@ -22,27 +21,21 @@ if ingestor_path.exists() and str(ingestor_path) not in sys.path:
 logger = logging.getLogger(__name__)
 
 
-def job_ingest_gmail_acct1(bq_client):
+def _ingest_gmail(tap_name: str, account_id: str, bq_client):
     """
-    Ingest Gmail messages from acct1-personal.
+    Generic Gmail ingestion function.
 
     Args:
+        tap_name: Meltano tap name (e.g., "tap-gmail--acct1-personal")
+        account_id: Account identifier for run_id (e.g., "acct1")
         bq_client: BigQuery client for event emission
-
-    This job demonstrates the clean three-layer pattern:
-    - Calls ingestor (Meltano wrapper)
-    - Reads JSONL
-    - Emits events via event_client
     """
-    # Import here to avoid circular dependencies
     from ingestor.extractors import extract_to_jsonl, iter_jsonl_records
     from lorchestra.stack_clients.event_client import emit
 
-    # Configuration
-    tap_name = "tap-gmail--acct1-personal"
     source_system = tap_name
     object_type = "email"
-    run_id = f"gmail-acct1-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+    run_id = f"gmail-{account_id}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
 
     logger.info(f"Starting Gmail ingestion: {tap_name}, run_id={run_id}")
 
@@ -54,17 +47,14 @@ def job_ingest_gmail_acct1(bq_client):
         # Step 2: Read records and emit events
         record_count = 0
         for record in iter_jsonl_records(jsonl_path):
-            # Emit event (writes to event_log + raw_objects)
-            # The event_client will compute the idem_key internally
             emit(
-                event_type="gmail.email.received",
+                event_type="email.received",
                 payload=record,
                 source=source_system,
                 object_type=object_type,
                 bq_client=bq_client,
                 correlation_id=run_id
             )
-
             record_count += 1
 
         logger.info(
@@ -74,6 +64,16 @@ def job_ingest_gmail_acct1(bq_client):
     except Exception as e:
         logger.error(f"Gmail ingestion failed: {e}", exc_info=True)
         raise
+
+
+def job_ingest_gmail_acct1(bq_client):
+    """
+    Ingest Gmail messages from acct1-personal.
+
+    Args:
+        bq_client: BigQuery client for event emission
+    """
+    return _ingest_gmail("tap-gmail--acct1-personal", "acct1", bq_client)
 
 
 def job_ingest_gmail_acct2(bq_client):
@@ -83,39 +83,7 @@ def job_ingest_gmail_acct2(bq_client):
     Args:
         bq_client: BigQuery client for event emission
     """
-    from ingestor.extractors import extract_to_jsonl, iter_jsonl_records
-    from lorchestra.stack_clients.event_client import emit
-
-    tap_name = "tap-gmail--acct2-business1"
-    source_system = tap_name
-    object_type = "email"
-    run_id = f"gmail-acct2-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
-
-    logger.info(f"Starting Gmail ingestion: {tap_name}, run_id={run_id}")
-
-    try:
-        jsonl_path = extract_to_jsonl(tap_name, run_id)
-        logger.info(f"JSONL extracted to: {jsonl_path}")
-
-        record_count = 0
-        for record in iter_jsonl_records(jsonl_path):
-            emit(
-                event_type="gmail.email.received",
-                payload=record,
-                source=source_system,
-                object_type=object_type,
-                bq_client=bq_client,
-                correlation_id=run_id
-            )
-            record_count += 1
-
-        logger.info(
-            f"Gmail ingestion complete: {record_count} records, run_id={run_id}"
-        )
-
-    except Exception as e:
-        logger.error(f"Gmail ingestion failed: {e}", exc_info=True)
-        raise
+    return _ingest_gmail("tap-gmail--acct2-business1", "acct2", bq_client)
 
 
 def job_ingest_gmail_acct3(bq_client):
@@ -125,36 +93,4 @@ def job_ingest_gmail_acct3(bq_client):
     Args:
         bq_client: BigQuery client for event emission
     """
-    from ingestor.extractors import extract_to_jsonl, iter_jsonl_records
-    from lorchestra.stack_clients.event_client import emit
-
-    tap_name = "tap-gmail--acct3-bfarmstrong"
-    source_system = tap_name
-    object_type = "email"
-    run_id = f"gmail-acct3-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
-
-    logger.info(f"Starting Gmail ingestion: {tap_name}, run_id={run_id}")
-
-    try:
-        jsonl_path = extract_to_jsonl(tap_name, run_id)
-        logger.info(f"JSONL extracted to: {jsonl_path}")
-
-        record_count = 0
-        for record in iter_jsonl_records(jsonl_path):
-            emit(
-                event_type="gmail.email.received",
-                payload=record,
-                source=source_system,
-                object_type=object_type,
-                bq_client=bq_client,
-                correlation_id=run_id
-            )
-            record_count += 1
-
-        logger.info(
-            f"Gmail ingestion complete: {record_count} records, run_id={run_id}"
-        )
-
-    except Exception as e:
-        logger.error(f"Gmail ingestion failed: {e}", exc_info=True)
-        raise
+    return _ingest_gmail("tap-gmail--acct3-bfarmstrong", "acct3", bq_client)

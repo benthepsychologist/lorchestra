@@ -136,7 +136,7 @@ GCP_PROJECT=lorchestra
 EVENTS_BQ_DATASET=events_dev
 EVENT_LOG_TABLE=event_log
 RAW_OBJECTS_TABLE=raw_objects
-GOOGLE_APPLICATION_CREDENTIALS=/home/user/lorchestra-events-key.json
+GOOGLE_APPLICATION_CREDENTIALS=/workspace/lorchestra/lorchestra-events-key.json
 ```
 
 ### 2. Test Connection
