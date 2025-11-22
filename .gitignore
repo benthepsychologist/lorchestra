@@ -60,3 +60,4 @@ config/*.local.yaml
 .env.local
 *-key.json
 *-credentials.json
+credentials/
