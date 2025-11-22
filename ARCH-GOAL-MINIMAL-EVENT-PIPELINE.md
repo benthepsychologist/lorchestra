@@ -95,35 +95,48 @@ These remain out of scope until the three target lanes are operational.
 
 ### 3.2 event_client
 
-**Role:** Unified event writing interface
+**Role:** Unified event writing interface (BigQuery gateway)
 
 **Location:** Inside lorc repo at `lorc/stack_clients/event_client.py`
 
 **Responsibilities:**
-- Write events to BigQuery (primary)
-- Write events to JSONL backup files (secondary)
-- Enforce event schema validation
-- Handle partitioning and clustering hints
-- Provide simple query helpers for reading events from BQ
+- Write events to BigQuery using two-table pattern:
+  - `event_log`: Audit trail (event envelopes, no payload)
+  - `raw_objects`: Deduped object store (payloads with idem_key)
+- Generate deterministic idem_key for idempotency
+- Provide MERGE-based deduplication for raw_objects
+- Handle partitioning (event_log by date) and clustering
 
 **Design:**
-- Simple, focused API: `write_event(event_type, payload, metadata)`
-- No complex batching or streaming logic initially
-- May be extracted to a separate system-clients repo in the future
+- Simple, focused API: `emit(event_type, payload, source, object_type, bq_client)`
+- Two-table pattern ensures:
+  - Event audit trail preserved (every emit() creates event_log row)
+  - Object deduplication (same idem_key updates last_seen only)
+  - Clean separation: metadata vs. payload
+- No JSONL backup in initial implementation (BQ is primary WAL)
 
-### 3.3 ingester
+### 3.3 ingestor
 
-**Role:** Domain package for raw event extraction from external systems
+**Role:** Thin Meltano wrapper for raw data extraction
+
+**Location:** Separate package at `/workspace/ingestor`
 
 **Responsibilities:**
-- Extract raw data from Gmail, Exchange, Google Sheets, QuickBooks, etc.
-- Emit raw events via event_client (e.g., `email.received`, `form.submitted`)
-- Provide job entrypoints callable by lorc
-- Handle API authentication and rate limiting
+- Wrap Meltano taps via `extract_to_jsonl(tap_name, run_id)`
+- Run `meltano run tap-x target-jsonl` and return JSONL file path
+- Provide iterator for JSONL records: `iter_jsonl_records(path)`
+- Handle Meltano configuration and environment setup
 
-**Does NOT:**
-- Normalize or canonicalize data (that's canonizer's job)
-- Write directly to BQ (delegates to event_client)
+**Critical Boundary Contract:**
+- **Does NOT** import event_client or know about events
+- **Does NOT** import BigQuery or write to BQ
+- **Does NOT** emit events (that's lorc jobs' responsibility)
+- Pure function: Meltano tap → JSONL file path
+
+**Design:**
+- Domain-agnostic (works for any Meltano tap)
+- Uses standard Singer target-jsonl (no custom targets)
+- Event boundary is in lorc, not ingestor
 
 ### 3.4 canonizer
 
@@ -163,17 +176,26 @@ These remain out of scope until the three target lanes are operational.
 
 ## 4. Event Flow (Raw → Canonical → Projection)
 
-### 4.1 Raw Event Emission
+### 4.1 Raw Event Emission (Three-Layer Pattern)
 
-1. lorc invokes an ingester job (e.g., `extract_gmail_messages`)
-2. Ingester connects to external API (Gmail)
-3. For each message retrieved, ingester calls `event_client.write_event()`:
+**Layer 1: ingestor** (Meltano wrapper)
+1. lorc job calls `ingestor.extract_to_jsonl("tap-gmail--acct1", run_id)`
+2. ingestor runs `meltano run tap-gmail--acct1 target-jsonl`
+3. Returns JSONL file path (e.g., `/tmp/phi-vault/jsonl-tmp/{run_id}.jsonl`)
+
+**Layer 2: lorc job** (Event boundary)
+4. lorc job reads JSONL using `iter_jsonl_records(jsonl_path)`
+5. For each record, lorc job calls `event_client.emit()`:
    - Event type: `email.received`
-   - Payload: Raw message data (headers, body, metadata)
-   - Metadata: Timestamp, source account, extraction run ID
-4. event_client writes to:
-   - BigQuery table: `raw_events` (or `events` with `event_type` field)
-   - JSONL backup: `backup/raw/YYYY-MM-DD/run_{run_id}.jsonl`
+   - Payload: Raw message data from JSONL
+   - Source: `tap-gmail--acct1-personal`
+   - Object type: `email`
+
+**Layer 3: event_client** (BigQuery gateway)
+6. event_client generates `idem_key` from payload (content-based)
+7. event_client writes to BigQuery:
+   - `event_log`: INSERT event envelope (event_id, event_type, idem_key, timestamp)
+   - `raw_objects`: MERGE payload (dedup by idem_key, update last_seen if exists)
 
 ### 4.2 Canonical Event Production
 
@@ -214,18 +236,55 @@ These remain out of scope until the three target lanes are operational.
 
 ## 5. Storage Strategy
 
-### 5.1 BigQuery as Primary WAL
+### 5.1 BigQuery as Primary WAL (Two-Table Pattern)
 
 All events are written to BigQuery as the primary, authoritative storage.
 
-**Table Design:**
-- Option A: Unified `events` table with `event_type` field
-- Option B: Separate `raw_events` and `canonical_events` tables
-- Partitioning: By `event_timestamp` (daily or hourly)
-- Clustering: By `event_type`, `source_account`, or domain-specific fields
+**Implemented Design:** Two-table pattern separating audit trail from object storage
+
+**Table 1: `event_log`** (Audit trail - no payload)
+```sql
+CREATE TABLE event_log (
+  event_id STRING,          -- UUID per emit() call
+  event_type STRING,        -- "email.received", etc.
+  source_system STRING,     -- "tap-gmail--acct1-personal"
+  object_type STRING,       -- "email", "contact", etc.
+  idem_key STRING,          -- References raw_objects
+  correlation_id STRING,    -- run_id for tracing
+  created_at TIMESTAMP,
+  status STRING             -- "ok" | "error"
+)
+PARTITION BY DATE(created_at)
+CLUSTER BY source_system, object_type, event_type;
+```
+- One row per `emit()` call (immutable audit trail)
+- Partitioned by date for performance
+- Clustered for query optimization
+
+**Table 2: `raw_objects`** (Deduped object store with payload)
+```sql
+CREATE TABLE raw_objects (
+  idem_key STRING PRIMARY KEY,  -- Deterministic content hash
+  source_system STRING,
+  object_type STRING,
+  external_id STRING,           -- Gmail message_id, etc.
+  payload JSON,                 -- Full raw data
+  first_seen TIMESTAMP,
+  last_seen TIMESTAMP
+)
+CLUSTER BY source_system, object_type;
+```
+- One row per unique object (MERGE provides idempotency)
+- Same object re-ingested → only `last_seen` updated
+- Payload stored as native BigQuery JSON type
+
+**Benefits:**
+- Idempotency: Re-running same extraction is safe (no duplicates)
+- Audit trail: Every ingestion event logged in event_log
+- Clean separation: Metadata (event_log) vs. Data (raw_objects)
 
 **Retention:**
-- All events are retained indefinitely (immutable log)
+- All events retained indefinitely (immutable log)
 - No automatic deletion or archival
 
 ### 5.2 JSONL as Backup and Replay
@@ -267,13 +326,14 @@ Projections are derived from canonical events and can be rebuilt at any time.
 | Component | Description |
 |-----------|-------------|
 | lorc orchestrator | Job execution, client hosting, pipeline coordination |
-| event_client | Write events to BQ and JSONL, simple query helpers |
-| ingester jobs | Extract email (Gmail, Exchange), forms (Google Sheets), QuickBooks |
+| event_client | Two-table pattern: event_log (audit) + raw_objects (deduped) |
+| ingestor package | Thin Meltano wrapper (returns JSONL paths, NO event knowledge) |
+| lorc jobs | Event boundary - reads JSONL, emits via event_client |
 | canonizer jobs | Canonicalize email, questionnaire responses |
 | final-form jobs | Score PHQ-9, GAD-7 measurements |
 | reporter jobs | Generate and send weekly client reports |
-| BQ event tables | raw_events, canonical_events (or unified events table) |
-| JSONL backups | Simple one-file-per-run backup mechanism |
+| BQ event tables | **event_log** (partitioned audit trail), **raw_objects** (deduped payloads) |
+| JSONL intermediate | Temporary files from Meltano (not a primary storage layer) |
 | Minimal projections | inbox_view, measurement_timeseries, reporting_snapshots |
 
 ### 6.2 Explicitly Out-of-Scope (Frozen)
@@ -388,7 +448,7 @@ To achieve the three "feels real" milestones:
    - Add simple query helpers for reading from BQ
 
 3. **Set up BQ tables**
-   - Create `raw_events` and `canonical_events` tables (or unified `events`)
+   - Create `event_log` and `raw_objects` tables (two-table pattern)
    - Configure partitioning and clustering
    - Set up JSONL backup directories
 
