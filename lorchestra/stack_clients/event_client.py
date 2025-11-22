@@ -283,7 +283,7 @@ def _write_to_raw_objects(
                 @source_system AS source_system,
                 @object_type AS object_type,
                 @external_id AS external_id,
-                JSON @payload AS payload,
+                PARSE_JSON(@payload) AS payload,
                 TIMESTAMP(@now) AS first_seen,
                 TIMESTAMP(@now) AS last_seen
         ) AS source
@@ -301,7 +301,7 @@ def _write_to_raw_objects(
             bigquery.ScalarQueryParameter("source_system", "STRING", source),
             bigquery.ScalarQueryParameter("object_type", "STRING", object_type),
             bigquery.ScalarQueryParameter("external_id", "STRING", str(external_id) if external_id else None),
-            bigquery.ScalarQueryParameter("payload", "JSON", json.dumps(payload)),
+            bigquery.ScalarQueryParameter("payload", "STRING", json.dumps(payload)),
             bigquery.ScalarQueryParameter("now", "STRING", now),
         ]
     )
