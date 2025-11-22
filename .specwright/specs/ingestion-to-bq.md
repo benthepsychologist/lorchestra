@@ -474,11 +474,147 @@ ls -la /tmp/test.jsonl
 
 ---
 
-### Step 4: Testing & Validation [G3: Pre-Release]
+### Step 4: BigQuery Setup (Tables and Credentials) [G3: Pre-Release]
+
+**Objective:** Create BigQuery tables and configure credentials for event storage
+
+**Task 4.1: Create BigQuery Dataset**
+
+```bash
+# Create dataset for events
+bq mk --dataset --location=US ${GCP_PROJECT}:events_dev
+
+# Or for production
+bq mk --dataset --location=US ${GCP_PROJECT}:events_prod
+```
+
+**Task 4.2: Create event_log table**
+
+Create the event_log table (audit trail - no payload):
+
+```sql
+CREATE TABLE `events_dev.event_log` (
+  event_id STRING NOT NULL,
+  event_type STRING NOT NULL,
+  source_system STRING NOT NULL,
+  object_type STRING NOT NULL,
+  idem_key STRING NOT NULL,
+  correlation_id STRING,
+  subject_id STRING,
+  created_at TIMESTAMP NOT NULL,
+  status STRING NOT NULL,
+  error_message STRING
+)
+PARTITION BY DATE(created_at)
+CLUSTER BY source_system, object_type, event_type
+OPTIONS(
+  description="Event audit trail - one row per emit() call, no payload"
+);
+```
+
+**Task 4.3: Create raw_objects table**
+
+Create the raw_objects table (deduped object store):
+
+```sql
+CREATE TABLE `events_dev.raw_objects` (
+  idem_key STRING NOT NULL,
+  source_system STRING NOT NULL,
+  object_type STRING NOT NULL,
+  external_id STRING,
+  payload JSON NOT NULL,
+  first_seen TIMESTAMP NOT NULL,
+  last_seen TIMESTAMP NOT NULL
+)
+CLUSTER BY source_system, object_type
+OPTIONS(
+  description="Deduped object store - one row per idem_key, with payload"
+);
+
+-- Add primary key constraint (enforced at query time, not insert time)
+ALTER TABLE `events_dev.raw_objects`
+ADD PRIMARY KEY (idem_key) NOT ENFORCED;
+```
+
+**Task 4.4: Configure Service Account Credentials**
+
+1. Create service account (if not exists):
+```bash
+gcloud iam service-accounts create lorchestra-events \
+  --display-name="lorchestra Event Emitter" \
+  --project=${GCP_PROJECT}
+```
+
+2. Grant BigQuery permissions:
+```bash
+# Grant BigQuery Data Editor role
+gcloud projects add-iam-policy-binding ${GCP_PROJECT} \
+  --member="serviceAccount:lorchestra-events@${GCP_PROJECT}.iam.gserviceaccount.com" \
+  --role="roles/bigquery.dataEditor"
+
+# Grant BigQuery Job User role
+gcloud projects add-iam-policy-binding ${GCP_PROJECT} \
+  --member="serviceAccount:lorchestra-events@${GCP_PROJECT}.iam.gserviceaccount.com" \
+  --role="roles/bigquery.jobUser"
+```
+
+3. Create and download key:
+```bash
+gcloud iam service-accounts keys create ~/lorchestra-events-key.json \
+  --iam-account=lorchestra-events@${GCP_PROJECT}.iam.gserviceaccount.com
+```
+
+4. Set environment variable:
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS=~/lorchestra-events-key.json
+export EVENTS_BQ_DATASET=events_dev
+export EVENT_LOG_TABLE=event_log
+export RAW_OBJECTS_TABLE=raw_objects
+```
+
+**Task 4.5: Add to .env file**
+
+Create or update `/workspace/lorchestra/.env`:
+
+```bash
+# BigQuery Configuration
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/lorchestra-events-key.json
+EVENTS_BQ_DATASET=events_dev
+EVENT_LOG_TABLE=event_log
+RAW_OBJECTS_TABLE=raw_objects
+
+# GCP Project
+GCP_PROJECT=your-project-id
+```
+
+**Commands:**
+
+```bash
+# Verify tables exist
+bq ls events_dev
+
+# Verify schema
+bq show --schema events_dev.event_log
+bq show --schema events_dev.raw_objects
+
+# Test credentials
+python3 -c "from google.cloud import bigquery; client = bigquery.Client(); print('✓ BigQuery client initialized')"
+```
+
+**Outputs:**
+- ✓ event_log table created in BigQuery
+- ✓ raw_objects table created in BigQuery
+- ✓ Service account created with proper permissions
+- ✓ Credentials configured in environment
+- ✓ .env file created with BigQuery settings
+
+---
+
+### Step 5: Testing & Validation [G4: Pre-Release]
 
 **Objective:** Test end-to-end ingestion flow
 
-**Task 4.1: Unit tests for ingestor**
+**Task 5.1: Unit tests for ingestor**
 
 Create `/workspace/ingestor/tests/test_extractors.py`:
 
@@ -503,7 +639,7 @@ def test_extract_to_jsonl():
             assert "target-jsonl" in cmd
 ```
 
-**Task 4.2: Integration test**
+**Task 5.2: Integration test**
 
 ```bash
 # Set up environment
@@ -534,7 +670,7 @@ bq query "SELECT COUNT(*) FROM events_test.raw_objects WHERE object_type='email'
 # Should be same count as before
 ```
 
-**Task 4.3: Verify clean boundaries**
+**Task 5.3: Verify clean boundaries**
 
 ```bash
 # Verify ingestor has NO event imports
@@ -556,9 +692,9 @@ grep -r "event_client.emit" lorchestra/
 
 ---
 
-### Step 5: Documentation & Finalization [G4: Final Approval]
+### Step 6: Documentation & Finalization [G5: Final Approval]
 
-**Task 5.1: Update architecture docs**
+**Task 6.1: Update architecture docs**
 
 Update `/workspace/lorchestra/ARCH-GOAL-MINIMAL-EVENT-PIPELINE.md`:
 
@@ -567,7 +703,7 @@ Update `/workspace/lorchestra/ARCH-GOAL-MINIMAL-EVENT-PIPELINE.md`:
 - Update Section 4.1 (Raw Event Emission) to show ingestor → lorc → event_client flow
 - Update Section 5.1 (Storage Strategy) with event_log + raw_objects tables
 
-**Task 5.2: Update ingestor README**
+**Task 6.2: Update ingestor README**
 
 Update `/workspace/ingestor/README.md`:
 
@@ -606,7 +742,7 @@ ingestor does NOT:
 Those concerns belong in the orchestrator layer (lorc).
 ```
 
-**Task 5.3: Commit changes**
+**Task 6.3: Commit changes**
 
 ```bash
 cd /workspace/lorchestra

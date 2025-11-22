@@ -79,16 +79,25 @@ plan:
   kind: code
   role: coding_agent
   step_id: step-003
-- description: Testing & Validation
+- description: BigQuery Setup (Tables and Credentials)
   gate_ref: 'G3: Pre-Release'
-  kind: code
-  role: coding_agent
+  kind: manual
+  outputs:
+  - event_log table created
+  - raw_objects table created
+  - service account credentials configured
+  role: human
   step_id: step-004
-- description: Documentation & Finalization
-  gate_ref: 'G4: Final Approval'
+- description: Testing & Validation
+  gate_ref: 'G4: Pre-Release'
   kind: code
   role: coding_agent
   step_id: step-005
+- description: Documentation & Finalization
+  gate_ref: 'G5: Final Approval'
+  kind: code
+  role: coding_agent
+  step_id: step-006
 project_slug: lorchestra
 repo:
   default_branch: main
