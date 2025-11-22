@@ -9,4 +9,4 @@ user:
   default_tier: C
 current:
   spec: .specwright/specs/ingestion-to-bq.md
-  aip: /home/user/lorchestra/.specwright/aips/ingestion-to-bq.yaml
+  aip: /workspace/lorchestra/.specwright/aips/ingestion-to-bq.yaml

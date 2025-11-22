@@ -211,7 +211,7 @@ This document tracks TODOs, roadmap, and implementation priorities for the lorch
    - `get_object(obj_id)`
 
 4. **Update index stage to use SQLite:**
-   - Modify `/home/user/lorchestra/lorchestra/stages/index.py`
+   - Modify `/workspace/lorchestra/lorchestra/stages/index.py`
    - Replace file copy with SQLite insert
    - Store files in inode-style directory structure
 
@@ -473,7 +473,7 @@ with ThreadPoolExecutor(max_workers=4) as executor:
 **Create Dockerfiles:**
 
 ```bash
-# /home/user/lorchestra/Dockerfile
+# /workspace/lorchestra/Dockerfile
 FROM python:3.12-slim
 COPY . /app
 WORKDIR /app

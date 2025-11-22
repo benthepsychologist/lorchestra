@@ -287,13 +287,13 @@ Update `README.md` with 186 references to replace:
 - Title: `# lorch - Local Orchestrator` → `# lorchestra - Local Orchestrator`
 - All command examples: `lorch` → `lorchestra`
 - All descriptions: "lorch orchestrates" → "lorchestra orchestrates"
-- Path references: `cd /home/user/lorch` → `cd /home/user/lorchestra` (optional - can keep old path)
+- Path references: `cd /home/user/lorch` → `cd /workspace/lorchestra` (optional - can keep old path)
 - Directory structure: `lorch/` → `lorchestra/`
 - Test commands: `pytest --cov=lorch` → `pytest --cov=lorchestra`
 - Code formatting: `black lorch/` → `black lorchestra/`
 - Linting: `ruff check lorch/` → `ruff check lorchestra/`
 
-**Note:** Keep installation path flexible - can be either `/home/user/lorch` or `/home/user/lorchestra`
+**Note:** Keep installation path flexible - can be either `/home/user/lorch` or `/workspace/lorchestra`
 
 **Outputs:**
 
@@ -681,7 +681,7 @@ Update in `lorchestra/__init__.py` after rename is complete.
 
 ### Root Directory
 
-The root directory can optionally be renamed from `/home/user/lorch` to `/home/user/lorchestra`. This is not required for the package to work but may be cleaner. If renamed, update:
+The root directory can optionally be renamed from `/home/user/lorch` to `/workspace/lorchestra`. This is not required for the package to work but may be cleaner. If renamed, update:
 - IDE workspace settings
 - Terminal bookmarks
 - Any scripts referencing the path

@@ -40,7 +40,7 @@ This establishes the foundational pattern for all 15+ API ingestions in LifeOS.
 
 ### Background
 
-We have a Meltano project at `/home/user/ingestor` with 11+ taps (Gmail, Exchange, Dataverse, Stripe, etc.) and custom Singer targets (target-event-emitter, target-jsonl-chunked) that directly emit to BigQuery.
+We have a Meltano project at `/workspace/ingestor` with 11+ taps (Gmail, Exchange, Dataverse, Stripe, etc.) and custom Singer targets (target-event-emitter, target-jsonl-chunked) that directly emit to BigQuery.
 
 **Problem:** This violates separation of concerns:
 - Meltano/Singer shouldn't know about events or BigQuery
@@ -150,9 +150,9 @@ CREATE TABLE raw_objects (
 **Task 1.1: Create package structure**
 
 Files to create:
-- `/home/user/ingestor/ingestor/__init__.py`
-- `/home/user/ingestor/ingestor/extractors.py`
-- `/home/user/ingestor/pyproject.toml`
+- `/workspace/ingestor/ingestor/__init__.py`
+- `/workspace/ingestor/ingestor/extractors.py`
+- `/workspace/ingestor/pyproject.toml`
 
 **Task 1.2: Implement extractors.py**
 
@@ -272,7 +272,7 @@ dependencies = []
 **Commands:**
 
 ```bash
-cd /home/user/ingestor
+cd /workspace/ingestor
 
 # Test imports
 python -c "from ingestor.extractors import extract_to_jsonl; print('✓ ingestor imports')"
@@ -293,8 +293,8 @@ python -c "from ingestor.extractors import extract_to_jsonl; print('✓ ingestor
 **Task 2.1: Create jobs module structure**
 
 Files to create:
-- `/home/user/lorchestra/lorchestra/jobs/__init__.py`
-- `/home/user/lorchestra/lorchestra/jobs/ingest_gmail.py`
+- `/workspace/lorchestra/lorchestra/jobs/__init__.py`
+- `/workspace/lorchestra/lorchestra/jobs/ingest_gmail.py`
 
 **Task 2.2: Implement ingest_gmail.py**
 
@@ -392,7 +392,7 @@ def job_ingest_gmail_acct3(bq_client):
 
 **Task 2.3: Register jobs in lorchestra**
 
-Update `/home/user/lorchestra/pyproject.toml`:
+Update `/workspace/lorchestra/pyproject.toml`:
 
 ```toml
 [project.entry-points."lorchestra.jobs.gmail"]
@@ -404,7 +404,7 @@ ingest_acct3 = "lorchestra.jobs.ingest_gmail:job_ingest_gmail_acct3"
 **Commands:**
 
 ```bash
-cd /home/user/lorchestra
+cd /workspace/lorchestra
 
 # Verify job discovery
 lorchestra jobs list gmail
@@ -445,7 +445,7 @@ loaders:
 **Task 3.2: Delete custom targets**
 
 ```bash
-cd /home/user/ingestor
+cd /workspace/ingestor
 
 # Delete target-event-emitter (ENTIRE directory)
 rm -rf targets/target-event-emitter
@@ -457,7 +457,7 @@ rm -rf targets/target-jsonl-chunked  # If exists
 **Commands:**
 
 ```bash
-cd /home/user/ingestor
+cd /workspace/ingestor
 
 # Test Meltano with standard target
 export JSONL_DESTINATION_PATH=/tmp/test.jsonl
@@ -480,7 +480,7 @@ ls -la /tmp/test.jsonl
 
 **Task 4.1: Unit tests for ingestor**
 
-Create `/home/user/ingestor/tests/test_extractors.py`:
+Create `/workspace/ingestor/tests/test_extractors.py`:
 
 ```python
 import pytest
@@ -513,7 +513,7 @@ export EVENT_LOG_TABLE=event_log
 export RAW_OBJECTS_TABLE=raw_objects
 
 # Run full ingestion
-cd /home/user/lorchestra
+cd /workspace/lorchestra
 lorchestra run-job gmail ingest_acct1
 
 # Verify results
@@ -538,12 +538,12 @@ bq query "SELECT COUNT(*) FROM events_test.raw_objects WHERE object_type='email'
 
 ```bash
 # Verify ingestor has NO event imports
-cd /home/user/ingestor
+cd /workspace/ingestor
 grep -r "event_client" ingestor/
 # Should return nothing
 
 # Verify event_client only called from lorc
-cd /home/user/lorchestra
+cd /workspace/lorchestra
 grep -r "event_client.emit" lorchestra/
 # Should only show calls in lorchestra/jobs/
 ```
@@ -560,7 +560,7 @@ grep -r "event_client.emit" lorchestra/
 
 **Task 5.1: Update architecture docs**
 
-Update `/home/user/lorchestra/ARCH-GOAL-MINIMAL-EVENT-PIPELINE.md`:
+Update `/workspace/lorchestra/ARCH-GOAL-MINIMAL-EVENT-PIPELINE.md`:
 
 - Replace references to "raw_events table" with "event_log + raw_objects"
 - Update Section 3.2 (event_client) to describe two-table pattern
@@ -569,7 +569,7 @@ Update `/home/user/lorchestra/ARCH-GOAL-MINIMAL-EVENT-PIPELINE.md`:
 
 **Task 5.2: Update ingestor README**
 
-Update `/home/user/ingestor/README.md`:
+Update `/workspace/ingestor/README.md`:
 
 ```markdown
 ## Architecture
@@ -609,7 +609,7 @@ Those concerns belong in the orchestrator layer (lorc).
 **Task 5.3: Commit changes**
 
 ```bash
-cd /home/user/lorchestra
+cd /workspace/lorchestra
 git add -A
 git commit -m "feat: implement clean ingestor → lorc → event_client pipeline
 

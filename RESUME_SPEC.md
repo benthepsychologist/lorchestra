@@ -6,12 +6,12 @@
 
 ✅ **Step 1/16: Rename Package Directory - COMPLETE**
 - Renamed Python package: `lorch/` → `lorchestra/`
-- Renamed root directory: `/home/user/lorch/` → `/home/user/lorchestra/`
+- Renamed root directory: `/home/user/lorch/` → `/workspace/lorchestra/`
 - Gate G0 approved
 
 ### What Happened
 
-The root directory was successfully renamed from `/home/user/lorch` to `/home/user/lorchestra`. However, this broke the current shell session context since we were inside the directory that was renamed.
+The root directory was successfully renamed from `/home/user/lorch` to `/workspace/lorchestra`. However, this broke the current shell session context since we were inside the directory that was renamed.
 
 ### How to Resume
 
@@ -19,7 +19,7 @@ The root directory was successfully renamed from `/home/user/lorch` to `/home/us
 
 2. **Open a new instance in the new directory:**
    ```bash
-   cd /home/user/lorchestra
+   cd /workspace/lorchestra
    ```
 
 3. **Resume spec execution:**
@@ -44,17 +44,17 @@ The root directory was successfully renamed from `/home/user/lorch` to `/home/us
 
 To verify Step 1 completed successfully:
 ```bash
-cd /home/user/lorchestra
+cd /workspace/lorchestra
 ls -la lorchestra/          # Should see Python package
 cat pyproject.toml          # Still shows old "lorch" name (Step 2 will fix)
 ```
 
 ### Audit Trail
 
-Execution log: `/home/user/lorchestra/.aip_artifacts/claude-execution.log`
+Execution log: `/workspace/lorchestra/.aip_artifacts/claude-execution.log`
 
 ---
 
 **Generated:** 2025-11-14T12:41:30+00:00
-**Resume from:** `/home/user/lorchestra`
+**Resume from:** `/workspace/lorchestra`
 **Next:** Step 2 of 16

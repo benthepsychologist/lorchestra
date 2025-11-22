@@ -40,7 +40,7 @@ lorchestra is a minimalist orchestrator that:
 ### Installation
 
 ```bash
-cd /home/user/lorchestra
+cd /workspace/lorchestra
 
 # Create virtual environment
 uv venv

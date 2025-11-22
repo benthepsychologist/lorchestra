@@ -72,7 +72,7 @@
 1. **Safety tag created**: `pre-slim-lorchestra` allows recovery of old code if needed
 2. **Old commands still present**: The CLI has BOTH old and new commands right now
 3. **Next major task**: Delete the old code (stages/, tools/, old CLI commands)
-4. **Current working directory**: `/home/user/lorchestra`
+4. **Current working directory**: `/workspace/lorchestra`
 5. **Branch**: `main` (1 commit ahead of origin after event_client commit)
 
 ### Continue Instructions

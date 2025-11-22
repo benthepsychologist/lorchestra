@@ -24,6 +24,11 @@ dev = [
 [project.scripts]
 lorchestra = "lorchestra.cli:main"
 
+[project.entry-points."lorchestra.jobs"]
+gmail_ingest_acct1 = "lorchestra.jobs.ingest_gmail:job_ingest_gmail_acct1"
+gmail_ingest_acct2 = "lorchestra.jobs.ingest_gmail:job_ingest_gmail_acct2"
+gmail_ingest_acct3 = "lorchestra.jobs.ingest_gmail:job_ingest_gmail_acct3"
+
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"

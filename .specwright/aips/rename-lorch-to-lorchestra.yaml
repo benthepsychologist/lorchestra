@@ -161,7 +161,7 @@ plan:
 
     - All descriptions: "lorch orchestrates" → "lorchestra orchestrates"
 
-    - Path references: `cd /home/user/lorch` → `cd /home/user/lorchestra` (optional - can keep old path)
+    - Path references: `cd /home/user/lorch` → `cd /workspace/lorchestra` (optional - can keep old path)
 
     - Directory structure: `lorch/` → `lorchestra/`
 
@@ -171,7 +171,7 @@ plan:
 
     - Linting: `ruff check lorch/` → `ruff check lorchestra/`
 
-    **Note:** Keep installation path flexible - can be either `/home/user/lorch` or `/home/user/lorchestra`'
+    **Note:** Keep installation path flexible - can be either `/home/user/lorch` or `/workspace/lorchestra`'
   role: coding_agent
   step_id: step-006
 - description: Update CONTRIBUTING.md

@@ -1,53 +1,44 @@
-aip_id: AIP-lorchestra-2025-11-19-001
+aip_id: AIP-lorchestra-2025-11-21-001
 context:
-  background: 'The `/home/user/ingestor` package contains a Meltano project with 11+ Singer taps (Gmail,
-    Exchange, Dataverse, Stripe, etc.) and a custom `target-event-emitter` that writes raw events to BigQuery.
-    Currently, these taps are run manually via `meltano run` commands.
-
-
-    We need to create lorchestra jobs that wrap these Meltano commands so they can be:
-
-    - Run on-demand via `lorchestra run-job`
-
-    - Scheduled via cron or cloud scheduler
-
-    - Monitored via BigQuery event tracking
-
-    - Orchestrated as part of larger pipelines
-
-
-    **Existing components:**
-
-    - `/home/user/ingestor/meltano.yml` - Tap configurations (Gmail, Exchange, Dataverse, Stripe)
-
-    - `/home/user/ingestor/targets/target-event-emitter` - Custom Singer target for BQ event emission
-
-    - `/home/user/lorchestra/lorchestra/stack_clients/event_client` - Event emission client
-
-    - BigQuery table: `raw_events.events` - Destination for raw events'
+  background: "We have a Meltano project at `/workspace/ingestor` with 11+ taps (Gmail, Exchange, Dataverse,\
+    \ Stripe, etc.) and custom Singer targets (target-event-emitter, target-jsonl-chunked) that directly\
+    \ emit to BigQuery.\n\n**Problem:** This violates separation of concerns:\n- Meltano/Singer shouldn't\
+    \ know about events or BigQuery\n- Event emission should happen at the orchestrator layer (lorc)\n\
+    - We need clean boundaries for 15+ API sources\n\n**Solution:** Three-layer architecture with clear\
+    \ contracts:\n\n```\n┌─────────────────────────────────────────────────┐\n│  lorc (orchestrator +\
+    \ event boundary)          │\n│  - Defines jobs (job_ingest_gmail, etc.)        │\n│  - Calls ingestor\
+    \ to get JSONL                  │\n│  - Reads JSONL, computes idem_key               │\n│  - Calls\
+    \ event_client.emit()                    │\n└──────────────────┬──────────────────────────────┘\n\
+    \                   │ (calls)\n┌──────────────────▼──────────────────────────────┐\n│  ingestor (thin\
+    \ Meltano wrapper)                │\n│  - Runs: meltano run tap-x target-jsonl         │\n│  - Returns:\
+    \ Path to JSONL file                  │\n│  - NO event knowledge, NO BigQuery              │\n└──────────────────┬──────────────────────────────┘\n\
+    \                   │ (raw JSONL)\n                   ▼\n          /tmp/phi-vault/jsonl-tmp/{run_id}.jsonl\n\
+    \                   │\n                   │ (read by lorc)\n                   ▼\n┌─────────────────────────────────────────────────┐\n\
+    │  event_client (event spine gateway)             │\n│  - INSERT into event_log (audit trail)    \
+    \      │\n│  - MERGE into raw_objects (dedup by idem_key)   │\n│  - Lives in lorc/stack_clients/ \
+    \                │\n└─────────────────────────────────────────────────┘\n```"
   constraints:
-  - No modifications to existing Meltano tap configurations
-  - Job must use existing `target-event-emitter` (no direct BQ writes)
-  - Must work with Meltano state management (incremental extractions)
-  - Environment variables for credentials (no hardcoded secrets)
-  - Job must emit structured events for observability
+  - No custom Meltano targets (use standard target-jsonl only)
+  - All event emission must happen in lorc, never in ingestor
+  - ingestor must be domain-agnostic (just Meltano → JSONL)
+  - event_client is the single gateway to BigQuery
 created: '2025-11-19T21:40:35.577860+00:00'
 meta:
   created_at: '2025-11-19T21:40:35.577860+00:00'
   created_by: benthepsychologist
 objective:
   acceptance_criteria:
-  - Lorchestra slim-down complete (job orchestrator ready)
-  - Ingestion job created in `/home/user/ingestor/ingestor/jobs.py`
-  - Job registered in `/home/user/ingestor/pyproject.toml` entrypoints
-  - Job emits events to BigQuery (start, success, failure)
-  - Job supports tap selection and time-range parameters
-  - Integration test passes (run actual tap with test data)
-  - Documentation updated with usage examples
-  - CI green (lint + unit tests)
-  goal: Create lorchestra job to run Meltano taps and emit events to BigQuery
+  - event_client implements two-table pattern (event_log + raw_objects) ✓
+  - ingestor package wraps Meltano with clean API (returns JSONL paths)
+  - lorc jobs call ingestor and emit events via event_client
+  - Custom targets deleted (target-event-emitter, target-jsonl-chunked)
+  - Standard target-jsonl used for all Meltano runs
+  - End-to-end test passes (Meltano → JSONL → events → BQ)
+  - Idempotency verified (re-run produces no duplicate objects)
+  - All tests passing
+  goal: Implement clean three-layer ingestion architecture with event_log + raw_objects
 orchestrator_contract:
-  artifacts_dir: .aip_artifacts/AIP-lorchestra-2025-11-19-001
+  artifacts_dir: .aip_artifacts/AIP-lorchestra-2025-11-21-001
   logging: jsonl
   state_machine:
     events:
@@ -66,39 +57,46 @@ orchestrator_contract:
     - succeeded
     - rolled_back
 plan:
-- description: Design Job Interface
+- description: Create ingestor Package (Meltano Wrapper)
   gate_ref: 'G0: Plan Approval'
   kind: code
+  outputs:
+  - ingestor/__init__.py
+  - ingestor/extractors.py
+  - pyproject.toml
   role: coding_agent
   step_id: step-001
-- description: Implementation
+- description: Create lorc Ingestion Jobs
   gate_ref: 'G1: Code Readiness'
   kind: code
   outputs:
-  - ingestor/jobs.py
-  - pyproject.toml
+  - lorchestra/jobs/__init__.py
+  - lorchestra/jobs/ingest_gmail.py
   role: coding_agent
   step_id: step-002
-- description: Testing & Validation
+- description: Configure Meltano for Standard target-jsonl
   gate_ref: 'G2: Pre-Release'
   kind: code
-  outputs:
-  - tests/test_jobs.py
   role: coding_agent
   step_id: step-003
-- description: Documentation
-  gate_ref: 'G3: Documentation'
+- description: Testing & Validation
+  gate_ref: 'G3: Pre-Release'
   kind: code
   role: coding_agent
   step_id: step-004
+- description: Documentation & Finalization
+  gate_ref: 'G4: Final Approval'
+  kind: code
+  role: coding_agent
+  step_id: step-005
 project_slug: lorchestra
 repo:
   default_branch: main
-  url: git@github.com:benthepsychologist/lorch.git
+  url: git@github.com:benthepsychologist/lorchestra.git
   working_branch: feat/ingestion-to-bq
 spec_version: 1.0.0
 tier: C
-title: Ingestion job for Meltano → BigQuery pipeline
-updated: '2025-11-19T21:40:35.577860+00:00'
+title: Clean ingestor → lorc → event_client pipeline
+updated: '2025-11-19T22:30:00+00:00'
 version: '0.1'
 
