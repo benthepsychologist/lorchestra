@@ -172,12 +172,35 @@ def build_envelope(
     }
 
 
+def _get_table_ref(table_env_var: str, default_table_name: str) -> str:
+    """
+    Get fully-qualified BigQuery table reference from environment.
+
+    Args:
+        table_env_var: Environment variable name for table (e.g., "EVENT_LOG_TABLE")
+        default_table_name: Default table name if env var not set
+
+    Returns:
+        Table reference string: "dataset.table_name"
+
+    Raises:
+        RuntimeError: If required EVENTS_BQ_DATASET environment variable is missing
+    """
+    dataset = os.environ.get("EVENTS_BQ_DATASET")
+    table = os.environ.get(table_env_var, default_table_name)
+
+    if not dataset:
+        raise RuntimeError("Missing required environment variable: EVENTS_BQ_DATASET")
+
+    return f"{dataset}.{table}"
+
+
 def _get_event_log_table_ref(bq_client) -> str:
     """
     Get fully-qualified BigQuery event_log table reference from environment.
 
     Args:
-        bq_client: BigQuery client (used for project context if needed)
+        bq_client: BigQuery client (unused, kept for API compatibility)
 
     Returns:
         Table reference string: "dataset.event_log"
@@ -185,13 +208,7 @@ def _get_event_log_table_ref(bq_client) -> str:
     Raises:
         RuntimeError: If required environment variables are missing
     """
-    dataset = os.environ.get("EVENTS_BQ_DATASET")
-    table = os.environ.get("EVENT_LOG_TABLE", "event_log")
-
-    if not dataset:
-        raise RuntimeError("Missing required environment variable: EVENTS_BQ_DATASET")
-
-    return f"{dataset}.{table}"
+    return _get_table_ref("EVENT_LOG_TABLE", "event_log")
 
 
 def _get_raw_objects_table_ref(bq_client) -> str:
@@ -199,7 +216,7 @@ def _get_raw_objects_table_ref(bq_client) -> str:
     Get fully-qualified BigQuery raw_objects table reference from environment.
 
     Args:
-        bq_client: BigQuery client (used for project context if needed)
+        bq_client: BigQuery client (unused, kept for API compatibility)
 
     Returns:
         Table reference string: "dataset.raw_objects"
@@ -207,13 +224,7 @@ def _get_raw_objects_table_ref(bq_client) -> str:
     Raises:
         RuntimeError: If required environment variables are missing
     """
-    dataset = os.environ.get("EVENTS_BQ_DATASET")
-    table = os.environ.get("RAW_OBJECTS_TABLE", "raw_objects")
-
-    if not dataset:
-        raise RuntimeError("Missing required environment variable: EVENTS_BQ_DATASET")
-
-    return f"{dataset}.{table}"
+    return _get_table_ref("RAW_OBJECTS_TABLE", "raw_objects")
 
 
 def _write_to_event_log(envelope: Dict[str, Any], bq_client) -> None:

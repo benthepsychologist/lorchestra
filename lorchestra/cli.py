@@ -21,22 +21,36 @@ def main():
     pass
 
 
-@main.command("run-job")
-@click.argument("package")
-@click.argument("job")
-@click.option("--account", help="Account identifier")
-@click.option("--since", help="Start time (ISO or relative)")
-@click.option("--until", help="End time (ISO)")
-def run_job(package: str, job: str, **kwargs):
-    """
-    Run a job from an installed package.
-
-    Examples:
-        lorchestra run-job ingester extract_gmail --account acct1-personal
-        lorchestra run-job canonizer canonicalize_email
-    """
+def _run_job_impl(job: str, **kwargs):
+    """Shared implementation for run/run-job commands."""
     from google.cloud import bigquery
-    from lorchestra.jobs import execute_job
+    from lorchestra.jobs import execute_job, discover_jobs
+
+    # Parse job argument - support PACKAGE/JOB or just JOB
+    if "/" in job:
+        package, job_name = job.split("/", 1)
+    else:
+        # Auto-discover package
+        all_jobs = discover_jobs()
+        matching_packages = [pkg for pkg, jobs in all_jobs.items() if job in jobs]
+
+        if not matching_packages:
+            click.echo(f"✗ Unknown job: {job}", err=True)
+            click.echo("\nAvailable jobs:", err=True)
+            for pkg in sorted(all_jobs.keys()):
+                for job_name in sorted(all_jobs[pkg].keys()):
+                    click.echo(f"  {job_name}", err=True)
+            raise SystemExit(1)
+
+        if len(matching_packages) > 1:
+            click.echo(f"✗ Ambiguous job name '{job}' found in multiple packages:", err=True)
+            for pkg in matching_packages:
+                click.echo(f"  {pkg}/{job}", err=True)
+            click.echo("\nPlease specify: lorchestra run PACKAGE/JOB", err=True)
+            raise SystemExit(1)
+
+        package = matching_packages[0]
+        job_name = job
 
     # Create BQ client once
     bq_client = bigquery.Client()
@@ -48,11 +62,43 @@ def run_job(package: str, job: str, **kwargs):
 
     # Execute
     try:
-        execute_job(package, job, bq_client, **job_kwargs)
-        click.echo(f"✓ {package}/{job} completed")
+        execute_job(package, job_name, bq_client, **job_kwargs)
+        click.echo(f"✓ {package}/{job_name} completed")
     except Exception as e:
-        click.echo(f"✗ {package}/{job} failed: {e}", err=True)
+        click.echo(f"✗ {package}/{job_name} failed: {e}", err=True)
         raise SystemExit(1)
+
+
+@main.command("run")
+@click.argument("job")
+@click.option("--account", help="Account identifier")
+@click.option("--since", help="Start time (ISO or relative)")
+@click.option("--until", help="End time (ISO)")
+def run(job: str, **kwargs):
+    """
+    Run a job by name.
+
+    Examples:
+        lorchestra run gmail_ingest_acct1 --since "2025-11-23"
+        lorchestra run gmail_ingest_acct2
+    """
+    _run_job_impl(job, **kwargs)
+
+
+@main.command("run-job")
+@click.argument("job")
+@click.option("--account", help="Account identifier")
+@click.option("--since", help="Start time (ISO or relative)")
+@click.option("--until", help="End time (ISO)")
+def run_job(job: str, **kwargs):
+    """
+    Run a job by name (alias for 'run').
+
+    Examples:
+        lorchestra run-job gmail_ingest_acct1 --since "2025-11-23"
+        lorchestra run-job gmail_ingest_acct2
+    """
+    _run_job_impl(job, **kwargs)
 
 
 @main.group("jobs")

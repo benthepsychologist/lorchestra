@@ -19,30 +19,14 @@ Usage:
 
 import os
 import sys
+from pathlib import Path
+
+# Add parent directory to path to import utils
+sys.path.insert(0, str(Path(__file__).parent))
+from utils import error, success, info
+
 from google.cloud import bigquery
 from google.cloud.exceptions import Conflict, NotFound
-
-# ANSI color codes
-RED = '\033[0;31m'
-GREEN = '\033[0;32m'
-YELLOW = '\033[1;33m'
-NC = '\033[0m'  # No Color
-
-
-def error(msg):
-    """Print error message and exit"""
-    print(f"{RED}ERROR: {msg}{NC}", file=sys.stderr)
-    sys.exit(1)
-
-
-def success(msg):
-    """Print success message"""
-    print(f"{GREEN}✓ {msg}{NC}")
-
-
-def info(msg):
-    """Print info message"""
-    print(f"{YELLOW}→ {msg}{NC}")
 
 
 def main():

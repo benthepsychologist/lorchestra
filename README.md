@@ -59,18 +59,14 @@ lorchestra --version
 # List all available jobs
 lorchestra jobs list
 
-# List jobs for a specific package
-lorchestra jobs list ingester
+# Run a job (auto-discovers package)
+lorchestra run gmail_ingest_acct1 --since "2025-11-23"
+
+# Run with relative time
+lorchestra run gmail_ingest_acct1 --since "-7d"
 
 # Show job details
-lorchestra jobs show ingester extract_gmail
-
-# Run a job
-lorchestra run-job ingester extract_gmail --account acct1-personal
-
-# Run with time range
-lorchestra run-job ingester extract_gmail --since 2024-01-01 --until 2024-01-31
-lorchestra run-job ingester extract_gmail --since -7d
+lorchestra jobs show lorchestra gmail_ingest_acct1
 ```
 
 ## 📖 Documentation
@@ -162,12 +158,12 @@ See **[docs/jobs.md](docs/jobs.md)** for complete guide.
 
 ## 📊 CLI Commands
 
-### `lorchestra run-job`
+### `lorchestra run`
 
-Run a job from an installed package.
+Run a job by name (auto-discovers which package it belongs to).
 
 ```bash
-lorchestra run-job PACKAGE JOB [OPTIONS]
+lorchestra run JOB_NAME [OPTIONS]
 
 Options:
   --account TEXT    Account identifier
@@ -178,18 +174,23 @@ Options:
 **Examples:**
 
 ```bash
-# Basic usage
-lorchestra run-job ingester extract_gmail
+# Basic usage (auto-discovers package)
+lorchestra run gmail_ingest_acct1
 
-# With account
-lorchestra run-job ingester extract_gmail --account acct1-personal
+# With date filtering
+lorchestra run gmail_ingest_acct1 --since "2025-11-23"
 
-# With time range
-lorchestra run-job ingester extract_gmail --since 2024-01-01 --until 2024-01-31
+# Relative time filtering
+lorchestra run gmail_ingest_acct1 --since "-7d"
 
-# Relative time
-lorchestra run-job ingester extract_gmail --since -7d
+# Date range
+lorchestra run gmail_ingest_acct1 --since "2025-01-01" --until "2025-01-31"
+
+# Explicit package (if needed for disambiguation)
+lorchestra run lorchestra/gmail_ingest_acct1
 ```
+
+**Note:** `lorchestra run-job` still works as an alias for backward compatibility.
 
 ### `lorchestra jobs list`
 

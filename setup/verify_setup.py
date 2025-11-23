@@ -20,6 +20,9 @@ import sys
 import json
 from pathlib import Path
 
+# Add current directory to path to import utils
+sys.path.insert(0, str(Path(__file__).parent))
+
 try:
     from google.cloud import bigquery
     from google.cloud.exceptions import NotFound, Forbidden
@@ -28,34 +31,24 @@ except ImportError:
     print("Run: pip install google-cloud-bigquery")
     sys.exit(1)
 
-# ANSI colors
-RED = '\033[0;31m'
-GREEN = '\033[0;32m'
-YELLOW = '\033[1;33m'
-BLUE = '\033[0;34m'
-NC = '\033[0m'
+# Import shared utilities (with custom error/success behavior for verification)
+from utils import info, warning
 
 
 def error(msg):
-    """Print error and continue (don't exit)"""
+    """Print error and continue (don't exit) - verification-specific behavior."""
+    RED = '\033[0;31m'
+    NC = '\033[0m'
     print(f"{RED}✗ {msg}{NC}")
     return False
 
 
 def success(msg):
-    """Print success"""
+    """Print success - verification-specific behavior."""
+    GREEN = '\033[0;32m'
+    NC = '\033[0m'
     print(f"{GREEN}✓ {msg}{NC}")
     return True
-
-
-def info(msg):
-    """Print info"""
-    print(f"{BLUE}→ {msg}{NC}")
-
-
-def warning(msg):
-    """Print warning"""
-    print(f"{YELLOW}⚠ {msg}{NC}")
 
 
 def check_env_vars():
