@@ -1,9 +1,9 @@
 """Gmail ingestion jobs for LifeOS.
 
-This module demonstrates the clean three-layer architecture:
+This module demonstrates the refactored event client pattern:
 1. Calls ingestor.extract_to_jsonl() to run Meltano → JSONL
-2. Reads JSONL records
-3. Emits events via event_client to BigQuery (event_log + raw_objects)
+2. Streams JSONL records to batch upsert (no per-object events)
+3. Logs telemetry events (ingestion.completed) with small payloads
 
 This is the ONLY place event_client is called for Gmail ingestion.
 
@@ -106,6 +106,10 @@ def _ingest_gmail(
     """
     Generic Gmail ingestion function with date filtering.
 
+    Refactored pattern:
+    - 1 log_event() for ingestion.completed with telemetry payload
+    - 1 batch upsert_objects() for all emails (no per-object events)
+
     Args:
         tap_name: Meltano tap name (e.g., "tap-gmail--acct1-personal")
         account_id: Account identifier for run_id (e.g., "acct1")
@@ -114,7 +118,9 @@ def _ingest_gmail(
         until: End date (ISO format or None for now)
     """
     from ingestor.extractors import extract_to_jsonl, iter_jsonl_records
-    from lorchestra.stack_clients.event_client import emit
+    from lorchestra.stack_clients.event_client import log_event, upsert_objects
+    from lorchestra.idem_keys import gmail_idem_key
+    import time
 
     source_system = tap_name
     object_type = "email"
@@ -138,6 +144,8 @@ def _ingest_gmail(
     if gmail_query:
         logger.info(f"Date filter: {gmail_query}")
 
+    start_time = time.time()
+
     try:
         # Step 1: Get JSONL from ingestor (Meltano wrapper)
         jsonl_dir = extract_to_jsonl(tap_name, run_id, config_overrides=config_overrides)
@@ -149,25 +157,63 @@ def _ingest_gmail(
         if not jsonl_path.exists():
             raise RuntimeError(f"Expected messages.jsonl not found in {jsonl_dir}")
 
-        # Step 2: Read records and emit events
+        # Step 2: Batch upsert objects (no per-object events)
+        logger.info("Batch upserting emails to raw_objects...")
+
+        # Count records for telemetry (we need to track this)
         record_count = 0
-        for record in iter_jsonl_records(jsonl_path):
-            emit(
-                event_type="email.received",
-                payload=record,
-                source=source_system,
-                object_type=object_type,
-                bq_client=bq_client,
-                correlation_id=run_id
-            )
-            record_count += 1
+        def count_and_yield():
+            nonlocal record_count
+            for record in iter_jsonl_records(jsonl_path):
+                record_count += 1
+                yield record
+
+        upsert_objects(
+            objects=count_and_yield(),
+            source_system=source_system,
+            object_type=object_type,
+            correlation_id=run_id,
+            idem_key_fn=gmail_idem_key(source_system),
+            bq_client=bq_client,
+        )
+
+        # Step 3: Log ingestion.completed event with telemetry
+        duration_seconds = time.time() - start_time
+        log_event(
+            event_type="ingestion.completed",
+            source_system=source_system,
+            correlation_id=run_id,
+            status="ok",
+            payload={
+                "records_extracted": record_count,
+                "duration_seconds": round(duration_seconds, 2),
+                "date_filter": gmail_query or None,
+            },
+            bq_client=bq_client,
+        )
 
         logger.info(
-            f"Gmail ingestion complete: {record_count} records, run_id={run_id}"
+            f"Gmail ingestion complete: {record_count} records, run_id={run_id}, duration={duration_seconds:.2f}s"
         )
 
     except Exception as e:
         logger.error(f"Gmail ingestion failed: {e}", exc_info=True)
+
+        # Log ingestion.failed event
+        duration_seconds = time.time() - start_time
+        log_event(
+            event_type="ingestion.failed",
+            source_system=source_system,
+            correlation_id=run_id,
+            status="failed",
+            error_message=str(e),
+            payload={
+                "error_type": type(e).__name__,
+                "duration_seconds": round(duration_seconds, 2),
+            },
+            bq_client=bq_client,
+        )
+
         raise
 
 

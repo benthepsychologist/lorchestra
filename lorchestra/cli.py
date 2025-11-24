@@ -25,6 +25,9 @@ def _run_job_impl(job: str, **kwargs):
     """Shared implementation for run/run-job commands."""
     from google.cloud import bigquery
     from lorchestra.jobs import execute_job, discover_jobs
+    from lorchestra.stack_clients.event_client import log_event
+    from datetime import datetime, timezone
+    import time
 
     # Parse job argument - support PACKAGE/JOB or just JOB
     if "/" in job:
@@ -55,16 +58,72 @@ def _run_job_impl(job: str, **kwargs):
     # Create BQ client once
     bq_client = bigquery.Client()
 
+    # Generate run_id for job execution tracking
+    run_id = f"{job_name}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+
     # IMPORTANT: Only pass known, explicit options to jobs
     # Don't pass the entire kwargs blob - keeps job interface stable
     known_options = ["account", "since", "until"]
     job_kwargs = {k: v for k, v in kwargs.items() if k in known_options and v is not None}
 
+    # Log job.started event
+    log_event(
+        event_type="job.started",
+        source_system="lorchestra",
+        correlation_id=run_id,
+        object_type="job_run",
+        status="ok",
+        payload={
+            "job_name": job_name,
+            "package_name": package,
+            "parameters": job_kwargs,
+        },
+        bq_client=bq_client,
+    )
+
     # Execute
+    start_time = time.time()
     try:
         execute_job(package, job_name, bq_client, **job_kwargs)
+        duration_seconds = time.time() - start_time
+
+        # Log job.completed event
+        log_event(
+            event_type="job.completed",
+            source_system="lorchestra",
+            correlation_id=run_id,
+            object_type="job_run",
+            status="ok",
+            payload={
+                "job_name": job_name,
+                "package_name": package,
+                "duration_seconds": round(duration_seconds, 2),
+            },
+            bq_client=bq_client,
+        )
+
         click.echo(f"✓ {package}/{job_name} completed")
+
     except Exception as e:
+        duration_seconds = time.time() - start_time
+
+        # Log job.failed event
+        log_event(
+            event_type="job.failed",
+            source_system="lorchestra",
+            correlation_id=run_id,
+            object_type="job_run",
+            status="failed",
+            error_message=str(e),
+            payload={
+                "job_name": job_name,
+                "package_name": package,
+                "error_type": type(e).__name__,
+                "duration_seconds": round(duration_seconds, 2),
+            },
+            bq_client=bq_client,
+        )
+
         click.echo(f"✗ {package}/{job_name} failed: {e}", err=True)
         raise SystemExit(1)
 
