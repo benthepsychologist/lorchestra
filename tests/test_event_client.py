@@ -65,13 +65,15 @@ def test_log_event_basic(mock_bq_client, env_vars):
     assert envelope["correlation_id"] == "test-run-123"
     assert envelope["object_type"] == "job_run"
     assert envelope["status"] == "ok"
-    assert envelope["idem_key"] is None  # Telemetry event has no idem_key
-    assert envelope["payload"] is None
+    # Optional fields are not included when None
+    assert "idem_key" not in envelope
+    assert "payload" not in envelope
 
 
 def test_log_event_with_payload(mock_bq_client, env_vars):
     """Test log_event with small telemetry payload."""
     from lorchestra.stack_clients.event_client import log_event
+    import json
 
     log_event(
         event_type="ingestion.completed",
@@ -83,12 +85,14 @@ def test_log_event_with_payload(mock_bq_client, env_vars):
     )
 
     envelope = mock_bq_client.insert_rows_json.call_args[0][1][0]
-    assert envelope["payload"] == {"records_extracted": 100, "duration_seconds": 12.5}
+    payload = json.loads(envelope["payload"])
+    assert payload == {"records_extracted": 100, "duration_seconds": 12.5}
 
 
 def test_log_event_with_error(mock_bq_client, env_vars):
     """Test log_event with error status."""
     from lorchestra.stack_clients.event_client import log_event
+    import json
 
     log_event(
         event_type="job.failed",
@@ -104,7 +108,8 @@ def test_log_event_with_error(mock_bq_client, env_vars):
     envelope = mock_bq_client.insert_rows_json.call_args[0][1][0]
     assert envelope["status"] == "failed"
     assert envelope["error_message"] == "Connection timeout"
-    assert envelope["payload"]["error_type"] == "TimeoutError"
+    payload = json.loads(envelope["payload"])
+    assert payload["error_type"] == "TimeoutError"
 
 
 def test_log_event_with_trace_id(mock_bq_client, env_vars):
@@ -386,6 +391,26 @@ def test_stripe_charge_idem_key_missing_id():
 
     with pytest.raises(ValueError, match="missing 'id' field"):
         fn({"amount": 1000})  # No id field
+
+
+def test_msgraph_idem_key():
+    """Test msgraph_idem_key function."""
+    from lorchestra.idem_keys import msgraph_idem_key
+
+    fn = msgraph_idem_key("tap-msgraph-mail--ben-mensio")
+    idem_key = fn({"id": "AAMkAGI2NGU...", "subject": "Test"})
+
+    assert idem_key == "email:tap-msgraph-mail--ben-mensio:AAMkAGI2NGU..."
+
+
+def test_msgraph_idem_key_missing_id():
+    """Test msgraph_idem_key raises error when id is missing."""
+    from lorchestra.idem_keys import msgraph_idem_key
+
+    fn = msgraph_idem_key("tap-msgraph-mail--ben-mensio")
+
+    with pytest.raises(ValueError, match="missing 'id' field"):
+        fn({"subject": "Test"})  # No id field
 
 
 # ============================================================================

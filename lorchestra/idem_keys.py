@@ -52,6 +52,32 @@ def gmail_idem_key(source_system: str) -> Callable[[Dict[str, Any]], str]:
     return compute_idem_key
 
 
+def msgraph_idem_key(source_system: str) -> Callable[[Dict[str, Any]], str]:
+    """
+    Microsoft Graph Mail idem_key function - uses 'id' field for message ID.
+
+    Exchange/M365 emails use the Graph API message ID as the natural key.
+
+    Args:
+        source_system: Source system identifier (e.g., "tap-msgraph-mail--ben-mensio")
+
+    Returns:
+        Callable that computes idem_key from Exchange/M365 message payload
+
+    Example:
+        >>> fn = msgraph_idem_key("tap-msgraph-mail--ben-mensio")
+        >>> fn({"id": "AAMkAGI...", "subject": "Test"})
+        'email:tap-msgraph-mail--ben-mensio:AAMkAGI...'
+    """
+    def compute_idem_key(obj: Dict[str, Any]) -> str:
+        message_id = obj.get('id')
+        if not message_id:
+            raise ValueError(f"Exchange message missing 'id' field: {obj}")
+        return f"email:{source_system}:{message_id}"
+
+    return compute_idem_key
+
+
 def stripe_charge_idem_key(source_system: str) -> Callable[[Dict[str, Any]], str]:
     """
     Stripe charge idem_key function - uses 'id' field.

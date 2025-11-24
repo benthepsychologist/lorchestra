@@ -29,6 +29,10 @@ lorchestra = "lorchestra.cli:main"
 gmail_ingest_acct1 = "lorchestra.jobs.ingest_gmail:job_ingest_gmail_acct1"
 gmail_ingest_acct2 = "lorchestra.jobs.ingest_gmail:job_ingest_gmail_acct2"
 gmail_ingest_acct3 = "lorchestra.jobs.ingest_gmail:job_ingest_gmail_acct3"
+exchange_ingest_ben_mensio = "lorchestra.jobs.ingest_exchange:job_ingest_exchange_ben_mensio"
+exchange_ingest_booking_mensio = "lorchestra.jobs.ingest_exchange:job_ingest_exchange_booking_mensio"
+exchange_ingest_info_mensio = "lorchestra.jobs.ingest_exchange:job_ingest_exchange_info_mensio"
+exchange_ingest_ben_efs = "lorchestra.jobs.ingest_exchange:job_ingest_exchange_ben_efs"
 
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
