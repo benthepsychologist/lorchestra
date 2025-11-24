@@ -1,0 +1,141 @@
+aip_id: AIP-lorchestra-2025-11-24-001
+context:
+  background: ''
+  constraints: []
+created: '2025-11-24T00:39:58.858257+00:00'
+meta:
+  created_at: '2025-11-24T00:39:58.858257+00:00'
+  created_by: benthepsychologist
+objective:
+  acceptance_criteria:
+  - '`log_event()` function writes event envelopes + small telemetry payload to event_log (no object storage)'
+  - '`upsert_objects()` function batch-merges objects into raw_objects'
+  - event_log.idem_key is nullable (not required for telemetry events)
+  - event_log.payload is nullable JSON for small telemetry (job params, counts, duration)
+  - trace_id supported (nullable) for future cross-system tracing
+  - Gmail job refactored to use batch pattern (1 log_event + 1 batch upsert per run)
+  - NO per-object events written for ingested data
+  - Job start emits `job.started` event with parameters
+  - Job completion emits `job.completed` event with metrics (duration)
+  - Job failure emits `job.failed` event with error message
+  - All job events use `object_type="job_run"` and same `correlation_id`
+  - Job events use ONLY log_event() (no raw_objects writes)
+  - Tests verify new API works correctly
+  - Tests verify job events are emitted correctly
+  - Tests verify NO per-object events written during ingestion
+  - CI green (lint + unit)
+  goal: Refactor event_client to separate event logging from object storage, and add job execution tracking
+orchestrator_contract:
+  artifacts_dir: .aip_artifacts/AIP-lorchestra-2025-11-24-001
+  logging: jsonl
+  state_machine:
+    events:
+    - run_step
+    - await_gate
+    - approve
+    - reject
+    - retry
+    - escalate
+    - complete
+    states:
+    - pending
+    - running
+    - awaiting_human
+    - failed
+    - succeeded
+    - rolled_back
+plan:
+- description: Update BigQuery Schema
+  kind: code
+  outputs:
+  - lorchestra/setup/sql/alter_event_log.sql
+  prompt: 'Update the event_log schema to support the refactored event architecture:
+
+    1. Make idem_key nullable (telemetry events don''t have idem_keys)
+
+    2. Add payload column (JSON, nullable) for small telemetry data
+
+    3. Add trace_id field (STRING, nullable) for future cross-system tracing
+
+    Do NOT modify raw_objects - it already works correctly.'
+  role: coding_agent
+  step_id: step-001
+- description: Implement New Event Client API
+  kind: code
+  outputs:
+  - lorchestra/stack_clients/event_client/__init__.py
+  - lorchestra/idem_keys.py
+  - tests/test_event_client.py
+  prompt: "Implement the refactored event client with two explicit functions in `lorchestra/stack_clients/event_client/__init__.py`:\n\
+    1. **log_event()** - Write event envelopes to event_log:\n   - Parameters: event_type, source_system,\
+    \ correlation_id, trace_id (optional), object_type (optional), status, error_message (optional), idem_key\
+    \ (optional), payload (optional dict), bq_client\n   - Payload should be small telemetry only (job\
+    \ params, counts, duration) - NOT full objects\n   - idem_key defaults to NULL for telemetry events;\
+    \ can be set to link to a specific object if needed\n   - Insert to event_log using insert_rows_json()\
+    \ - payload inserted as native JSON dict (not stringified)\n   - error_message: human-readable summary\
+    \ for status=\"failed\"\n   - payload: machine-parsable metadata (error_type, stack_hint, retryable,\
+    \ job params, etc.)\n2. **upsert_objects()** - Batch MERGE objects into raw_objects:\n   - Parameters:\
+    \ objects (list or iterator), source_system, object_type, correlation_id, trace_id (optional), idem_key_fn\
+    \ (callable, required), batch_size (optional, default 5000), bq_client\n   - idem_key_fn: function\
+    \ that computes idempotency key from object payload (e.g., `gmail_idem_key(obj)`)\n   - idem_key_fn\
+    \ is REQUIRED - forces every tap to think about identity explicitly\n   - batch_size: tunable for\
+    \ large payload sources; default 5000; lower if hitting BQ load limits or timeouts\n   - Process in\
+    \ batches (don't materialize entire dataset)\n   - Load batch via load_table_from_json() to temp table\
+    \ (named `temp_objects_{run_id}_{batch_idx}`)\n   - MERGE from temp table to raw_objects\n   - Cleanup\
+    \ temp table in finally block\n   - Support both list and iterator inputs\n3. **Remove emit()** entirely\
+    \ - no deprecation wrapper needed (not in production)"
+  role: coding_agent
+  step_id: step-002
+- description: Refactor Gmail Job
+  kind: code
+  outputs:
+  - lorchestra/jobs/ingest_gmail.py
+  prompt: "Update Gmail ingestion job to use the new event client pattern in `lorchestra/jobs/ingest_gmail.py`:\n\
+    1. Import log_event and upsert_objects\n2. Import gmail_idem_key from lorchestra.idem_keys (or define\
+    \ inline if idem_keys.py doesn't exist yet)\n3. In _ingest_gmail():\n   - Stream JSONL records into\
+    \ batches (don't call list() to materialize everything)\n   - Log ingestion.completed event with telemetry\
+    \ payload: {records_extracted, duration_seconds, date_filter}\n   - Upsert objects in batches: `upsert_objects(objects=iter_jsonl_records(jsonl_path),\
+    \ idem_key_fn=gmail_idem_key, ...)`\n   - On failure, log ingestion.failed event with error details\n\
+    This changes from \"100 events + 100 merges\" to \"1 event + 1 batch merge operation\".\n**Recommended\
+    \ pattern**: Create `lorchestra/idem_keys.py` with a registry of idem_key functions to avoid drift:\n\
+    ```python\ndef gmail_idem_key(source_system: str):\n    \"\"\"Gmail uses 'id' field for messageId.\"\
+    \"\"\n    return lambda obj: f\"{source_system}:email:{obj['id']}\"\ndef stripe_charge_idem_key(source_system:\
+    \ str):\n    \"\"\"Stripe charges use 'id' field.\"\"\"\n    return lambda obj: f\"{source_system}:charge:{obj['id']}\"\
+    \n# Add more as needed for other taps\n```\nThis prevents accidentally changing identity rules later."
+  role: coding_agent
+  step_id: step-003
+- description: Add Job Logging to CLI
+  kind: code
+  outputs:
+  - lorchestra/cli.py
+  - tests/test_cli_jobs.py
+  prompt: "Add job execution tracking to `lorchestra/cli.py` in the `_run_job_impl()` function:\n1. Import\
+    \ log_event from event_client\n2. Generate run_id: `f\"{job_name}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}\"\
+    `\n3. Before execute_job():\n   - Log job.started event with payload: {job_name, package_name, parameters}\n\
+    4. After execute_job() succeeds:\n   - Log job.completed event with payload: {job_name, package_name,\
+    \ duration_seconds}\n5. In exception handler:\n   - Log job.failed event with status=\"failed\", error_message\
+    \ (human summary), payload: {job_name, package_name, error_type}\nAll job events use object_type=\"\
+    job_run\" and ONLY log_event() (no upsert_objects).\nNote: error_message contains human-readable summary,\
+    \ payload contains machine-parsable fields (error_type, etc.)."
+  role: coding_agent
+  step_id: step-004
+- description: Integration Testing
+  kind: code
+  prompt: "Run end-to-end integration test to verify the refactored system:\n1. Run a Gmail job: `lorchestra\
+    \ run gmail_ingest_acct1 --since \"2025-11-20\"`\n2. Query BigQuery to verify:\n   - event_log has\
+    \ job.started, ingestion.completed, job.completed events\n   - event_log rows have small telemetry\
+    \ payloads (NOT full objects)\n   - raw_objects has full email payloads\n   - event_log.idem_key is\
+    \ NULL for telemetry events\n   - **NO per-object events were written** (critical assertion)"
+  role: coding_agent
+  step_id: step-005
+project_slug: lorchestra
+repo:
+  default_branch: main
+  url: git@github.com:benthepsychologist/lorchestra.git
+  working_branch: feat/event-client-refactor
+spec_version: 1.0.0
+tier: C
+title: Event Client Refactor + Job Logging
+updated: '2025-11-24T01:45:00+00:00'
+version: '0.1'
+
