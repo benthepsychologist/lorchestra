@@ -39,9 +39,13 @@ All meaningful business activity is represented as events. Events are immutable,
 - **Raw events**: Direct captures from external systems (email received, form submitted, API call made)
 - **Canonical events**: Normalized, validated events derived from raw events (email.canonicalized, questionnaire_response, measurement.scored)
 
-### 2.2 BigQuery as Write-Ahead Log
+### 2.2 BigQuery Two-Table Pattern
 
-BigQuery is the primary storage system for all events. It serves as the write-ahead log (WAL) and source of truth. All downstream projections, views, and reports are derived from BQ tables.
+BigQuery is the primary storage system using a two-table pattern:
+- **event_log**: Append-only audit trail (immutable event envelopes)
+- **raw_objects**: State projection of current object data (payload updates on re-ingestion)
+
+The WAL lives in the source systems (Dataverse, Gmail, Exchange). We sync current state to `raw_objects` while maintaining an audit trail in `event_log`. All downstream projections, views, and reports are derived from BQ tables.
 
 JSONL files are a simple backup and replay mechanism only. One JSONL file per run/day, one event per line, no complex chunking or partitioning logic. JSONL is not a primary architectural layer.
 
@@ -113,7 +117,7 @@ These remain out of scope until the three target lanes are operational.
   - Event audit trail preserved (every emit() creates event_log row)
   - Object state projection (same idem_key updates payload and last_seen)
   - Clean separation: metadata vs. payload
-- No JSONL backup in initial implementation (BQ is primary WAL)
+- No JSONL backup in initial implementation (BQ is primary storage)
 
 ### 3.3 ingestor
 
@@ -236,11 +240,11 @@ These remain out of scope until the three target lanes are operational.
 
 ## 5. Storage Strategy
 
-### 5.1 BigQuery as Primary WAL (Two-Table Pattern)
+### 5.1 BigQuery Two-Table Pattern
 
-All events are written to BigQuery as the primary, authoritative storage.
+BigQuery is the primary storage, using a two-table pattern separating audit trail from state projection.
 
-**Implemented Design:** Two-table pattern separating audit trail from object storage
+**Implemented Design:** Audit trail (event_log) + state projection (raw_objects)
 
 **Table 1: `event_log`** (Audit trail - no payload)
 ```sql
