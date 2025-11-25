@@ -418,12 +418,15 @@ def _upsert_batch(
         load_job.result()  # Wait for load to complete
 
         # MERGE from temp table to raw_objects
+        # Note: payload is updated on match - raw_objects is a state projection, not append-only
         merge_query = f"""
             MERGE `{raw_objects_ref}` AS target
             USING `{temp_table_ref}` AS source
             ON target.idem_key = source.idem_key
             WHEN MATCHED THEN
-                UPDATE SET last_seen = source.last_seen
+                UPDATE SET
+                    payload = source.payload,
+                    last_seen = source.last_seen
             WHEN NOT MATCHED THEN
                 INSERT (idem_key, source_system, object_type, external_id, payload, first_seen, last_seen)
                 VALUES (idem_key, source_system, object_type, external_id, payload, first_seen, last_seen)
