@@ -8,5 +8,5 @@ user:
   default_owner: benthepsychologist
   default_tier: C
 current:
-  spec: .specwright/specs/prod-ingest-dataverse.md
-  aip: /workspace/lorchestra/.specwright/aips/prod-ingest-dataverse.yaml
+  spec: .specwright/specs/object-source-nomanclaure.md
+  aip: /workspace/lorchestra/.specwright/aips/standardize-source-system-columns.yaml

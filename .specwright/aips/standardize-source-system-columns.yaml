@@ -1,0 +1,142 @@
+aip_id: AIP-lorchestra-2025-11-25-001
+context:
+  background: ''
+  constraints: []
+created: '2025-11-25T13:11:50.953128+00:00'
+meta:
+  created_at: '2025-11-25T13:11:50.953128+00:00'
+  created_by: benthepsychologist
+objective:
+  acceptance_criteria:
+  - '`raw_objects` has new `connection_name` STRING column'
+  - 'Existing data migrated: `connection_name = current source_system`, `source_system = normalized provider`'
+  - All ingestion jobs updated to set all three columns
+  - '`event_log` updated with same pattern (if it has source_system)'
+  - 'Queries work:'
+  - Test tables (`test_raw_objects`, `test_event_log`) also updated
+  goal: Add connection_name column to raw_objects and normalize source_system to provider-only values
+orchestrator_contract:
+  artifacts_dir: .aip_artifacts/AIP-lorchestra-2025-11-25-001
+  logging: jsonl
+  state_machine:
+    events:
+    - run_step
+    - await_gate
+    - approve
+    - reject
+    - retry
+    - escalate
+    - complete
+    states:
+    - pending
+    - running
+    - awaiting_human
+    - failed
+    - succeeded
+    - rolled_back
+plan:
+- description: Schema Migration Design
+  gate_ref: 'G0: Design Approval'
+  kind: code
+  outputs:
+  - artifacts/migration/schema-design.md
+  - artifacts/migration/migration.sql
+  prompt: "Design the BigQuery schema migration:\n1. Document current schema for `raw_objects` and `event_log`\n\
+    2. Design new schema with `connection_name` column\n3. Write migration SQL:\n   - ALTER TABLE to add\
+    \ `connection_name` column\n   - UPDATE to populate `connection_name` from current `source_system`\n\
+    \   - UPDATE to normalize `source_system` to provider-only values\n4. Document mapping rules:\n  \
+    \ - `tap-gmail--acct1` → `source_system='gmail'`, `connection_name='gmail-acct1'`\n   - `exchange--ben-mensio`\
+    \ → `source_system='exchange'`, `connection_name='exchange-ben-mensio'`\n   - `dataverse--clinic-contacts`\
+    \ → `source_system='dataverse'`, `connection_name='dataverse-clinic-contacts'`\n   - `google-forms--intake-01`\
+    \ → `source_system='google_forms'`, `connection_name='google-forms-intake-01'`"
+  role: coding_agent
+  step_id: step-001
+- description: Update Ingestion Jobs
+  gate_ref: 'G1: Code Review'
+  kind: code
+  outputs:
+  - lorchestra/jobs/ingest_gmail.py
+  - lorchestra/jobs/ingest_exchange.py
+  - lorchestra/jobs/ingest_dataverse.py
+  - lorchestra/jobs/ingest_google_forms.py
+  prompt: "Update all ingestion job modules to use the new three-column pattern:\n1. `lorchestra/jobs/ingest_gmail.py`:\n\
+    \   - Change `source_system` from `\"tap-gmail--acct1\"` to `\"gmail\"`\n   - Add `connection_name=\"\
+    gmail-acct1\"` parameter to `upsert_objects()`\n2. `lorchestra/jobs/ingest_exchange.py`:\n   - Change\
+    \ `source_system` from `\"exchange--ben-mensio\"` to `\"exchange\"`\n   - Add `connection_name=\"\
+    exchange-ben-mensio\"` etc.\n3. `lorchestra/jobs/ingest_dataverse.py`:\n   - Change `source_system`\
+    \ from `\"dataverse--clinic-contacts\"` to `\"dataverse\"`\n   - Add `connection_name=\"dataverse-clinic-contacts\"\
+    ` etc.\n4. `lorchestra/jobs/ingest_google_forms.py`:\n   - Change `source_system` from `\"google-forms--ipip120\"\
+    ` to `\"google_forms\"`\n   - Add `connection_name=\"google-forms-ipip120\"` etc.\n5. Update `_get_last_sync_timestamp()`\
+    \ queries in each module to use both `source_system` AND `connection_name`"
+  role: coding_agent
+  step_id: step-002
+- description: Update event_client.py
+  gate_ref: 'G1: Code Review'
+  kind: code
+  outputs:
+  - lorchestra/stack_clients/event_client.py
+  prompt: 'Update the event_client module:
+
+    1. Add `connection_name` parameter to `upsert_objects()` function signature
+
+    2. Add `connection_name` to the temp table schema and MERGE query
+
+    3. Add `connection_name` parameter to `log_event()` function signature
+
+    4. Update both functions to require `connection_name` (not optional)
+
+    5. Update docstrings and examples'
+  role: coding_agent
+  step_id: step-003
+- description: Run BigQuery Migration
+  gate_ref: 'G2: Pre-Release'
+  kind: code
+  prompt: 'Execute the schema migration on BigQuery:
+
+    1. Run migration on test tables first (`test_raw_objects`, `test_event_log`)
+
+    2. Verify data integrity on test tables
+
+    3. Run migration on production tables (`raw_objects`, `event_log`)
+
+    4. Verify data integrity on production tables
+
+    5. Document row counts before/after'
+  role: coding_agent
+  step_id: step-004
+- description: Validation & Testing
+  gate_ref: 'G3: Pre-Release'
+  kind: code
+  prompt: "Validate the migration and test ingestion:\n1. Run `--dry-run` for each ingestion job type\n\
+    2. Run `--test-table` for one job of each type\n3. Verify new records have correct three-column values\n\
+    4. Verify queries work as expected:\n   - `SELECT * FROM raw_objects WHERE source_system = 'gmail'`\n\
+    \   - `SELECT * FROM raw_objects WHERE connection_name = 'gmail-acct1'`\n   - `SELECT * FROM raw_objects\
+    \ WHERE object_type = 'email' AND source_system IN ('gmail', 'exchange')`"
+  role: coding_agent
+  step_id: step-005
+- description: Update Documentation
+  gate_ref: 'G3: Pre-Release'
+  kind: code
+  outputs:
+  - ARCHITECTURE.md
+  - setup/bigquery-setup.md
+  prompt: 'Update documentation to reflect new schema:
+
+    1. Update `ARCHITECTURE.md` - raw_objects schema section
+
+    2. Update any BQ setup docs in `setup/`
+
+    3. Add migration notes'
+  role: coding_agent
+  step_id: step-006
+project_slug: lorchestra
+repo:
+  default_branch: main
+  url: git@github.com:benthepsychologist/lorchestra.git
+  working_branch: feat/standardize-source-columns
+spec_version: 1.0.0
+tier: B
+title: Standardize Source System Columns
+updated: '2025-11-25T13:11:50.953144+00:00'
+version: '0.1'
+
