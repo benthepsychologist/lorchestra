@@ -54,6 +54,13 @@ class HybridConnectionStore:
                 "token_cache_path": str(INJEST_ROOT / cfg["token_cache_path"]),
             }
 
+        if cfg["provider"] == "google_forms":
+            return {
+                "client_id": os.environ[cfg["client_id_env"]],
+                "client_secret": os.environ[cfg["client_secret_env"]],
+                "refresh_token": os.environ[cfg["refresh_token_env"]],
+            }
+
         raise KeyError(f"Unknown provider: {cfg['provider']}")
 
     def save(self, identity: str, data: JSONDict) -> None:

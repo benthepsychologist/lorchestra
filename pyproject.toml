@@ -36,6 +36,10 @@ exchange_ingest_ben_efs = "lorchestra.jobs.ingest_exchange:job_ingest_exchange_b
 dataverse_ingest_contacts = "lorchestra.jobs.ingest_dataverse:job_ingest_dataverse_contacts"
 dataverse_ingest_sessions = "lorchestra.jobs.ingest_dataverse:job_ingest_dataverse_sessions"
 dataverse_ingest_reports = "lorchestra.jobs.ingest_dataverse:job_ingest_dataverse_reports"
+google_forms_ingest_ipip120 = "lorchestra.jobs.ingest_google_forms:job_ingest_google_forms_ipip120"
+google_forms_ingest_intake_01 = "lorchestra.jobs.ingest_google_forms:job_ingest_google_forms_intake_01"
+google_forms_ingest_intake_02 = "lorchestra.jobs.ingest_google_forms:job_ingest_google_forms_intake_02"
+google_forms_ingest_followup = "lorchestra.jobs.ingest_google_forms:job_ingest_google_forms_followup"
 
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
