@@ -1,0 +1,347 @@
+aip_id: AIP-lorchestra-2025-11-24-001
+context:
+  background: 'Currently we have partial email data:
+
+    - **Gmail acct1** (ben@getmensio.com): 264 emails successfully ingested (recent test runs)
+
+    - **Gmail acct3** (bfarmstrong@gmail.com): OAuth just fixed (conflicting scopes issue resolved)
+
+    - **Gmail acct2** (drben@benthepsychologist.com): Needs refresh token generation
+
+    - **Exchange accounts**: 3 emails from ben@mensio ingested, auth issues to investigate
+
+
+    The lorchestra → BigQuery pipeline is working correctly. The goal is to systematically ingest all
+    2024-2025 data month-by-month with validation checkpoints.
+
+
+    **Timeline:** 23 months total
+
+    - 2024: 12 months (Jan-Dec)
+
+    - 2025: 11 months (Jan-Nov, current month)'
+  constraints:
+  - No edits to core ingestion logic (`lorchestra/stack_clients/event_client.py`, `lorchestra/idem_keys.py`)
+  - No edits to Meltano configuration unless auth fixes required
+  - Must preserve audit trail in BigQuery `event_log` table
+  - 'Stop-on-failure: If any account fails for a month, halt, fix, and resume'
+  - 'Manual process: Month-by-month execution with human validation between months'
+created: '2025-11-24T18:28:07.905869+00:00'
+meta:
+  created_at: '2025-11-24T18:28:07.905869+00:00'
+  created_by: benthepsychologist
+objective:
+  acceptance_criteria:
+  - All 7 email accounts successfully authenticated and tested
+  - All 23 months (Jan 2024 - Nov 2025) ingested for each working account
+  - BigQuery raw_objects contains deduplicated emails from all accounts
+  - Zero data loss - all extracted emails persisted to BigQuery
+  - Comprehensive validation report generated after each month
+  - Helper scripts created for automation and monitoring
+  - 'Stop-on-failure protocol: any account failure halts ingestion for that month'
+  goal: Ingest all 2024-2025 emails from 7 accounts (3 Gmail + 4 Exchange) month-by-month with validation
+orchestrator_contract:
+  artifacts_dir: .aip_artifacts/AIP-lorchestra-2025-11-24-001
+  logging: jsonl
+  state_machine:
+    events:
+    - run_step
+    - await_gate
+    - approve
+    - reject
+    - retry
+    - escalate
+    - complete
+    states:
+    - pending
+    - running
+    - awaiting_human
+    - failed
+    - succeeded
+    - rolled_back
+plan:
+- description: Authentication Setup - Gmail acct2
+  gate_ref: 'G0: Auth Validation'
+  gate_review:
+    approval_metadata:
+      date: ''
+      rationale: ''
+      reviewer: ''
+    checklist:
+      Authentication Validation:
+      - OAuth refresh token successfully generated
+      - Token has ONLY gmail.readonly scope (verified via tokeninfo API)
+      - Both .env files contain identical acct2 credentials
+      - Environment variables exported in current shell
+      Testing:
+      - January 2024 test ingestion completed successfully
+      - event_log shows `ingestion.completed` with records_extracted > 0
+      - raw_objects table contains acct2 emails with correct idem_key format
+      - No auth errors in Meltano logs
+  kind: code
+  outputs:
+  - .env
+  - scripts/gmail_oauth_url_acct2.py
+  - scripts/gmail_exchange_code_acct2.py
+  prompt: "Generate OAuth refresh token for Gmail acct2 (drben@benthepsychologist.com):\n1. Use existing\
+    \ Mensio Workspace OAuth app (same as acct1):\n   - CLIENT_ID: `73154799202-gt80uer1ou8asagrihob5ov994oekbll.apps.googleusercontent.com`\n\
+    \   - CLIENT_SECRET: `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`\n2. Generate OOB OAuth URL with ONLY `gmail.readonly`\
+    \ scope (NO gmail.metadata)\n3. User authorizes and provides authorization code\n4. Exchange code\
+    \ for refresh token\n5. Update both .env files (`/workspace/lorchestra/.env` and `/workspace/ingestor/.env`)\n\
+    6. Export env vars in current shell:\n   ```bash\n   export TAP_GMAIL_ACCT2_BUSINESS1_REFRESH_TOKEN=\"\
+    <new_token>\"\n   ```\n7. Test with January 2024 ingestion:\n   ```bash\n   lorchestra run gmail_ingest_acct2\
+    \ --since 2024-01-01 --until 2024-01-31\n   ```"
+  role: coding_agent
+  step_id: step-001
+- description: Authentication Setup - Exchange Accounts
+  gate_ref: 'G1: Auth Validation'
+  gate_review:
+    approval_metadata:
+      date: ''
+      rationale: ''
+      reviewer: ''
+    checklist:
+      Authentication Validation:
+      - All 4 Exchange accounts successfully authenticated
+      - Azure AD app permissions verified and correct
+      - Refresh tokens valid and not expired
+      - ben@efs.com tenant ID verified (may be different from Mensio)
+      Documentation:
+      - Any auth fixes documented in troubleshooting guide
+      - Token refresh procedures documented if needed
+      Testing:
+      - January 2024 test ingestion passed for ben@mensio
+      - January 2024 test ingestion passed for booking@mensio
+      - January 2024 test ingestion passed for info@mensio
+      - January 2024 test ingestion passed for ben@efs
+      - event_log shows no auth failures
+  kind: code
+  outputs:
+  - docs/EXCHANGE_AUTH_TROUBLESHOOTING.md
+  - .env
+  prompt: "Investigate and fix Exchange account authentication issues:\n1. Review previous Exchange failures\
+    \ from event_log (403/401 errors)\n2. Check Azure AD app permissions for Microsoft Graph Mail API:\n\
+    \   - Tenant: f1b164de-53d7-4ace-8793-a89a107592d7\n   - Client: af384e69-5c77-4edb-b2b6-87e7bdda5a28\n\
+    \   - Required scopes: Mail.ReadWrite, Mail.Send, offline_access\n3. Verify refresh tokens are not\
+    \ expired (check token expiration)\n4. Test each Exchange account with January 2024 ingestion:\n \
+    \  - ben@mensio.com: `lorchestra run exchange_ingest_ben_mensio --since 2024-01-01 --until 2024-01-31`\n\
+    \   - booking@mensio.com: `lorchestra run exchange_ingest_booking_mensio --since 2024-01-01 --until\
+    \ 2024-01-31`\n   - info@mensio.com: `lorchestra run exchange_ingest_info_mensio --since 2024-01-01\
+    \ --until 2024-01-31`\n   - ben@efs.com: `lorchestra run exchange_ingest_ben_efs --since 2024-01-01\
+    \ --until 2024-01-31`\n5. Document any auth fixes needed (token refresh, permission grants, etc.)\n\
+    6. If ben@efs.com uses different tenant, verify tenant_id"
+  role: coding_agent
+  step_id: step-002
+- description: Create Helper Scripts
+  gate_ref: 'G2: Code Review'
+  gate_review:
+    approval_metadata:
+      date: ''
+      rationale: ''
+      reviewer: ''
+    checklist:
+      Code Quality:
+      - Scripts follow Python best practices (type hints, docstrings)
+      - Error handling is comprehensive (API failures, auth errors, missing data)
+      - Scripts are idempotent (safe to re-run)
+      - Command-line interfaces are clear and intuitive
+      Documentation:
+      - INGESTION_SCRIPTS.md documents all 3 scripts with examples
+      - Usage instructions are clear for non-technical users
+      - Error messages are helpful and actionable
+      Functionality:
+      - run_month_all_accounts.py successfully runs all 7 accounts in parallel
+      - verify_month_ingestion.py accurately validates BigQuery data
+      - generate_ingestion_report.py produces comprehensive summary
+      - Scripts exit with correct status codes (0=success, non-zero=failure)
+      Testing:
+      - Scripts tested with January 2024 data
+      - Error cases tested (missing accounts, auth failures)
+      - Output formatting is readable and actionable
+  kind: code
+  outputs:
+  - scripts/run_month_all_accounts.py
+  - scripts/verify_month_ingestion.py
+  - scripts/generate_ingestion_report.py
+  - docs/INGESTION_SCRIPTS.md
+  prompt: "Create three helper scripts for month-by-month ingestion automation:\n**1. `scripts/run_month_all_accounts.py`**\n\
+    - Accept `--month` parameter (format: \"2024-01\")\n- Calculate month start/end dates\n- Run all 7\
+    \ lorchestra jobs in parallel for that month:\n  - Gmail: acct1, acct2, acct3\n  - Exchange: ben-mensio,\
+    \ booking-mensio, info-mensio, ben-efs\n- Monitor output for errors\n- Exit with non-zero code if\
+    \ ANY job fails\n- Print summary: accounts completed, records extracted per account\n**2. `scripts/verify_month_ingestion.py`**\n\
+    - Accept `--month` parameter (format: \"2024-01\")\n- Query BigQuery for ingestion results for that\
+    \ month:\n  - Check event_log for all 7 accounts\n  - Verify `ingestion.completed` events exist\n\
+    \  - Extract records_extracted counts from payload\n  - Check raw_objects for email presence (count\
+    \ by source_system)\n- Print validation report:\n  - ✓ Account success/failure\n  - Records extracted\
+    \ vs records in raw_objects\n  - Any gaps or anomalies\n**3. `scripts/generate_ingestion_report.py`**\n\
+    - Query BigQuery for complete 2024-2025 ingestion status\n- Report per account:\n  - Total emails\
+    \ ingested\n  - Date range coverage (first_seen → last_seen)\n  - Months with data vs expected months\
+    \ (23 months)\n  - Any gaps (months with 0 emails)\n- Summary statistics:\n  - Total emails across\
+    \ all accounts\n  - BigQuery storage size estimate\n  - Ingestion duration per account"
+  role: coding_agent
+  step_id: step-003
+- description: 2024 Ingestion - Months 1-6 (Jan-Jun 2024)
+  gate_ref: 'G3: Validation Checkpoint'
+  gate_review:
+    approval_metadata:
+      date: ''
+      rationale: ''
+      reviewer: ''
+    checklist:
+      Data Quality:
+      - No months with suspiciously low email counts
+      - No duplicate emails across months
+      - All expected accounts present in each month
+      - Deduplication working correctly (idem_key)
+      Ingestion Completion:
+      - January 2024 ingested successfully (all 7 accounts)
+      - February 2024 ingested successfully (all 7 accounts)
+      - March 2024 ingested successfully (all 7 accounts)
+      - April 2024 ingested successfully (all 7 accounts)
+      - May 2024 ingested successfully (all 7 accounts)
+      - June 2024 ingested successfully (all 7 accounts)
+  kind: code
+  prompt: 'Execute ingestion for first 6 months of 2024:
+
+    For each month (Jan through Jun 2024):
+
+    1. Run: `python3 scripts/run_month_all_accounts.py --month 2024-MM`
+
+    2. Monitor for failures (script exits non-zero if any account fails)
+
+    3. STOP if any account fails, fix, re-run
+
+    4. Verify: `python3 scripts/verify_month_ingestion.py --month 2024-MM`
+
+    5. Press ENTER to continue to next month'
+  role: coding_agent
+  step_id: step-004
+- description: 2024 Ingestion - Months 7-12 (Jul-Dec 2024)
+  gate_ref: 'G4: Validation Checkpoint'
+  gate_review:
+    approval_metadata:
+      date: ''
+      rationale: ''
+      reviewer: ''
+    checklist:
+      Data Quality:
+      - Email counts consistent with expected patterns
+      - No data quality issues observed
+      - All accounts functioning correctly
+      Ingestion Completion:
+      - July 2024 ingested successfully (all 7 accounts)
+      - August 2024 ingested successfully (all 7 accounts)
+      - September 2024 ingested successfully (all 7 accounts)
+      - October 2024 ingested successfully (all 7 accounts)
+      - November 2024 ingested successfully (all 7 accounts)
+      - December 2024 ingested successfully (all 7 accounts)
+  kind: code
+  prompt: 'Execute ingestion for last 6 months of 2024:
+
+    For each month (Jul through Dec 2024):
+
+    1. Run: `python3 scripts/run_month_all_accounts.py --month 2024-MM`
+
+    2. Monitor for failures
+
+    3. STOP if any account fails, fix, re-run
+
+    4. Verify: `python3 scripts/verify_month_ingestion.py --month 2024-MM`
+
+    5. Press ENTER to continue to next month'
+  role: coding_agent
+  step_id: step-005
+- description: '2025 Ingestion - Months 1-11 (Jan-Nov 2025) [G5: Validation Checkpoint]'
+  gate_review:
+    approval_metadata:
+      date: ''
+      rationale: ''
+      reviewer: ''
+    checklist:
+      Data Quality:
+      - Recent months (Oct-Nov 2025) have expected email volumes
+      - No data quality issues observed
+      - All accounts remain authenticated
+      Ingestion Completion:
+      - January 2025 ingested successfully (all 7 accounts)
+      - February 2025 ingested successfully (all 7 accounts)
+      - March 2025 ingested successfully (all 7 accounts)
+      - April 2025 ingested successfully (all 7 accounts)
+      - May 2025 ingested successfully (all 7 accounts)
+      - June 2025 ingested successfully (all 7 accounts)
+      - July 2025 ingested successfully (all 7 accounts)
+      - August 2025 ingested successfully (all 7 accounts)
+      - September 2025 ingested successfully (all 7 accounts)
+      - October 2025 ingested successfully (all 7 accounts)
+      - November 2025 ingested successfully (all 7 accounts)
+  kind: code
+  prompt: 'Execute ingestion for 2025 year-to-date (11 months):
+
+    For each month (Jan through Nov 2025):
+
+    1. Run: `python3 scripts/run_month_all_accounts.py --month 2025-MM`
+
+    2. Monitor for failures
+
+    3. STOP if any account fails, fix, re-run
+
+    4. Verify: `python3 scripts/verify_month_ingestion.py --month 2025-MM`
+
+    5. Press ENTER to continue to next month'
+  role: coding_agent
+  step_id: step-006
+- description: 'Final Validation & Reporting [G6: Final Approval]'
+  gate_review:
+    approval_metadata:
+      date: ''
+      rationale: ''
+      reviewer: ''
+    checklist:
+      Completeness:
+      - All 7 accounts have data for Jan 2024 - Nov 2025 (23 months)
+      - No months are missing for any account (161 expected data points)
+      - Total email counts are within expected ranges
+      - Date range coverage is complete (2024-01-01 to 2025-11-30)
+      Data Quality:
+      - No duplicate emails (idem_key deduplication verified)
+      - Email payloads are complete and valid
+      - Timestamps are accurate
+      - source_system values are correct
+      Documentation:
+      - Final report is comprehensive and accurate
+      - Month-by-month breakdown shows expected patterns
+      - Any issues encountered are documented with resolutions
+      - Recommendations for future ingestions are actionable
+      Process Validation:
+      - Stop-on-failure protocol was followed throughout
+      - All failures were caught, fixed, and documented
+      - Helper scripts proved effective for automation
+      - BigQuery storage is within expected limits
+  kind: code
+  outputs:
+  - artifacts/ingestion/2024-2025-final-report.md
+  - artifacts/ingestion/2024-2025-month-by-month-breakdown.md
+  - docs/PRODUCTION_INGESTION_SUMMARY.md
+  prompt: "Generate comprehensive final report for 2024-2025 ingestion:\n1. Run complete ingestion report:\n\
+    \   ```bash\n   python3 scripts/generate_ingestion_report.py\n   ```\n2. Analyze results:\n   - Total\
+    \ emails ingested per account\n   - Date range coverage (should be Jan 1, 2024 - Nov 30, 2025)\n \
+    \  - Any months with 0 or anomalously low counts\n   - Total emails across all accounts (23 months\
+    \ × 7 accounts)\n3. Query BigQuery for data completeness:\n   - Count emails per account per month\
+    \ (23 months × 7 accounts = 161 data points)\n   - Identify any gaps\n   - Compare against expected\
+    \ volumes\n4. Document any issues encountered during entire process\n5. Create summary report with:\n\
+    \   - Success metrics (emails ingested, accounts completed, months covered)\n   - Timeline (total\
+    \ time for 23 months)\n   - Any accounts that required special handling\n   - Recommendations for\
+    \ future ingestions (December 2025 onwards)"
+  role: coding_agent
+  step_id: step-007
+project_slug: lorchestra
+repo:
+  default_branch: main
+  url: git@github.com:benthepsychologist/lorchestra.git
+  working_branch: feat/2024-2025-email-ingestion
+spec_version: 1.0.0
+tier: B
+title: 2024-2025 Email Ingestion - Month-by-Month for All Accounts
+updated: '2025-11-24T18:28:07.905885+00:00'
+version: '0.1'
+
