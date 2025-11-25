@@ -79,13 +79,17 @@ def _get_last_sync_timestamp(bq_client, source_system: str, object_type: str) ->
 
 
 def _parse_date_to_datetime(value: str) -> datetime:
-    """Parse date string to datetime for InJest."""
+    """Parse date string to datetime for InJest (always returns UTC-aware)."""
     # Handle relative dates like "-7d"
     if value.startswith("-") and value.endswith("d"):
         days = int(value[1:-1])
         return datetime.now(timezone.utc) - timedelta(days=days)
     # Handle ISO format
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    # Ensure timezone-aware (assume UTC if naive)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def _google_forms_idem_key(source_system: str):
