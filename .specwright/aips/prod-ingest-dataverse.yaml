@@ -1,0 +1,178 @@
+aip_id: AIP-lorchestra-2025-11-25-001
+context:
+  background: "The InJest package (`/workspace/injest`) now has a `DataverseTableStream` adapter that:\n\
+    - Uses MSAL device code flow for authentication\n- Caches tokens in `.tokens/dataverse_clinic.bin`\n\
+    - Pulls entire tables via OData API with pagination\n- Supports `modifiedon` filtering for incremental\
+    \ sync\n\nThe identity `dataverse:clinic` is already configured in `injest/config.py`:\n```python\n\
+    \"dataverse:clinic\": {\n    \"provider\": \"dataverse\",\n    \"description\": \"Mensio CRM - Dataverse\"\
+    ,\n    \"tenant_id_env\": \"DATAVERSE_TENANT_ID\",\n    \"client_id_env\": \"DATAVERSE_CLIENT_ID\"\
+    ,\n    \"dataverse_url_env\": \"DATAVERSE_URL\",\n    \"token_cache_path\": \".tokens/dataverse_clinic.bin\"\
+    ,\n}\n```\n\nEnvironment variables are set in `/workspace/injest/.env`:\n```\nDATAVERSE_TENANT_ID=f1b164de-53d7-4ace-8793-a89a107592d7\n\
+    DATAVERSE_CLIENT_ID=af384e69-5c77-4edb-b2b6-87e7bdda5a28\nDATAVERSE_URL=https://org2bd13e53.crm3.dynamics.com\n\
+    ```\n\nTarget Dataverse entities:\n- `contacts` - Client contact records\n- `cre92_clientsessions`\
+    \ - Therapy session records\n- `cre92_clientreports` - Progress reports"
+  constraints:
+  - No edits to `lorchestra/stack_clients/event_client.py` or `lorchestra/idem_keys.py`
+  - Must use the existing InJest `DataverseTableStream` adapter
+  - Token cache must be in `/workspace/injest/.tokens/`
+created: '2025-11-25T03:29:33.998460+00:00'
+meta:
+  created_at: '2025-11-25T03:29:33.998460+00:00'
+  created_by: benthepsychologist
+objective:
+  acceptance_criteria:
+  - Dataverse auth working via MSAL device code flow (token cached in `.tokens/`)
+  - '`lorchestra run dataverse_ingest_contacts` extracts contacts to BigQuery'
+  - '`lorchestra run dataverse_ingest_sessions` extracts cre92_clientsessions to BigQuery'
+  - '`lorchestra run dataverse_ingest_reports` extracts cre92_clientreports to BigQuery'
+  - All three tables have idem_key deduplication via `@odata.etag`
+  - '`event_log` shows `ingestion.completed` events for each table'
+  - Daily incremental sync via `modifiedon` filter works correctly
+  goal: Ingest Dataverse tables (contacts, sessions, reports) from Mensio CRM to BigQuery using InJest
+orchestrator_contract:
+  artifacts_dir: .aip_artifacts/AIP-lorchestra-2025-11-25-001
+  logging: jsonl
+  state_machine:
+    events:
+    - run_step
+    - await_gate
+    - approve
+    - reject
+    - retry
+    - escalate
+    - complete
+    states:
+    - pending
+    - running
+    - awaiting_human
+    - failed
+    - succeeded
+    - rolled_back
+plan:
+- description: Dataverse Auth Setup
+  gate_ref: 'G0: Auth Validation'
+  kind: code
+  prompt: "Authenticate to Dataverse via device code flow and verify OData access:\n1. Ensure environment\
+    \ variables are loaded from `/workspace/injest/.env`\n2. Run a test extraction with InJest to trigger\
+    \ device code flow:\n   ```python\n   from injest import get_stream\n   from injest.auth.store import\
+    \ configure_store, ConfigConnectionStore\n   from injest.config import load_env_file\n   load_env_file()\n\
+    \   configure_store(ConfigConnectionStore())\n   stream = get_stream(\"dataverse.contacts\", identity=\"\
+    dataverse:clinic\")\n   for record in stream.extract():\n       print(record.get(\"fullname\"), record.get(\"\
+    @odata.etag\"))\n       break  # Just test one record\n   ```\n3. Complete device code flow (visit\
+    \ URL, enter code, authorize)\n4. Verify token cache saved to `/workspace/injest/.tokens/dataverse_clinic.bin`\n\
+    5. Verify contacts data accessible (should see fullname and etag)"
+  role: coding_agent
+  step_id: step-001
+- description: Add Dataverse idem_key Function
+  gate_ref: 'G1: Code Review'
+  kind: code
+  prompt: "Add a `dataverse_idem_key` function to `lorchestra/idem_keys.py`:\n```python\ndef dataverse_idem_key(source_system:\
+    \ str, entity: str) -> Callable[[Dict[str, Any]], str]:\n    \"\"\"\n    Dataverse idem_key function\
+    \ - uses entity primary key.\n    Dataverse entities use GUIDs as primary keys. The primary key field\
+    \ name\n    varies by entity (contactid for contacts, cre92_clientsessionid for sessions, etc).\n\
+    \    We use a predictable pattern: {entity}id (e.g., contactid, cre92_clientsessionid)\n    Args:\n\
+    \        source_system: Source system identifier (e.g., \"dataverse--clinic\")\n        entity: Dataverse\
+    \ entity name (e.g., \"contacts\", \"cre92_clientsessions\")\n    Returns:\n        Callable that\
+    \ computes idem_key from Dataverse record payload\n    \"\"\"\n    # Standard Dataverse primary key\
+    \ naming: {entity}id (singular form)\n    # contacts -> contactid, accounts -> accountid\n    # Custom\
+    \ entities: cre92_clientsessions -> cre92_clientsessionid\n    if entity.endswith(\"s\") and not entity.startswith(\"\
+    cre92_\"):\n        pk_field = entity[:-1] + \"id\"  # contacts -> contactid\n    else:\n        pk_field\
+    \ = entity + \"id\"  # cre92_clientsessions -> cre92_clientsessionsid\n    def compute_idem_key(obj:\
+    \ Dict[str, Any]) -> str:\n        record_id = obj.get(pk_field)\n        if not record_id:\n    \
+    \        raise ValueError(f\"Dataverse {entity} missing '{pk_field}' field: {list(obj.keys())[:5]}\"\
+    )\n        return f\"{entity}:{source_system}:{record_id}\"\n    return compute_idem_key\n```"
+  role: coding_agent
+  step_id: step-002
+- description: Create Dataverse Ingestion Job Module
+  gate_ref: 'G1: Code Review'
+  kind: code
+  outputs:
+  - lorchestra/jobs/ingest_dataverse.py
+  prompt: "Create `lorchestra/jobs/ingest_dataverse.py` following the Gmail/Exchange pattern:\n1. Import\
+    \ InJest `get_stream` and configure the connection store\n2. Create generic `_ingest_dataverse()`\
+    \ function that:\n   - Takes `entity`, `source_system`, `identity` parameters\n   - Uses `_get_last_sync_timestamp()`\
+    \ for incremental sync on `modifiedon`\n   - Calls `upsert_objects()` for batch BigQuery writes\n\
+    \   - Logs `ingestion.completed` telemetry event\n3. Create three job functions:\n   - `job_ingest_dataverse_contacts(bq_client,\
+    \ since=None, until=None)`\n   - `job_ingest_dataverse_sessions(bq_client, since=None, until=None)`\n\
+    \   - `job_ingest_dataverse_reports(bq_client, since=None, until=None)`\nKey patterns to follow from\
+    \ `ingest_gmail.py`:\n- Use `configure_injest()` at start of each job\n- Query BigQuery for last sync\
+    \ if no `--since` provided\n- Wrap extraction in try/except and log `ingestion.failed` on error\n\
+    - Track `record_count` for telemetry payload\nSource system naming: `dataverse--clinic-{entity}` (e.g.,\
+    \ `dataverse--clinic-contacts`)"
+  role: coding_agent
+  step_id: step-003
+- description: Register Job Entrypoints
+  gate_ref: 'G1: Code Review'
+  kind: code
+  prompt: 'Add Dataverse job entrypoints to `pyproject.toml`:
+
+    ```toml
+
+    [project.entry-points."lorchestra.jobs"]
+
+    # ... existing jobs ...
+
+    dataverse_ingest_contacts = "lorchestra.jobs.ingest_dataverse:job_ingest_dataverse_contacts"
+
+    dataverse_ingest_sessions = "lorchestra.jobs.ingest_dataverse:job_ingest_dataverse_sessions"
+
+    dataverse_ingest_reports = "lorchestra.jobs.ingest_dataverse:job_ingest_dataverse_reports"
+
+    ```
+
+    Reinstall the package to register entrypoints:
+
+    ```bash
+
+    pip install -e .
+
+    lorchestra jobs list
+
+    ```'
+  role: coding_agent
+  step_id: step-004
+- description: Test Ingestion
+  gate_ref: 'G2: Pre-Release'
+  kind: code
+  outputs:
+  - artifacts/test/dataverse-ingestion-results.md
+  prompt: "Run each Dataverse ingestion job and validate BigQuery results:\n1. **Contacts:**\n   ```bash\n\
+    \   lorchestra run dataverse_ingest_contacts\n   ```\n   Verify: `SELECT COUNT(*) FROM raw_objects\
+    \ WHERE source_system = 'dataverse--clinic-contacts'`\n2. **Sessions:**\n   ```bash\n   lorchestra\
+    \ run dataverse_ingest_sessions\n   ```\n   Verify: `SELECT COUNT(*) FROM raw_objects WHERE source_system\
+    \ = 'dataverse--clinic-cre92_clientsessions'`\n3. **Reports:**\n   ```bash\n   lorchestra run dataverse_ingest_reports\n\
+    \   ```\n   Verify: `SELECT COUNT(*) FROM raw_objects WHERE source_system = 'dataverse--clinic-cre92_clientreports'`\n\
+    4. Check `event_log` for `ingestion.completed` events:\n   ```sql\n   SELECT event_type, source_system,\
+    \ created_at,\n          JSON_EXTRACT_SCALAR(payload, '$.records_extracted') as records\n   FROM event_log\n\
+    \   WHERE source_system LIKE 'dataverse%'\n   ORDER BY created_at DESC\n   LIMIT 10\n   ```"
+  role: coding_agent
+  step_id: step-005
+- description: Add to Daily Ingest Script
+  gate_ref: 'G3: Integration'
+  kind: code
+  prompt: 'Update `scripts/daily_ingest.sh` to include Dataverse jobs:
+
+    ```bash
+
+    # Dataverse tables (CRM data)
+
+    lorchestra run dataverse_ingest_contacts
+
+    lorchestra run dataverse_ingest_sessions
+
+    lorchestra run dataverse_ingest_reports
+
+    ```'
+  role: coding_agent
+  step_id: step-006
+project_slug: lorchestra
+repo:
+  default_branch: main
+  url: git@github.com:benthepsychologist/lorchestra.git
+  working_branch: feat/prod-ingest-dataverse
+spec_version: 1.0.0
+tier: C
+title: Prod Ingest Dataverse (Mensio CRM)
+updated: '2025-11-25T03:29:33.998460+00:00'
+version: '0.1'
+

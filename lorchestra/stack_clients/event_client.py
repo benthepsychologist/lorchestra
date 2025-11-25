@@ -56,11 +56,45 @@ from datetime import datetime, timezone
 import uuid
 import os
 import json
+import logging
 
 try:
     from google.cloud import bigquery
 except ImportError:
     bigquery = None  # Allow import without BigQuery SDK for testing
+
+logger = logging.getLogger(__name__)
+
+# ============================================================================
+# Run Mode Context
+# ============================================================================
+# Module-level flags for dry-run and test-table modes.
+# Set via set_run_mode() at CLI entry before job execution.
+# ============================================================================
+
+_DRY_RUN_MODE = False
+_TEST_TABLE_MODE = False
+
+
+def set_run_mode(*, dry_run: bool = False, test_table: bool = False) -> None:
+    """Set the run mode for event_client operations.
+
+    Call this once at CLI entry before job execution.
+
+    Args:
+        dry_run: If True, skip all BigQuery writes and log what would happen
+        test_table: If True, write to test_event_log/test_raw_objects instead of prod
+    """
+    global _DRY_RUN_MODE, _TEST_TABLE_MODE
+    _DRY_RUN_MODE = dry_run
+    _TEST_TABLE_MODE = test_table
+
+
+def reset_run_mode() -> None:
+    """Reset run mode to defaults (for testing)."""
+    global _DRY_RUN_MODE, _TEST_TABLE_MODE
+    _DRY_RUN_MODE = False
+    _TEST_TABLE_MODE = False
 
 
 def log_event(
@@ -141,6 +175,13 @@ def log_event(
     if not correlation_id or not isinstance(correlation_id, str):
         raise ValueError("correlation_id must be a non-empty string")
 
+    # Handle dry-run mode: log what would happen, skip write
+    if _DRY_RUN_MODE:
+        logger.info(f"[DRY-RUN] Would log event {event_type} for {source_system} status={status}")
+        if payload:
+            logger.debug(f"[DRY-RUN] Event payload: {payload}")
+        return
+
     # Build event envelope
     envelope = {
         "event_id": str(uuid.uuid4()),
@@ -163,12 +204,13 @@ def log_event(
     if payload is not None:
         envelope["payload"] = json.dumps(payload)
 
-    # Write to event_log
-    table_ref = _get_table_ref("EVENT_LOG_TABLE", "event_log")
+    # Write to event_log (or test_event_log in test mode)
+    table_name = "test_event_log" if _TEST_TABLE_MODE else "event_log"
+    table_ref = _get_table_ref_by_name(table_name)
     errors = bq_client.insert_rows_json(table_ref, [envelope])
 
     if errors:
-        raise RuntimeError(f"event_log insert failed: {errors}")
+        raise RuntimeError(f"{table_name} insert failed: {errors}")
 
 
 def upsert_objects(
@@ -235,6 +277,22 @@ def upsert_objects(
         raise ValueError("correlation_id must be a non-empty string")
     if not callable(idem_key_fn):
         raise ValueError("idem_key_fn must be a callable function")
+
+    # Handle dry-run mode: consume iterator once, log samples, skip write
+    if _DRY_RUN_MODE:
+        count = 0
+        samples = []
+        for obj in objects:
+            count += 1
+            if len(samples) < 3:
+                samples.append(obj)
+
+        logger.info(f"[DRY-RUN] Would upsert {count} {object_type} objects for {source_system}")
+        for i, s in enumerate(samples):
+            ik = idem_key_fn(s)
+            logger.info(f"[DRY-RUN] Sample {i+1} idem_key={ik}")
+            logger.debug(f"[DRY-RUN] Sample {i+1} payload={json.dumps(s, default=str)[:500]}")
+        return
 
     # Process in batches
     batch = []
@@ -314,7 +372,10 @@ def _upsert_batch(
 
     temp_table_name = f"temp_objects_{run_id}_{batch_idx}"
     temp_table_ref = f"{dataset}.{temp_table_name}"
-    raw_objects_ref = _get_table_ref("RAW_OBJECTS_TABLE", "raw_objects")
+
+    # Use test table if in test mode
+    target_table_name = "test_raw_objects" if _TEST_TABLE_MODE else "raw_objects"
+    raw_objects_ref = _get_table_ref_by_name(target_table_name)
 
     now = datetime.now(timezone.utc).isoformat()
 
@@ -421,3 +482,77 @@ def _get_table_ref(table_env_var: str, default_table_name: str) -> str:
         raise RuntimeError("Missing required environment variable: EVENTS_BQ_DATASET")
 
     return f"{dataset}.{table}"
+
+
+def ensure_test_tables_exist(bq_client) -> None:
+    """Create test_event_log and test_raw_objects if they don't exist.
+
+    Copies schema from production tables. Only called when --test-table is active.
+    Dry-run never creates BQ resources.
+
+    Args:
+        bq_client: google.cloud.bigquery.Client instance
+    """
+    project = os.environ.get("GCP_PROJECT") or bq_client.project
+    dataset = os.environ.get("EVENTS_BQ_DATASET")
+    if not dataset:
+        raise RuntimeError("Missing required environment variable: EVENTS_BQ_DATASET")
+
+    _copy_schema_if_missing(
+        bq_client,
+        source=f"{project}.{dataset}.event_log",
+        dest=f"{project}.{dataset}.test_event_log"
+    )
+    _copy_schema_if_missing(
+        bq_client,
+        source=f"{project}.{dataset}.raw_objects",
+        dest=f"{project}.{dataset}.test_raw_objects"
+    )
+
+
+def _copy_schema_if_missing(bq_client, source: str, dest: str) -> None:
+    """Copy table schema from source to dest if dest doesn't exist.
+
+    Args:
+        bq_client: BigQuery client
+        source: Fully-qualified source table reference
+        dest: Fully-qualified destination table reference
+    """
+    try:
+        bq_client.get_table(dest)
+        logger.debug(f"Test table already exists: {dest}")
+        return  # Already exists
+    except Exception:
+        pass  # Doesn't exist, create it
+
+    try:
+        source_table = bq_client.get_table(source)
+        new_table = bigquery.Table(dest, schema=source_table.schema)
+        bq_client.create_table(new_table)
+        logger.info(f"Created test table: {dest}")
+    except Exception as e:
+        raise RuntimeError(f"Failed to create test table {dest}: {e}")
+
+
+def _get_table_ref_by_name(table_name: str) -> str:
+    """
+    Get fully-qualified BigQuery table reference by explicit table name.
+
+    Used for test tables where we specify the name directly rather than
+    reading from environment variables.
+
+    Args:
+        table_name: Table name (e.g., "event_log", "test_event_log")
+
+    Returns:
+        Table reference string: "dataset.table_name"
+
+    Raises:
+        RuntimeError: If required EVENTS_BQ_DATASET environment variable is missing
+    """
+    dataset = os.environ.get("EVENTS_BQ_DATASET")
+
+    if not dataset:
+        raise RuntimeError("Missing required environment variable: EVENTS_BQ_DATASET")
+
+    return f"{dataset}.{table_name}"

@@ -1,0 +1,183 @@
+aip_id: AIP-lorchestra-2025-11-25-001
+context:
+  background: 'We now have real data in prod BigQuery tables. Adding new streams (Dataverse, future sources)
+
+    currently risks:
+
+    - Polluting prod with half-baked schemas
+
+    - Forced manual cleanup
+
+    - Increased reluctance to run end-to-end during development
+
+
+    We need safe modes at the CLI + sink layer.'
+  constraints:
+  - No schema changes to prod tables
+  - No edits to `lorchestra/stack_clients/event_client.py` core logic (only add mode routing)
+  - 'Keep implementation thin: switches + sink routing only'
+  - Flags are mutually exclusive (no combination logic)
+created: '2025-11-25T04:00:00+00:00'
+meta:
+  created_at: '2025-11-25T04:00:00+00:00'
+  created_by: benthepsychologist
+objective:
+  acceptance_criteria:
+  - '`lorchestra run <job> --dry-run`:'
+  - '`lorchestra run <job> --test-table`:'
+  - '`--dry-run` and `--test-table` cannot be combined; CLI errors fast'
+  - Test tables auto-create if missing and match prod schema exactly
+  - Existing jobs do not require signature changes
+  - 'Unit tests cover:'
+  - CI green (ruff + pytest)
+  goal: Add safe development modes for testing new streams without affecting production BigQuery tables
+orchestrator_contract:
+  artifacts_dir: .aip_artifacts/AIP-lorchestra-2025-11-25-001
+  logging: jsonl
+  state_machine:
+    events:
+    - run_step
+    - await_gate
+    - approve
+    - reject
+    - retry
+    - escalate
+    - complete
+    states:
+    - pending
+    - running
+    - awaiting_human
+    - failed
+    - succeeded
+    - rolled_back
+plan:
+- description: Add CLI Flags
+  gate_ref: 'G0: Design Review'
+  kind: code
+  prompt: "Modify `lorchestra run` in `lorchestra/cli.py` to accept new flags:\n```python\n@main.command(\"\
+    run\")\n@click.argument(\"job\")\n@click.option(\"--account\", help=\"Account identifier\")\n@click.option(\"\
+    --since\", help=\"Start time (ISO or relative)\")\n@click.option(\"--until\", help=\"End time (ISO)\"\
+    )\n@click.option(\"--dry-run\", is_flag=True, help=\"Extract records without writing to BigQuery\"\
+    )\n@click.option(\"--test-table\", is_flag=True, help=\"Write to test_event_log/test_raw_objects instead\
+    \ of prod\")\ndef run(job: str, dry_run: bool, test_table: bool, **kwargs):\n    ...\n```\nError fast\
+    \ if both flags set:\n```python\nif dry_run and test_table:\n    raise click.UsageError(\"--dry-run\
+    \ and --test-table are mutually exclusive\")\n```\nPrint clear banner at start showing active mode:\n\
+    - `=== DRY RUN MODE === (no BigQuery writes)`\n- `=== TEST TABLE MODE === (writing to test_event_log,\
+    \ test_raw_objects)`\nAlso update `run-job` alias with same flags."
+  role: coding_agent
+  step_id: step-001
+- description: Add Run-Mode Context to Sink Layer
+  gate_ref: 'G1: Code Review'
+  kind: code
+  prompt: "In `lorchestra/stack_clients/event_client.py`, add run-mode setters and routing:\n```python\n\
+    # Module-level run mode context\n_DRY_RUN_MODE = False\n_TEST_TABLE_MODE = False\ndef set_run_mode(*,\
+    \ dry_run: bool = False, test_table: bool = False) -> None:\n    \"\"\"Set the run mode for event_client\
+    \ operations.\n    Call this once at CLI entry before job execution.\n    \"\"\"\n    global _DRY_RUN_MODE,\
+    \ _TEST_TABLE_MODE\n    _DRY_RUN_MODE = dry_run\n    _TEST_TABLE_MODE = test_table\n```\nModify `log_event()`:\n\
+    ```python\nif _DRY_RUN_MODE:\n    logger.info(f\"[DRY-RUN] Would log event {event_type} for {source_system}\
+    \ status={status}\")\n    if payload:\n        logger.debug(f\"[DRY-RUN] Event payload: {payload}\"\
+    )\n    return\n# Use test table if in test mode\ntable_name = \"test_event_log\" if _TEST_TABLE_MODE\
+    \ else \"event_log\"\ntable_ref = _get_table_ref_by_name(table_name)\n# ... existing insert logic\n\
+    ```\nModify `upsert_objects()`:\n```python\nif _DRY_RUN_MODE:\n    count = 0\n    samples = []\n \
+    \   for obj in objects:\n        count += 1\n        if len(samples) < 3:\n            samples.append(obj)\n\
+    \    logger.info(f\"[DRY-RUN] Would upsert {count} {object_type} objects for {source_system}\")\n\
+    \    for i, s in enumerate(samples):\n        ik = idem_key_fn(s)\n        logger.info(f\"[DRY-RUN]\
+    \ Sample {i+1} idem_key={ik}\")\n        logger.debug(f\"[DRY-RUN] Sample {i+1} payload={json.dumps(s,\
+    \ default=str)[:500]}\")\n    return\n# Use test table if in test mode\ntable_name = \"test_raw_objects\"\
+    \ if _TEST_TABLE_MODE else \"raw_objects\"\n# ... existing upsert logic with table_name\n```\n**Important:**\
+    \ In dry-run branch, consume the iterator once for sampling. Don't materialize twice."
+  role: coding_agent
+  step_id: step-002
+- description: Ensure Test Tables Exist
+  gate_ref: 'G1: Code Review'
+  kind: code
+  prompt: "Add helper to create test tables from prod schema:\n```python\ndef ensure_test_tables_exist(bq_client)\
+    \ -> None:\n    \"\"\"Create test_event_log and test_raw_objects if they don't exist.\n    Copies\
+    \ schema from production tables. Only called when --test-table is active.\n    Dry-run never creates\
+    \ BQ resources.\n    \"\"\"\n    dataset = os.environ.get(\"EVENTS_BQ_DATASET\")\n    _copy_schema_if_missing(\n\
+    \        bq_client,\n        source=f\"{dataset}.event_log\",\n        dest=f\"{dataset}.test_event_log\"\
+    \n    )\n    _copy_schema_if_missing(\n        bq_client,\n        source=f\"{dataset}.raw_objects\"\
+    ,\n        dest=f\"{dataset}.test_raw_objects\"\n    )\ndef _copy_schema_if_missing(bq_client, source:\
+    \ str, dest: str) -> None:\n    \"\"\"Copy table schema from source to dest if dest doesn't exist.\"\
+    \"\"\n    try:\n        bq_client.get_table(dest)\n        return  # Already exists\n    except Exception:\n\
+    \        pass  # Doesn't exist, create it\n    source_table = bq_client.get_table(source)\n    new_table\
+    \ = bigquery.Table(dest, schema=source_table.schema)\n    bq_client.create_table(new_table)\n    logger.info(f\"\
+    Created test table: {dest}\")\n```"
+  role: coding_agent
+  step_id: step-003
+- description: Wire CLI to Run Mode
+  gate_ref: 'G1: Code Review'
+  kind: code
+  prompt: "Update `_run_job_impl()` in `lorchestra/cli.py`:\n1. Call `set_run_mode()` before job execution\n\
+    2. If `--test-table`: call `ensure_test_tables_exist(bq_client)`\n3. After job completes, print summary\
+    \ line: mode, job, records, duration\n```python\ndef _run_job_impl(job: str, dry_run: bool = False,\
+    \ test_table: bool = False, **kwargs):\n    from lorchestra.stack_clients.event_client import set_run_mode,\
+    \ ensure_test_tables_exist\n    # Validate mutually exclusive flags\n    if dry_run and test_table:\n\
+    \        raise click.UsageError(\"--dry-run and --test-table are mutually exclusive\")\n    # Set\
+    \ run mode before any BQ operations\n    set_run_mode(dry_run=dry_run, test_table=test_table)\n  \
+    \  # Print mode banner\n    if dry_run:\n        click.echo(\"=\" * 50)\n        click.echo(\"===\
+    \ DRY RUN MODE === (no BigQuery writes)\")\n        click.echo(\"=\" * 50)\n    elif test_table:\n\
+    \        click.echo(\"=\" * 50)\n        click.echo(\"=== TEST TABLE MODE ===\")\n        click.echo(\"\
+    Writing to: test_event_log, test_raw_objects\")\n        click.echo(\"=\" * 50)\n    # Create BQ client\n\
+    \    bq_client = bigquery.Client()\n    # Ensure test tables exist (only for test-table mode)\n  \
+    \  if test_table:\n        ensure_test_tables_exist(bq_client)\n    # ... rest of existing job execution\
+    \ logic ...\n    # Summary at end\n    if dry_run:\n        click.echo(f\"\\n[DRY-RUN] {job_name}\
+    \ completed in {duration:.2f}s (no writes)\")\n    elif test_table:\n        click.echo(f\"\\n[TEST]\
+    \ {job_name} completed in {duration:.2f}s (wrote to test tables)\")\n```"
+  role: coding_agent
+  step_id: step-004
+- description: Unit Tests
+  gate_ref: 'G2: Pre-Release'
+  kind: code
+  outputs:
+  - tests/test_dry_run.py
+  - tests/test_test_table.py
+  prompt: "Add two minimal tests:\n**1. `tests/test_dry_run.py`:**\n- Patch BQ `insert_rows_json` and\
+    \ `load_table_from_json`\n- Call `set_run_mode(dry_run=True)`\n- Call `log_event()` and `upsert_objects()`\
+    \ with test data\n- Assert no BQ write methods called\n**2. `tests/test_test_table.py`:**\n- Patch\
+    \ `_get_table_ref` or table resolution\n- Call `set_run_mode(test_table=True)`\n- Assert tables resolved\
+    \ are `test_event_log` and `test_raw_objects`\n- Assert prod tables not referenced\n```python\n# tests/test_dry_run.py\n\
+    def test_dry_run_skips_bq_writes(mocker):\n    from lorchestra.stack_clients.event_client import set_run_mode,\
+    \ log_event, upsert_objects\n    mock_insert = mocker.patch(\"google.cloud.bigquery.Client.insert_rows_json\"\
+    )\n    mock_load = mocker.patch(\"google.cloud.bigquery.Client.load_table_from_json\")\n    set_run_mode(dry_run=True)\n\
+    \    # These should not call BQ\n    log_event(event_type=\"test\", source_system=\"test\", correlation_id=\"\
+    test\", bq_client=None)\n    upsert_objects(objects=[{\"id\": \"1\"}], source_system=\"test\", object_type=\"\
+    test\",\n                   correlation_id=\"test\", idem_key_fn=lambda x: x[\"id\"], bq_client=None)\n\
+    \    mock_insert.assert_not_called()\n    mock_load.assert_not_called()\n```"
+  role: coding_agent
+  step_id: step-005
+- description: Manual Validation
+  gate_ref: 'G2: Pre-Release'
+  kind: code
+  outputs:
+  - artifacts/test/dry-run-test-table-results.md
+  prompt: "Test both flags manually with an existing job:\n1. **Test dry-run:**\n   ```bash\n   lorchestra\
+    \ run gmail_ingest_acct1 --since 2025-11-24 --until 2025-11-25 --dry-run\n   ```\n   Verify:\n   -\
+    \ Banner shows \"DRY RUN MODE\"\n   - Record count and sample idem_keys logged\n   - No new rows in\
+    \ event_log or raw_objects\n2. **Test test-table:**\n   ```bash\n   lorchestra run gmail_ingest_acct1\
+    \ --since 2025-11-24 --until 2025-11-25 --test-table\n   ```\n   Verify:\n   - Banner shows \"TEST\
+    \ TABLE MODE\"\n   - `test_event_log` and `test_raw_objects` tables created\n   - Data written to\
+    \ test tables, not production\n3. **Test mutual exclusion:**\n   ```bash\n   lorchestra run gmail_ingest_acct1\
+    \ --dry-run --test-table\n   ```\n   Verify: CLI errors with \"mutually exclusive\" message"
+  role: coding_agent
+  step_id: step-006
+- description: Documentation
+  gate_ref: 'G3: Post-Implementation'
+  kind: code
+  prompt: "Update CLI help text and add examples:\n```\nExamples:\n  # Dry run - extract and log, no writes\n\
+    \  lorchestra run dataverse_ingest_contacts --dry-run\n  # Test tables - full run to isolated tables\n\
+    \  lorchestra run dataverse_ingest_contacts --since 2025-01-01 --test-table\n  # These are mutually\
+    \ exclusive (will error)\n  lorchestra run job --dry-run --test-table\n```"
+  role: coding_agent
+  step_id: step-007
+project_slug: lorchestra
+repo:
+  default_branch: main
+  url: git@github.com:benthepsychologist/lorchestra.git
+  working_branch: feat/dry-run-test-table
+spec_version: 1.0.0
+tier: C
+title: Add --dry-run and --test-table Flags to lorchestra CLI
+updated: '2025-11-25T04:00:00+00:00'
+version: '0.1'
+

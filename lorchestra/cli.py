@@ -21,13 +21,35 @@ def main():
     pass
 
 
-def _run_job_impl(job: str, **kwargs):
+def _run_job_impl(job: str, dry_run: bool = False, test_table: bool = False, **kwargs):
     """Shared implementation for run/run-job commands."""
     from google.cloud import bigquery
     from lorchestra.jobs import execute_job, discover_jobs
-    from lorchestra.stack_clients.event_client import log_event
+    from lorchestra.stack_clients.event_client import (
+        log_event,
+        set_run_mode,
+        ensure_test_tables_exist,
+    )
     from datetime import datetime, timezone
     import time
+
+    # Validate mutually exclusive flags
+    if dry_run and test_table:
+        raise click.UsageError("--dry-run and --test-table are mutually exclusive")
+
+    # Set run mode BEFORE any BQ operations
+    set_run_mode(dry_run=dry_run, test_table=test_table)
+
+    # Print mode banner
+    if dry_run:
+        click.echo("=" * 50)
+        click.echo("=== DRY RUN MODE === (no BigQuery writes)")
+        click.echo("=" * 50)
+    elif test_table:
+        click.echo("=" * 50)
+        click.echo("=== TEST TABLE MODE ===")
+        click.echo("Writing to: test_event_log, test_raw_objects")
+        click.echo("=" * 50)
 
     # Parse job argument - support PACKAGE/JOB or just JOB
     if "/" in job:
@@ -57,6 +79,10 @@ def _run_job_impl(job: str, **kwargs):
 
     # Create BQ client once
     bq_client = bigquery.Client()
+
+    # Ensure test tables exist (only for test-table mode)
+    if test_table:
+        ensure_test_tables_exist(bq_client)
 
     # Generate run_id for job execution tracking
     run_id = f"{job_name}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
@@ -102,7 +128,13 @@ def _run_job_impl(job: str, **kwargs):
             bq_client=bq_client,
         )
 
-        click.echo(f"✓ {package}/{job_name} completed")
+        # Summary message based on mode
+        if dry_run:
+            click.echo(f"\n[DRY-RUN] {job_name} completed in {duration_seconds:.2f}s (no writes)")
+        elif test_table:
+            click.echo(f"\n[TEST] {job_name} completed in {duration_seconds:.2f}s (wrote to test tables)")
+        else:
+            click.echo(f"✓ {package}/{job_name} completed in {duration_seconds:.2f}s")
 
     except Exception as e:
         duration_seconds = time.time() - start_time
@@ -133,15 +165,19 @@ def _run_job_impl(job: str, **kwargs):
 @click.option("--account", help="Account identifier")
 @click.option("--since", help="Start time (ISO or relative)")
 @click.option("--until", help="End time (ISO)")
-def run(job: str, **kwargs):
+@click.option("--dry-run", is_flag=True, help="Extract records without writing to BigQuery")
+@click.option("--test-table", is_flag=True, help="Write to test_event_log/test_raw_objects instead of prod")
+def run(job: str, dry_run: bool, test_table: bool, **kwargs):
     """
     Run a job by name.
 
     Examples:
         lorchestra run gmail_ingest_acct1 --since "2025-11-23"
         lorchestra run gmail_ingest_acct2
+        lorchestra run gmail_ingest_acct1 --dry-run
+        lorchestra run gmail_ingest_acct1 --test-table
     """
-    _run_job_impl(job, **kwargs)
+    _run_job_impl(job, dry_run=dry_run, test_table=test_table, **kwargs)
 
 
 @main.command("run-job")
@@ -149,15 +185,19 @@ def run(job: str, **kwargs):
 @click.option("--account", help="Account identifier")
 @click.option("--since", help="Start time (ISO or relative)")
 @click.option("--until", help="End time (ISO)")
-def run_job(job: str, **kwargs):
+@click.option("--dry-run", is_flag=True, help="Extract records without writing to BigQuery")
+@click.option("--test-table", is_flag=True, help="Write to test_event_log/test_raw_objects instead of prod")
+def run_job(job: str, dry_run: bool, test_table: bool, **kwargs):
     """
     Run a job by name (alias for 'run').
 
     Examples:
         lorchestra run-job gmail_ingest_acct1 --since "2025-11-23"
         lorchestra run-job gmail_ingest_acct2
+        lorchestra run-job gmail_ingest_acct1 --dry-run
+        lorchestra run-job gmail_ingest_acct1 --test-table
     """
-    _run_job_impl(job, **kwargs)
+    _run_job_impl(job, dry_run=dry_run, test_table=test_table, **kwargs)
 
 
 @main.group("jobs")
