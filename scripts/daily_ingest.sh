@@ -25,4 +25,10 @@ lorchestra run exchange_ingest_ben_mensio
 lorchestra run exchange_ingest_booking_mensio
 lorchestra run exchange_ingest_info_mensio
 
+# Stripe payment data
+lorchestra run stripe_ingest_customers
+lorchestra run stripe_ingest_invoices
+lorchestra run stripe_ingest_payment_intents
+lorchestra run stripe_ingest_refunds
+
 echo "=== Complete: $(date -Iseconds) ==="
