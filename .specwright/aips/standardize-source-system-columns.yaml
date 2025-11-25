@@ -2,19 +2,22 @@ aip_id: AIP-lorchestra-2025-11-25-001
 context:
   background: ''
   constraints: []
-created: '2025-11-25T13:11:50.953128+00:00'
+created: '2025-11-25T13:30:05.895278+00:00'
 meta:
-  created_at: '2025-11-25T13:11:50.953128+00:00'
+  created_at: '2025-11-25T13:30:05.895278+00:00'
   created_by: benthepsychologist
 objective:
   acceptance_criteria:
-  - '`raw_objects` has new `connection_name` STRING column'
-  - 'Existing data migrated: `connection_name = current source_system`, `source_system = normalized provider`'
-  - All ingestion jobs updated to set all three columns
-  - '`event_log` updated with same pattern (if it has source_system)'
-  - 'Queries work:'
-  - Test tables (`test_raw_objects`, `test_event_log`) also updated
-  goal: Add connection_name column to raw_objects and normalize source_system to provider-only values
+  - '`raw_objects` schema updated with: `source_system`, `connection_name`, `object_type`, `schema_ref`'
+  - '`event_log` schema updated with: `source_system`, `connection_name`, `target_object_type`, `event_schema_ref`'
+  - '`idem_key` pattern: `{source_system}:{connection_name}:{object_type}:{external_id}` (opaque, never
+    parsed)'
+  - '`upsert.completed` events emitted with insert/update counts'
+  - All ingestion jobs updated to use new column pattern
+  - Clean re-ingestion of all data (~200MB)
+  - Test tables updated with same schema
+  goal: Separate concerns in raw_objects and event_log with proper source/connection/type columns, add
+    schema_ref, and add upsert telemetry
 orchestrator_contract:
   artifacts_dir: .aip_artifacts/AIP-lorchestra-2025-11-25-001
   logging: jsonl
@@ -35,22 +38,62 @@ orchestrator_contract:
     - succeeded
     - rolled_back
 plan:
-- description: Schema Migration Design
+- description: Schema Design Document
   gate_ref: 'G0: Design Approval'
   kind: code
   outputs:
   - artifacts/migration/schema-design.md
-  - artifacts/migration/migration.sql
-  prompt: "Design the BigQuery schema migration:\n1. Document current schema for `raw_objects` and `event_log`\n\
-    2. Design new schema with `connection_name` column\n3. Write migration SQL:\n   - ALTER TABLE to add\
-    \ `connection_name` column\n   - UPDATE to populate `connection_name` from current `source_system`\n\
-    \   - UPDATE to normalize `source_system` to provider-only values\n4. Document mapping rules:\n  \
-    \ - `tap-gmail--acct1` → `source_system='gmail'`, `connection_name='gmail-acct1'`\n   - `exchange--ben-mensio`\
-    \ → `source_system='exchange'`, `connection_name='exchange-ben-mensio'`\n   - `dataverse--clinic-contacts`\
-    \ → `source_system='dataverse'`, `connection_name='dataverse-clinic-contacts'`\n   - `google-forms--intake-01`\
-    \ → `source_system='google_forms'`, `connection_name='google-forms-intake-01'`"
+  - artifacts/migration/ddl-raw-objects.sql
+  - artifacts/migration/ddl-event-log.sql
+  prompt: 'Create detailed schema design document:
+
+    1. Document current schema for both tables
+
+    2. Document target schema (as above)
+
+    3. Write DDL for new tables
+
+    4. Write DDL for test tables
+
+    5. Document connection_name values for all existing connections'
   role: coding_agent
   step_id: step-001
+- description: Update event_client.py
+  gate_ref: 'G1: Code Review'
+  kind: code
+  outputs:
+  - lorchestra/stack_clients/event_client.py
+  prompt: "Refactor event_client.py with new schema:\n1. **Update `upsert_objects()` signature:**\n  \
+    \ ```python\n   def upsert_objects(\n       *,\n       objects: Iterable[Dict],\n       source_system:\
+    \ str,        # provider: gmail, dataverse\n       connection_name: str,      # account: gmail-acct1\n\
+    \       object_type: str,          # stream: email, session\n       schema_ref: Optional[str] = None,\
+    \  # iglu URI\n       correlation_id: str,\n       idem_key_fn: Callable,\n       bq_client,\n   \
+    \    trace_id: Optional[str] = None,\n   ) -> UpsertResult:\n   ```\n2. **Return `UpsertResult` dataclass:**\n\
+    \   ```python\n   @dataclass\n   class UpsertResult:\n       total_records: int\n       inserted:\
+    \ int\n       updated: int\n       batch_count: int\n       duration_seconds: float\n   ```\n3. **Emit\
+    \ `upsert.completed` event** inside `upsert_objects()` with counts\n4. **Update `log_event()` signature:**\n\
+    \   ```python\n   def log_event(\n       *,\n       event_type: str,\n       source_system: str,\n\
+    \       connection_name: Optional[str] = None,\n       target_object_type: Optional[str] = None,\n\
+    \       event_schema_ref: Optional[str] = None,\n       correlation_id: str,\n       status: str,\n\
+    \       payload: Optional[Dict] = None,\n       error_message: Optional[str] = None,\n       trace_id:\
+    \ Optional[str] = None,\n       bq_client,\n   ):\n   ```\n5. **Update temp table schema and MERGE**\
+    \ to include `connection_name`, `schema_ref`\n6. **Update idem_key generation** in callers (not in\
+    \ event_client - callers provide idem_key_fn)"
+  role: coding_agent
+  step_id: step-002
+- description: Update idem_key Functions
+  gate_ref: 'G1: Code Review'
+  kind: code
+  outputs:
+  - lorchestra/idem_keys.py
+  prompt: "Update `lorchestra/idem_keys.py` with new pattern:\n1. **New idem_key pattern:** `{source_system}:{connection_name}:{object_type}:{external_id}`\n\
+    2. **Update all idem_key functions:**\n   ```python\n   def gmail_idem_key(source_system: str, connection_name:\
+    \ str) -> Callable:\n       def compute(obj: dict) -> str:\n           msg_id = obj.get(\"id\")\n\
+    \           return f\"{source_system}:{connection_name}:email:{msg_id}\"\n       return compute\n\
+    \   ```\n3. **Update for each provider:**\n   - `gmail_idem_key`\n   - `exchange_idem_key`\n   - `dataverse_idem_key`\n\
+    \   - `google_forms_idem_key`"
+  role: coding_agent
+  step_id: step-003
 - description: Update Ingestion Jobs
   gate_ref: 'G1: Code Review'
   kind: code
@@ -59,76 +102,70 @@ plan:
   - lorchestra/jobs/ingest_exchange.py
   - lorchestra/jobs/ingest_dataverse.py
   - lorchestra/jobs/ingest_google_forms.py
-  prompt: "Update all ingestion job modules to use the new three-column pattern:\n1. `lorchestra/jobs/ingest_gmail.py`:\n\
-    \   - Change `source_system` from `\"tap-gmail--acct1\"` to `\"gmail\"`\n   - Add `connection_name=\"\
-    gmail-acct1\"` parameter to `upsert_objects()`\n2. `lorchestra/jobs/ingest_exchange.py`:\n   - Change\
-    \ `source_system` from `\"exchange--ben-mensio\"` to `\"exchange\"`\n   - Add `connection_name=\"\
-    exchange-ben-mensio\"` etc.\n3. `lorchestra/jobs/ingest_dataverse.py`:\n   - Change `source_system`\
-    \ from `\"dataverse--clinic-contacts\"` to `\"dataverse\"`\n   - Add `connection_name=\"dataverse-clinic-contacts\"\
-    ` etc.\n4. `lorchestra/jobs/ingest_google_forms.py`:\n   - Change `source_system` from `\"google-forms--ipip120\"\
-    ` to `\"google_forms\"`\n   - Add `connection_name=\"google-forms-ipip120\"` etc.\n5. Update `_get_last_sync_timestamp()`\
-    \ queries in each module to use both `source_system` AND `connection_name`"
-  role: coding_agent
-  step_id: step-002
-- description: Update event_client.py
-  gate_ref: 'G1: Code Review'
-  kind: code
-  outputs:
-  - lorchestra/stack_clients/event_client.py
-  prompt: 'Update the event_client module:
-
-    1. Add `connection_name` parameter to `upsert_objects()` function signature
-
-    2. Add `connection_name` to the temp table schema and MERGE query
-
-    3. Add `connection_name` parameter to `log_event()` function signature
-
-    4. Update both functions to require `connection_name` (not optional)
-
-    5. Update docstrings and examples'
-  role: coding_agent
-  step_id: step-003
-- description: Run BigQuery Migration
-  gate_ref: 'G2: Pre-Release'
-  kind: code
-  prompt: 'Execute the schema migration on BigQuery:
-
-    1. Run migration on test tables first (`test_raw_objects`, `test_event_log`)
-
-    2. Verify data integrity on test tables
-
-    3. Run migration on production tables (`raw_objects`, `event_log`)
-
-    4. Verify data integrity on production tables
-
-    5. Document row counts before/after'
+  prompt: "Update all ingestion job modules to use new column pattern:\n1. **Gmail jobs** (`ingest_gmail.py`):\n\
+    \   - `source_system = \"gmail\"`\n   - `connection_name = \"gmail-acct1\"` (etc.)\n   - `object_type\
+    \ = \"email\"`\n   - Update `_get_last_sync_timestamp()` to filter on all three columns\n2. **Exchange\
+    \ jobs** (`ingest_exchange.py`):\n   - `source_system = \"exchange\"`\n   - `connection_name = \"\
+    exchange-ben-mensio\"` (etc.)\n   - `object_type = \"email\"`\n3. **Dataverse jobs** (`ingest_dataverse.py`):\n\
+    \   - `source_system = \"dataverse\"`\n   - `connection_name = \"dataverse-clinic\"`\n   - `object_type\
+    \ = \"contact\"` / `\"session\"` / `\"report\"`\n4. **Google Forms jobs** (`ingest_google_forms.py`):\n\
+    \   - `source_system = \"google_forms\"`\n   - `connection_name = \"google-forms-ipip120\"` (etc.)\n\
+    \   - `object_type = \"form_response\"`\n5. **Update log_event calls** to use new parameters"
   role: coding_agent
   step_id: step-004
+- description: Apply BigQuery Schema Changes
+  gate_ref: 'G2: Pre-Release'
+  kind: code
+  prompt: "Execute schema migration on BigQuery:\n1. **Archive existing tables (optional):**\n   ```sql\n\
+    \   CREATE TABLE raw_objects_legacy AS SELECT * FROM raw_objects;\n   CREATE TABLE event_log_legacy\
+    \ AS SELECT * FROM event_log;\n   ```\n2. **Drop and recreate tables with new schema:**\n   - Use\
+    \ DDL from Step 1\n   - Apply to both production and test tables\n3. **Verify schema:**\n   ```sql\n\
+    \   SELECT column_name, data_type FROM INFORMATION_SCHEMA.COLUMNS\n   WHERE table_name = 'raw_objects';\n\
+    \   ```"
+  role: coding_agent
+  step_id: step-005
+- description: Re-ingest All Data
+  gate_ref: 'G2: Pre-Release'
+  kind: code
+  prompt: "Re-run all ingestion jobs to populate clean data:\n1. **Gmail (3 accounts):**\n   ```bash\n\
+    \   lorchestra run gmail_ingest_acct1\n   lorchestra run gmail_ingest_acct2\n   lorchestra run gmail_ingest_acct3\n\
+    \   ```\n2. **Exchange (4 accounts):**\n   ```bash\n   lorchestra run exchange_ingest_ben_mensio\n\
+    \   lorchestra run exchange_ingest_booking_mensio\n   lorchestra run exchange_ingest_info_mensio\n\
+    \   lorchestra run exchange_ingest_ben_efs\n   ```\n3. **Dataverse (3 entities):**\n   ```bash\n \
+    \  lorchestra run dataverse_ingest_contacts\n   lorchestra run dataverse_ingest_sessions\n   lorchestra\
+    \ run dataverse_ingest_reports\n   ```\n4. **Google Forms (4 forms):**\n   ```bash\n   lorchestra\
+    \ run google_forms_ingest_ipip120\n   lorchestra run google_forms_ingest_intake_01\n   lorchestra\
+    \ run google_forms_ingest_intake_02\n   lorchestra run google_forms_ingest_followup\n   ```"
+  role: coding_agent
+  step_id: step-006
 - description: Validation & Testing
   gate_ref: 'G3: Pre-Release'
   kind: code
-  prompt: "Validate the migration and test ingestion:\n1. Run `--dry-run` for each ingestion job type\n\
-    2. Run `--test-table` for one job of each type\n3. Verify new records have correct three-column values\n\
-    4. Verify queries work as expected:\n   - `SELECT * FROM raw_objects WHERE source_system = 'gmail'`\n\
-    \   - `SELECT * FROM raw_objects WHERE connection_name = 'gmail-acct1'`\n   - `SELECT * FROM raw_objects\
-    \ WHERE object_type = 'email' AND source_system IN ('gmail', 'exchange')`"
+  prompt: "Validate the migration:\n1. **Verify raw_objects data:**\n   ```sql\n   SELECT source_system,\
+    \ connection_name, object_type, COUNT(*)\n   FROM raw_objects\n   GROUP BY 1, 2, 3\n   ORDER BY 1,\
+    \ 2, 3;\n   ```\n2. **Verify event_log data:**\n   ```sql\n   SELECT event_type, source_system, connection_name,\
+    \ target_object_type, COUNT(*)\n   FROM event_log\n   GROUP BY 1, 2, 3, 4\n   ORDER BY 1, 2, 3, 4;\n\
+    \   ```\n3. **Verify upsert.completed events exist:**\n   ```sql\n   SELECT * FROM event_log WHERE\
+    \ event_type = 'upsert.completed' LIMIT 10;\n   ```\n4. **Verify idem_key format:**\n   ```sql\n \
+    \  SELECT idem_key FROM raw_objects LIMIT 5;\n   -- Should be: gmail:gmail-acct1:email:18c5a7b2...\n\
+    \   ```\n5. **Test queries work:**\n   ```sql\n   -- All Gmail emails\n   SELECT COUNT(*) FROM raw_objects\
+    \ WHERE source_system = 'gmail' AND object_type = 'email';\n   -- Specific account\n   SELECT COUNT(*)\
+    \ FROM raw_objects WHERE connection_name = 'gmail-acct1';\n   -- All emails across providers\n   SELECT\
+    \ COUNT(*) FROM raw_objects WHERE object_type = 'email' AND source_system IN ('gmail', 'exchange');\n\
+    \   ```"
   role: coding_agent
-  step_id: step-005
+  step_id: step-007
 - description: Update Documentation
   gate_ref: 'G3: Pre-Release'
   kind: code
   outputs:
   - ARCHITECTURE.md
   - setup/bigquery-setup.md
-  prompt: 'Update documentation to reflect new schema:
-
-    1. Update `ARCHITECTURE.md` - raw_objects schema section
-
-    2. Update any BQ setup docs in `setup/`
-
-    3. Add migration notes'
+  prompt: "Update documentation:\n1. **ARCHITECTURE.md:**\n   - Update raw_objects schema section\n  \
+    \ - Update event_log schema section\n   - Document idem_key pattern\n   - Document event types\n2.\
+    \ **setup/bigquery-setup.md** (if exists):\n   - Update table DDL"
   role: coding_agent
-  step_id: step-006
+  step_id: step-008
 project_slug: lorchestra
 repo:
   default_branch: main
@@ -136,7 +173,7 @@ repo:
   working_branch: feat/standardize-source-columns
 spec_version: 1.0.0
 tier: B
-title: Standardize Source System Columns
-updated: '2025-11-25T13:11:50.953144+00:00'
+title: Standardize Source System Columns & Event Schema
+updated: '2025-11-25T13:30:05.895294+00:00'
 version: '0.1'
 
