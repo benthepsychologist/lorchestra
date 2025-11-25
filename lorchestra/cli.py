@@ -92,12 +92,11 @@ def _run_job_impl(job: str, dry_run: bool = False, test_table: bool = False, **k
     known_options = ["account", "since", "until"]
     job_kwargs = {k: v for k, v in kwargs.items() if k in known_options and v is not None}
 
-    # Log job.started event
+    # Log job.started event (no target_object_type for system events)
     log_event(
         event_type="job.started",
         source_system="lorchestra",
         correlation_id=run_id,
-        object_type="job_run",
         status="ok",
         payload={
             "job_name": job_name,
@@ -113,12 +112,11 @@ def _run_job_impl(job: str, dry_run: bool = False, test_table: bool = False, **k
         execute_job(package, job_name, bq_client, **job_kwargs)
         duration_seconds = time.time() - start_time
 
-        # Log job.completed event
+        # Log job.completed event (no target_object_type for system events)
         log_event(
             event_type="job.completed",
             source_system="lorchestra",
             correlation_id=run_id,
-            object_type="job_run",
             status="ok",
             payload={
                 "job_name": job_name,
@@ -139,12 +137,11 @@ def _run_job_impl(job: str, dry_run: bool = False, test_table: bool = False, **k
     except Exception as e:
         duration_seconds = time.time() - start_time
 
-        # Log job.failed event
+        # Log job.failed event (no target_object_type for system events)
         log_event(
             event_type="job.failed",
             source_system="lorchestra",
             correlation_id=run_id,
-            object_type="job_run",
             status="failed",
             error_message=str(e),
             payload={

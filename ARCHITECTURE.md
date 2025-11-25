@@ -246,46 +246,77 @@ BigQuery is the primary storage, using a two-table pattern separating audit trai
 
 **Implemented Design:** Audit trail (event_log) + state projection (raw_objects)
 
-**Table 1: `event_log`** (Audit trail - no payload)
+**Column Standards (aligned with Airbyte/Singer/Meltano):**
+- **source_system**: Provider family (gmail, exchange, dataverse, google_forms)
+- **connection_name**: Configured account (gmail-acct1, exchange-ben-mensio)
+- **object_type / target_object_type**: Domain object (email, contact, session, form_response)
+
+**Table 1: `event_log`** (Audit trail - with optional payload)
 ```sql
 CREATE TABLE event_log (
-  event_id STRING,          -- UUID per emit() call
-  event_type STRING,        -- "email.received", etc.
-  source_system STRING,     -- "tap-gmail--acct1-personal"
-  object_type STRING,       -- "email", "contact", etc.
-  idem_key STRING,          -- References raw_objects
-  correlation_id STRING,    -- run_id for tracing
-  created_at TIMESTAMP,
-  status STRING             -- "ok" | "error"
+  event_id STRING NOT NULL,           -- UUID per emit() call
+  event_type STRING NOT NULL,         -- Verb: job.started, ingest.completed, upsert.completed
+  source_system STRING NOT NULL,      -- Provider (or 'lorchestra' for system events)
+  connection_name STRING,             -- Account (NULL for system events)
+  target_object_type STRING,          -- Noun: email, session (NULL for job events)
+  event_schema_ref STRING,            -- Iglu URI: iglu:com.mensio.event/ingest_completed/jsonschema/1-0-0
+  correlation_id STRING,              -- run_id for tracing
+  trace_id STRING,                    -- Cross-system trace ID
+  created_at TIMESTAMP NOT NULL,
+  status STRING NOT NULL,             -- "ok" | "failed"
+  error_message STRING,               -- Human-readable error if status="failed"
+  payload JSON                        -- Telemetry: counts, duration, parameters
 )
 PARTITION BY DATE(created_at)
-CLUSTER BY source_system, object_type, event_type;
+CLUSTER BY source_system, event_type;
 ```
-- One row per `emit()` call (immutable audit trail)
+- One row per event (immutable audit trail)
 - Partitioned by date for performance
-- Clustered for query optimization
+- Event types: job.started, job.completed, job.failed, ingest.completed, ingest.failed, upsert.completed
 
 **Table 2: `raw_objects`** (Deduped object store with payload)
 ```sql
 CREATE TABLE raw_objects (
-  idem_key STRING PRIMARY KEY,  -- Deterministic content hash
-  source_system STRING,
-  object_type STRING,
-  external_id STRING,           -- Gmail message_id, etc.
-  payload JSON,                 -- Full raw data
-  first_seen TIMESTAMP,
-  last_seen TIMESTAMP
+  idem_key STRING NOT NULL,           -- Opaque: {source_system}:{connection_name}:{object_type}:{external_id}
+  source_system STRING NOT NULL,      -- Provider: gmail, exchange, dataverse, google_forms
+  connection_name STRING NOT NULL,    -- Account: gmail-acct1, exchange-ben-mensio
+  object_type STRING NOT NULL,        -- Domain object: email, contact, session, form_response
+  schema_ref STRING,                  -- Iglu URI: iglu:com.mensio.raw/raw_gmail_email/jsonschema/1-0-0
+  external_id STRING,                 -- Upstream ID (Gmail message_id, Dataverse GUID, etc.)
+  payload JSON NOT NULL,              -- Full raw data
+  first_seen TIMESTAMP NOT NULL,
+  last_seen TIMESTAMP NOT NULL
 )
-CLUSTER BY source_system, object_type;
+CLUSTER BY source_system, connection_name, object_type;
 ```
 - One row per unique object (MERGE provides idempotency)
 - Same object re-ingested → `payload` and `last_seen` updated (state projection)
 - Payload stored as native BigQuery JSON type
+- idem_key is opaque - never parsed, all filtering uses explicit columns
+
+**idem_key Pattern:**
+```
+{source_system}:{connection_name}:{object_type}:{external_id}
+```
+Examples:
+- `gmail:gmail-acct1:email:18c5a7b2e3f4d5c6`
+- `exchange:exchange-ben-mensio:email:AAMkAGQ...`
+- `dataverse:dataverse-clinic:session:739330df-5757-f011-bec2-6045bd619595`
+- `google_forms:google-forms-intake-01:form_response:ACYDBNi84NuJUO2O13A`
+
+**Connection Name Mapping:**
+| Provider | connection_name | object_type |
+|----------|-----------------|-------------|
+| gmail | gmail-acct1, gmail-acct2, gmail-acct3 | email |
+| exchange | exchange-ben-mensio, exchange-booking-mensio, exchange-info-mensio | email |
+| dataverse | dataverse-clinic | contact, session, report |
+| google_forms | google-forms-ipip120, google-forms-intake-01/02, google-forms-followup | form_response |
 
 **Benefits:**
 - Idempotency: Re-running same extraction is safe (no duplicates)
-- Audit trail: Every ingestion event logged in event_log
+- Audit trail: Every ingestion event logged in event_log with telemetry
 - Clean separation: Metadata (event_log) vs. Data (raw_objects)
+- Query-friendly: Filter by source_system, connection_name, object_type (not parsing idem_key)
 
 **Retention:**
 - All events retained indefinitely (immutable log)

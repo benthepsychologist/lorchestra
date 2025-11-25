@@ -3,9 +3,14 @@
 This module uses InJest for Gmail extraction:
 1. Calls injest.get_stream() to get auth-aware Gmail stream
 2. Streams records to batch upsert (no per-object events)
-3. Logs telemetry events (ingestion.completed) with small payloads
+3. Logs telemetry events (ingest.completed) with small payloads
 
 This is the ONLY place event_client is called for Gmail ingestion.
+
+Column Standards (aligned with Airbyte/Singer/Meltano):
+- source_system: Provider family (always "gmail" for this module)
+- connection_name: Account identifier (e.g., "gmail-acct1")
+- object_type: Domain object (always "email" for this module)
 
 Date filtering:
 - Supports --since and --until CLI parameters
@@ -23,7 +28,7 @@ from lorchestra.injest_config import configure_injest
 logger = logging.getLogger(__name__)
 
 
-def _get_last_sync_timestamp(bq_client, source_system: str, object_type: str) -> Optional[str]:
+def _get_last_sync_timestamp(bq_client, source_system: str, connection_name: str, object_type: str) -> Optional[str]:
     """
     Query BigQuery for the most recent object timestamp.
 
@@ -31,7 +36,8 @@ def _get_last_sync_timestamp(bq_client, source_system: str, object_type: str) ->
 
     Args:
         bq_client: BigQuery client
-        source_system: Source system identifier (e.g., "tap-gmail--acct1-personal")
+        source_system: Provider family (e.g., "gmail")
+        connection_name: Account identifier (e.g., "gmail-acct1")
         object_type: Object type (e.g., "email")
 
     Returns:
@@ -44,6 +50,7 @@ def _get_last_sync_timestamp(bq_client, source_system: str, object_type: str) ->
         SELECT MAX(last_seen) as last_sync
         FROM `{dataset}.raw_objects`
         WHERE source_system = @source_system
+          AND connection_name = @connection_name
           AND object_type = @object_type
     """
 
@@ -51,6 +58,7 @@ def _get_last_sync_timestamp(bq_client, source_system: str, object_type: str) ->
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ScalarQueryParameter("source_system", "STRING", source_system),
+            bigquery.ScalarQueryParameter("connection_name", "STRING", connection_name),
             bigquery.ScalarQueryParameter("object_type", "STRING", object_type),
         ]
     )
@@ -111,6 +119,7 @@ def _parse_date_to_datetime(value: str) -> datetime:
 
 def _ingest_gmail(
     source_system: str,
+    connection_name: str,
     identity: str,
     account_id: str,
     bq_client,
@@ -121,11 +130,12 @@ def _ingest_gmail(
     Generic Gmail ingestion function using InJest.
 
     Pattern:
-    - 1 log_event() for ingestion.completed with telemetry payload
+    - 1 log_event() for ingest.completed with telemetry payload
     - 1 batch upsert_objects() for all emails (no per-object events)
 
     Args:
-        source_system: Source system identifier (e.g., "gmail--acct1-personal")
+        source_system: Provider family (always "gmail")
+        connection_name: Account identifier (e.g., "gmail-acct1")
         identity: InJest identity key (e.g., "gmail:acct1")
         account_id: Account identifier for run_id (e.g., "acct1")
         bq_client: BigQuery client for event emission
@@ -145,7 +155,7 @@ def _ingest_gmail(
     # Auto-detect last sync if no since provided
     if since is None:
         logger.info("No --since provided, querying BigQuery for last sync...")
-        last_sync = _get_last_sync_timestamp(bq_client, source_system, object_type)
+        last_sync = _get_last_sync_timestamp(bq_client, source_system, connection_name, object_type)
         if last_sync:
             since = last_sync
             logger.info(f"Found last sync: {since}")
@@ -156,7 +166,7 @@ def _ingest_gmail(
     since_dt = _parse_date_to_datetime(since) if since else None
     until_dt = _parse_date_to_datetime(until) if until else None
 
-    logger.info(f"Starting Gmail ingestion: {source_system}, identity={identity}, run_id={run_id}")
+    logger.info(f"Starting Gmail ingestion: {source_system}/{connection_name}, identity={identity}, run_id={run_id}")
     if since_dt:
         logger.info(f"Date filter: since={since_dt.isoformat()}")
     if until_dt:
@@ -179,24 +189,29 @@ def _ingest_gmail(
                 record_count += 1
                 yield record
 
-        upsert_objects(
+        result = upsert_objects(
             objects=count_and_yield(),
             source_system=source_system,
+            connection_name=connection_name,
             object_type=object_type,
             correlation_id=run_id,
-            idem_key_fn=gmail_idem_key(source_system),
+            idem_key_fn=gmail_idem_key(source_system, connection_name),
             bq_client=bq_client,
         )
 
-        # Step 3: Log ingestion.completed event with telemetry
+        # Log ingest.completed event with telemetry
         duration_seconds = time.time() - start_time
         log_event(
-            event_type="ingestion.completed",
+            event_type="ingest.completed",
             source_system=source_system,
+            connection_name=connection_name,
+            target_object_type=object_type,
             correlation_id=run_id,
             status="ok",
             payload={
                 "records_extracted": record_count,
+                "inserted": result.inserted,
+                "updated": result.updated,
                 "duration_seconds": round(duration_seconds, 2),
                 "since": since_dt.isoformat() if since_dt else None,
                 "until": until_dt.isoformat() if until_dt else None,
@@ -211,11 +226,13 @@ def _ingest_gmail(
     except Exception as e:
         logger.error(f"Gmail ingestion failed: {e}", exc_info=True)
 
-        # Log ingestion.failed event
+        # Log ingest.failed event
         duration_seconds = time.time() - start_time
         log_event(
-            event_type="ingestion.failed",
+            event_type="ingest.failed",
             source_system=source_system,
+            connection_name=connection_name,
+            target_object_type=object_type,
             correlation_id=run_id,
             status="failed",
             error_message=str(e),
@@ -231,35 +248,59 @@ def _ingest_gmail(
 
 def job_ingest_gmail_acct1(bq_client, since: Optional[str] = None, until: Optional[str] = None, **kwargs):
     """
-    Ingest Gmail messages from acct1-personal using InJest.
+    Ingest Gmail messages from acct1 using InJest.
 
     Args:
         bq_client: BigQuery client for event emission
         since: Start date (ISO, "-7d" relative, or None to auto-detect from BigQuery)
         until: End date (ISO or None for now)
     """
-    return _ingest_gmail("gmail--acct1-personal", "gmail:acct1", "acct1", bq_client, since=since, until=until)
+    return _ingest_gmail(
+        source_system="gmail",
+        connection_name="gmail-acct1",
+        identity="gmail:acct1",
+        account_id="acct1",
+        bq_client=bq_client,
+        since=since,
+        until=until,
+    )
 
 
 def job_ingest_gmail_acct2(bq_client, since: Optional[str] = None, until: Optional[str] = None, **kwargs):
     """
-    Ingest Gmail messages from acct2-business1 using InJest.
+    Ingest Gmail messages from acct2 using InJest.
 
     Args:
         bq_client: BigQuery client for event emission
         since: Start date (ISO, "-7d" relative, or None to auto-detect from BigQuery)
         until: End date (ISO or None for now)
     """
-    return _ingest_gmail("gmail--acct2-business1", "gmail:acct2", "acct2", bq_client, since=since, until=until)
+    return _ingest_gmail(
+        source_system="gmail",
+        connection_name="gmail-acct2",
+        identity="gmail:acct2",
+        account_id="acct2",
+        bq_client=bq_client,
+        since=since,
+        until=until,
+    )
 
 
 def job_ingest_gmail_acct3(bq_client, since: Optional[str] = None, until: Optional[str] = None, **kwargs):
     """
-    Ingest Gmail messages from acct3-bfarmstrong using InJest.
+    Ingest Gmail messages from acct3 using InJest.
 
     Args:
         bq_client: BigQuery client for event emission
         since: Start date (ISO, "-7d" relative, or None to auto-detect from BigQuery)
         until: End date (ISO or None for now)
     """
-    return _ingest_gmail("gmail--acct3-bfarmstrong", "gmail:acct3", "acct3", bq_client, since=since, until=until)
+    return _ingest_gmail(
+        source_system="gmail",
+        connection_name="gmail-acct3",
+        identity="gmail:acct3",
+        account_id="acct3",
+        bq_client=bq_client,
+        since=since,
+        until=until,
+    )

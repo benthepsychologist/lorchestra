@@ -3,9 +3,14 @@
 This module uses InJest for Exchange extraction:
 1. Calls injest.get_stream() to get auth-aware Exchange stream
 2. Streams records to batch upsert (no per-object events)
-3. Logs telemetry events (ingestion.completed) with small payloads
+3. Logs telemetry events (ingest.completed) with small payloads
 
 This is the ONLY place event_client is called for Exchange ingestion.
+
+Column Standards (aligned with Airbyte/Singer/Meltano):
+- source_system: Provider family (always "exchange" for this module)
+- connection_name: Account identifier (e.g., "exchange-ben-mensio")
+- object_type: Domain object (always "email" for this module)
 
 Date filtering:
 - Supports --since and --until CLI parameters
@@ -23,7 +28,7 @@ from lorchestra.injest_config import configure_injest
 logger = logging.getLogger(__name__)
 
 
-def _get_last_sync_timestamp(bq_client, source_system: str, object_type: str) -> Optional[str]:
+def _get_last_sync_timestamp(bq_client, source_system: str, connection_name: str, object_type: str) -> Optional[str]:
     """
     Query BigQuery for the most recent object timestamp.
 
@@ -31,7 +36,8 @@ def _get_last_sync_timestamp(bq_client, source_system: str, object_type: str) ->
 
     Args:
         bq_client: BigQuery client
-        source_system: Source system identifier (e.g., "tap-msgraph-mail--ben-mensio")
+        source_system: Provider family (e.g., "exchange")
+        connection_name: Account identifier (e.g., "exchange-ben-mensio")
         object_type: Object type (e.g., "email")
 
     Returns:
@@ -44,6 +50,7 @@ def _get_last_sync_timestamp(bq_client, source_system: str, object_type: str) ->
         SELECT MAX(last_seen) as last_sync
         FROM `{dataset}.raw_objects`
         WHERE source_system = @source_system
+          AND connection_name = @connection_name
           AND object_type = @object_type
     """
 
@@ -51,6 +58,7 @@ def _get_last_sync_timestamp(bq_client, source_system: str, object_type: str) ->
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ScalarQueryParameter("source_system", "STRING", source_system),
+            bigquery.ScalarQueryParameter("connection_name", "STRING", connection_name),
             bigquery.ScalarQueryParameter("object_type", "STRING", object_type),
         ]
     )
@@ -131,6 +139,7 @@ def _parse_date_to_datetime(value: str) -> datetime:
 
 def _ingest_exchange(
     source_system: str,
+    connection_name: str,
     identity: str,
     account_id: str,
     bq_client,
@@ -141,11 +150,12 @@ def _ingest_exchange(
     Generic Exchange ingestion function using InJest.
 
     Pattern:
-    - 1 log_event() for ingestion.completed with telemetry payload
+    - 1 log_event() for ingest.completed with telemetry payload
     - 1 batch upsert_objects() for all emails (no per-object events)
 
     Args:
-        source_system: Source system identifier (e.g., "exchange--ben-mensio")
+        source_system: Provider family (always "exchange")
+        connection_name: Account identifier (e.g., "exchange-ben-mensio")
         identity: InJest identity key (e.g., "exchange:ben-mensio")
         account_id: Account identifier for run_id (e.g., "ben-mensio")
         bq_client: BigQuery client for event emission
@@ -153,7 +163,7 @@ def _ingest_exchange(
         until: End date (ISO format or None for now)
     """
     from lorchestra.stack_clients.event_client import log_event, upsert_objects
-    from lorchestra.idem_keys import msgraph_idem_key
+    from lorchestra.idem_keys import exchange_idem_key
     import time
 
     # Ensure InJest is configured
@@ -165,7 +175,7 @@ def _ingest_exchange(
     # Auto-detect last sync if no since provided
     if since is None:
         logger.info("No --since provided, querying BigQuery for last sync...")
-        last_sync = _get_last_sync_timestamp(bq_client, source_system, object_type)
+        last_sync = _get_last_sync_timestamp(bq_client, source_system, connection_name, object_type)
         if last_sync:
             since = last_sync
             logger.info(f"Found last sync: {since}")
@@ -176,7 +186,7 @@ def _ingest_exchange(
     since_dt = _parse_date_to_datetime(since) if since else None
     until_dt = _parse_date_to_datetime(until) if until else None
 
-    logger.info(f"Starting Exchange ingestion: {source_system}, identity={identity}, run_id={run_id}")
+    logger.info(f"Starting Exchange ingestion: {source_system}/{connection_name}, identity={identity}, run_id={run_id}")
     if since_dt:
         logger.info(f"Date filter: since={since_dt.isoformat()}")
     if until_dt:
@@ -199,24 +209,29 @@ def _ingest_exchange(
                 record_count += 1
                 yield record
 
-        upsert_objects(
+        result = upsert_objects(
             objects=count_and_yield(),
             source_system=source_system,
+            connection_name=connection_name,
             object_type=object_type,
             correlation_id=run_id,
-            idem_key_fn=msgraph_idem_key(source_system),
+            idem_key_fn=exchange_idem_key(source_system, connection_name),
             bq_client=bq_client,
         )
 
-        # Step 3: Log ingestion.completed event with telemetry
+        # Log ingest.completed event with telemetry
         duration_seconds = time.time() - start_time
         log_event(
-            event_type="ingestion.completed",
+            event_type="ingest.completed",
             source_system=source_system,
+            connection_name=connection_name,
+            target_object_type=object_type,
             correlation_id=run_id,
             status="ok",
             payload={
                 "records_extracted": record_count,
+                "inserted": result.inserted,
+                "updated": result.updated,
                 "duration_seconds": round(duration_seconds, 2),
                 "since": since_dt.isoformat() if since_dt else None,
                 "until": until_dt.isoformat() if until_dt else None,
@@ -231,11 +246,13 @@ def _ingest_exchange(
     except Exception as e:
         logger.error(f"Exchange ingestion failed: {e}", exc_info=True)
 
-        # Log ingestion.failed event
+        # Log ingest.failed event
         duration_seconds = time.time() - start_time
         log_event(
-            event_type="ingestion.failed",
+            event_type="ingest.failed",
             source_system=source_system,
+            connection_name=connection_name,
+            target_object_type=object_type,
             correlation_id=run_id,
             status="failed",
             error_message=str(e),
@@ -258,7 +275,15 @@ def job_ingest_exchange_ben_mensio(bq_client, since: Optional[str] = None, until
         since: Start date (ISO, "-7d" relative, or None to auto-detect from BigQuery)
         until: End date (ISO or None for now)
     """
-    return _ingest_exchange("exchange--ben-mensio", "exchange:ben-mensio", "ben-mensio", bq_client, since=since, until=until)
+    return _ingest_exchange(
+        source_system="exchange",
+        connection_name="exchange-ben-mensio",
+        identity="exchange:ben-mensio",
+        account_id="ben-mensio",
+        bq_client=bq_client,
+        since=since,
+        until=until,
+    )
 
 
 def job_ingest_exchange_booking_mensio(bq_client, since: Optional[str] = None, until: Optional[str] = None, **kwargs):
@@ -270,7 +295,15 @@ def job_ingest_exchange_booking_mensio(bq_client, since: Optional[str] = None, u
         since: Start date (ISO, "-7d" relative, or None to auto-detect from BigQuery)
         until: End date (ISO or None for now)
     """
-    return _ingest_exchange("exchange--booking-mensio", "exchange:booking-mensio", "booking-mensio", bq_client, since=since, until=until)
+    return _ingest_exchange(
+        source_system="exchange",
+        connection_name="exchange-booking-mensio",
+        identity="exchange:booking-mensio",
+        account_id="booking-mensio",
+        bq_client=bq_client,
+        since=since,
+        until=until,
+    )
 
 
 def job_ingest_exchange_info_mensio(bq_client, since: Optional[str] = None, until: Optional[str] = None, **kwargs):
@@ -282,7 +315,15 @@ def job_ingest_exchange_info_mensio(bq_client, since: Optional[str] = None, unti
         since: Start date (ISO, "-7d" relative, or None to auto-detect from BigQuery)
         until: End date (ISO or None for now)
     """
-    return _ingest_exchange("exchange--info-mensio", "exchange:info-mensio", "info-mensio", bq_client, since=since, until=until)
+    return _ingest_exchange(
+        source_system="exchange",
+        connection_name="exchange-info-mensio",
+        identity="exchange:info-mensio",
+        account_id="info-mensio",
+        bq_client=bq_client,
+        since=since,
+        until=until,
+    )
 
 
 def job_ingest_exchange_ben_efs(bq_client, since: Optional[str] = None, until: Optional[str] = None, **kwargs):
@@ -294,4 +335,12 @@ def job_ingest_exchange_ben_efs(bq_client, since: Optional[str] = None, until: O
         since: Start date (ISO, "-7d" relative, or None to auto-detect from BigQuery)
         until: End date (ISO or None for now)
     """
-    return _ingest_exchange("exchange--ben-efs", "exchange:ben-efs", "ben-efs", bq_client, since=since, until=until)
+    return _ingest_exchange(
+        source_system="exchange",
+        connection_name="exchange-ben-efs",
+        identity="exchange:ben-efs",
+        account_id="ben-efs",
+        bq_client=bq_client,
+        since=since,
+        until=until,
+    )

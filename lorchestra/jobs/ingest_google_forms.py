@@ -3,7 +3,7 @@
 This module uses InJest for Google Forms extraction:
 1. Calls GoogleFormsResponsesStream to get auth-aware form responses stream
 2. Streams responses to batch upsert (no per-object events)
-3. Logs telemetry events (ingestion.completed) with small payloads
+3. Logs telemetry events (ingest.completed) with small payloads
 
 Target forms:
 - ipip120_01: IPIP-120 personality assessment
@@ -12,6 +12,11 @@ Target forms:
 - followup: Followup form
 
 This is the ONLY place event_client is called for Google Forms ingestion.
+
+Column Standards (aligned with Airbyte/Singer/Meltano):
+- source_system: Provider family (always "google_forms" for this module)
+- connection_name: Account identifier (e.g., "google-forms-ipip120")
+- object_type: Domain object (always "form_response" for this module)
 
 Date filtering:
 - Supports --since and --until CLI parameters
@@ -37,13 +42,14 @@ FORM_IDS = {
 }
 
 
-def _get_last_sync_timestamp(bq_client, source_system: str, object_type: str) -> Optional[str]:
+def _get_last_sync_timestamp(bq_client, source_system: str, connection_name: str, object_type: str) -> Optional[str]:
     """
     Query BigQuery for the most recent object timestamp.
 
     Args:
         bq_client: BigQuery client
-        source_system: Source system identifier (e.g., "google-forms--ipip120")
+        source_system: Provider family (e.g., "google_forms")
+        connection_name: Account identifier (e.g., "google-forms-ipip120")
         object_type: Object type (e.g., "form_response")
 
     Returns:
@@ -56,6 +62,7 @@ def _get_last_sync_timestamp(bq_client, source_system: str, object_type: str) ->
         SELECT MAX(last_seen) as last_sync
         FROM `{dataset}.raw_objects`
         WHERE source_system = @source_system
+          AND connection_name = @connection_name
           AND object_type = @object_type
     """
 
@@ -63,6 +70,7 @@ def _get_last_sync_timestamp(bq_client, source_system: str, object_type: str) ->
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ScalarQueryParameter("source_system", "STRING", source_system),
+            bigquery.ScalarQueryParameter("connection_name", "STRING", connection_name),
             bigquery.ScalarQueryParameter("object_type", "STRING", object_type),
         ]
     )
@@ -92,29 +100,9 @@ def _parse_date_to_datetime(value: str) -> datetime:
     return dt
 
 
-def _google_forms_idem_key(source_system: str):
-    """
-    Create idem_key function for Google Forms responses.
-
-    Google Forms responses use responseId as primary key.
-
-    Args:
-        source_system: Source system identifier (e.g., "google-forms--ipip120")
-
-    Returns:
-        Callable that computes idem_key from Google Forms response payload
-    """
-    def compute_idem_key(obj: dict) -> str:
-        response_id = obj.get("responseId")
-        if not response_id:
-            raise ValueError(f"Google Forms response missing 'responseId' field: {list(obj.keys())[:5]}")
-        return f"form_response:{source_system}:{response_id}"
-
-    return compute_idem_key
-
-
 def _ingest_google_forms(
     source_system: str,
+    connection_name: str,
     identity: str,
     form_id: str,
     form_name: str,
@@ -126,11 +114,12 @@ def _ingest_google_forms(
     Generic Google Forms ingestion function using InJest.
 
     Pattern:
-    - 1 log_event() for ingestion.completed with telemetry payload
+    - 1 log_event() for ingest.completed with telemetry payload
     - 1 batch upsert_objects() for all responses (no per-object events)
 
     Args:
-        source_system: Source system identifier (e.g., "google-forms--ipip120")
+        source_system: Provider family (always "google_forms")
+        connection_name: Account identifier (e.g., "google-forms-ipip120")
         identity: InJest identity key (e.g., "google_forms:ipip120_01")
         form_id: Google Form ID
         form_name: Human-readable form name for logging
@@ -139,17 +128,19 @@ def _ingest_google_forms(
         until: End date (ISO format or None for now)
     """
     from lorchestra.stack_clients.event_client import log_event, upsert_objects
+    from lorchestra.idem_keys import google_forms_idem_key
     import time
 
     # Ensure InJest is configured
     configure_injest()
 
+    object_type = "form_response"
     run_id = f"google-forms-{form_name}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
 
     # Auto-detect last sync if no since provided
     if since is None:
         logger.info("No --since provided, querying BigQuery for last sync...")
-        last_sync = _get_last_sync_timestamp(bq_client, source_system, "form_response")
+        last_sync = _get_last_sync_timestamp(bq_client, source_system, connection_name, object_type)
         if last_sync:
             since = last_sync
             logger.info(f"Found last sync: {since}")
@@ -160,7 +151,7 @@ def _ingest_google_forms(
     since_dt = _parse_date_to_datetime(since) if since else None
     until_dt = _parse_date_to_datetime(until) if until else None
 
-    logger.info(f"Starting Google Forms ingestion: {source_system}, form={form_name}, run_id={run_id}")
+    logger.info(f"Starting Google Forms ingestion: {source_system}/{connection_name}, form={form_name}, run_id={run_id}")
     if since_dt:
         logger.info(f"Date filter: since={since_dt.isoformat()}")
     if until_dt:
@@ -172,8 +163,8 @@ def _ingest_google_forms(
         # Get stream from InJest (handles auth + API calls)
         stream = GoogleFormsResponsesStream(identity=identity, form_id=form_id)
 
-        # Create idem_key function
-        idem_key_fn = _google_forms_idem_key(source_system)
+        # Create idem_key function with new signature
+        idem_key_fn = google_forms_idem_key(source_system, connection_name)
 
         # Batch upsert objects (no per-object events)
         logger.info(f"Batch upserting {form_name} responses to raw_objects...")
@@ -186,27 +177,32 @@ def _ingest_google_forms(
                 record_count += 1
                 yield record
 
-        upsert_objects(
+        result = upsert_objects(
             objects=count_and_yield(),
             source_system=source_system,
-            object_type="form_response",
+            connection_name=connection_name,
+            object_type=object_type,
             correlation_id=run_id,
             idem_key_fn=idem_key_fn,
             bq_client=bq_client,
         )
 
-        # Log ingestion.completed event with telemetry
+        # Log ingest.completed event with telemetry
         duration_seconds = time.time() - start_time
         log_event(
-            event_type="ingestion.completed",
+            event_type="ingest.completed",
             source_system=source_system,
+            connection_name=connection_name,
+            target_object_type=object_type,
             correlation_id=run_id,
             status="ok",
             payload={
                 "records_extracted": record_count,
-                "duration_seconds": round(duration_seconds, 2),
+                "inserted": result.inserted,
+                "updated": result.updated,
                 "form_name": form_name,
                 "form_id": form_id,
+                "duration_seconds": round(duration_seconds, 2),
                 "since": since_dt.isoformat() if since_dt else None,
                 "until": until_dt.isoformat() if until_dt else None,
             },
@@ -220,11 +216,13 @@ def _ingest_google_forms(
     except Exception as e:
         logger.error(f"Google Forms ingestion failed: {e}", exc_info=True)
 
-        # Log ingestion.failed event
+        # Log ingest.failed event
         duration_seconds = time.time() - start_time
         log_event(
-            event_type="ingestion.failed",
+            event_type="ingest.failed",
             source_system=source_system,
+            connection_name=connection_name,
+            target_object_type=object_type,
             correlation_id=run_id,
             status="failed",
             error_message=str(e),
@@ -250,7 +248,8 @@ def job_ingest_google_forms_ipip120(bq_client, since: Optional[str] = None, unti
         until: End date (ISO or None for now)
     """
     return _ingest_google_forms(
-        source_system="google-forms--ipip120",
+        source_system="google_forms",
+        connection_name="google-forms-ipip120",
         identity="google_forms:ipip120_01",
         form_id=FORM_IDS["google_forms:ipip120_01"],
         form_name="ipip120",
@@ -270,7 +269,8 @@ def job_ingest_google_forms_intake_01(bq_client, since: Optional[str] = None, un
         until: End date (ISO or None for now)
     """
     return _ingest_google_forms(
-        source_system="google-forms--intake-01",
+        source_system="google_forms",
+        connection_name="google-forms-intake-01",
         identity="google_forms:intake_01",
         form_id=FORM_IDS["google_forms:intake_01"],
         form_name="intake_01",
@@ -290,7 +290,8 @@ def job_ingest_google_forms_intake_02(bq_client, since: Optional[str] = None, un
         until: End date (ISO or None for now)
     """
     return _ingest_google_forms(
-        source_system="google-forms--intake-02",
+        source_system="google_forms",
+        connection_name="google-forms-intake-02",
         identity="google_forms:intake_02",
         form_id=FORM_IDS["google_forms:intake_02"],
         form_name="intake_02",
@@ -310,7 +311,8 @@ def job_ingest_google_forms_followup(bq_client, since: Optional[str] = None, unt
         until: End date (ISO or None for now)
     """
     return _ingest_google_forms(
-        source_system="google-forms--followup",
+        source_system="google_forms",
+        connection_name="google-forms-followup",
         identity="google_forms:followup",
         form_id=FORM_IDS["google_forms:followup"],
         form_name="followup",
