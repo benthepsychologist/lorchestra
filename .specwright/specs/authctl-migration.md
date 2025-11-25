@@ -34,6 +34,13 @@ repo:
 - [ ] `lorchestra run stripe_ingest_customers --dry-run` works
 - [ ] All production jobs run successfully
 
+### Zero Residual Auth Logic (Hard Requirements)
+
+- [ ] No credential parsing, token refresh helpers, or OAuth/device-flow logic remains in lorchestra
+- [ ] All functions that previously constructed Gmail/MS Graph/Stripe clients now delegate 100% to authctl provider factories
+- [ ] Missing credentials raise `authctl.secrets.MissingCredentialsError` with actionable message (e.g., "Run: authctl auth gmail --account acct1")
+- [ ] No `.tokens/` or `.msgraph/` directories created by lorchestra (token caches live exclusively under `$AUTHCTL_HOME`)
+
 ## Context
 
 ### Background
@@ -97,6 +104,8 @@ except MissingCredentialsError as e:
 - `authctl` must be installed before this migration runs
 - All accounts must already be authorized in `$AUTHCTL_HOME`
 - Jobs should continue to work with `--dry-run` and `--test-table` flags
+- **Provider factories must be called with only the account name** - all client IDs, secrets, and refresh tokens come from `$AUTHCTL_HOME/credentials.json`. Lorchestra must not supply or override these values.
+- **No token cache directories in lorchestra** - MSAL caches live exclusively under `$AUTHCTL_HOME/msgraph/<account>/token_cache.bin`, managed by authctl. Lorchestra must not create `.tokens/`, `.msgraph/`, or similar directories.
 
 ## Plan
 
@@ -173,6 +182,19 @@ If jobs directly access credentials (not via injest), update them to use:
 - `from authctl.providers.msgraph import build_msgraph_app`
 - `from authctl.providers.stripe import get_api_key`
 
+**CRITICAL:** Provider factories must be called with **only the account name**:
+```python
+# CORRECT - account name only
+creds = build_gmail_credentials("acct1")
+app = build_msgraph_app("ben-mensio")
+key = get_api_key("mensio")
+
+# WRONG - do NOT pass client IDs or secrets
+creds = build_gmail_credentials("acct1", client_id="...", client_secret="...")  # NO!
+```
+
+All client IDs, secrets, and tokens come from `$AUTHCTL_HOME/credentials.json`. Lorchestra must not supply or override these values.
+
 **Commands:**
 
 ```bash
@@ -188,7 +210,7 @@ python -c "from lorchestra.jobs.ingest_stripe import *; print('Stripe jobs OK')"
 
 ---
 
-### Step 4: Delete Legacy Auth Scripts [G1: Cleanup]
+### Step 4: Delete Legacy Auth Scripts & Verify No Token Caches [G1: Cleanup]
 
 **Prompt:**
 
@@ -207,16 +229,27 @@ Keep utility scripts that are still useful:
 - `scripts/cleanup_test_data.py` - maintenance
 - `scripts/query_events.py` - debugging
 
+Also verify lorchestra has no token cache directories:
+- No `.tokens/` directory
+- No `.msgraph/` directory
+- No `.authctl/` directory (credentials live at `$AUTHCTL_HOME`, not repo-local)
+
 **Commands:**
 
 ```bash
 ls scripts/
 # After deletion, should only show: daily_ingest.sh, cleanup_test_data.py, query_events.py, etc.
+
+# Verify no token cache directories exist in lorchestra
+ls -la .tokens/ 2>/dev/null && echo "ERROR: .tokens/ exists!" || echo "OK: no .tokens/"
+ls -la .msgraph/ 2>/dev/null && echo "ERROR: .msgraph/ exists!" || echo "OK: no .msgraph/"
+ls -la .authctl/ 2>/dev/null && echo "ERROR: .authctl/ exists!" || echo "OK: no .authctl/"
 ```
 
 **Outputs:**
 
 - Deleted 7 Gmail OAuth scripts
+- Confirmed no token cache directories in lorchestra
 
 ---
 
