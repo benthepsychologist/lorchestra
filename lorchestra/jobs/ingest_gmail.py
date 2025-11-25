@@ -198,7 +198,8 @@ def _ingest_gmail(
             payload={
                 "records_extracted": record_count,
                 "duration_seconds": round(duration_seconds, 2),
-                "date_filter": gmail_query or None,
+                "since": since_dt.isoformat() if since_dt else None,
+                "until": until_dt.isoformat() if until_dt else None,
             },
             bq_client=bq_client,
         )
