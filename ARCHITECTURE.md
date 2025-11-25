@@ -111,7 +111,7 @@ These remain out of scope until the three target lanes are operational.
 - Simple, focused API: `emit(event_type, payload, source, object_type, bq_client)`
 - Two-table pattern ensures:
   - Event audit trail preserved (every emit() creates event_log row)
-  - Object deduplication (same idem_key updates last_seen only)
+  - Object state projection (same idem_key updates payload and last_seen)
   - Clean separation: metadata vs. payload
 - No JSONL backup in initial implementation (BQ is primary WAL)
 
@@ -275,7 +275,7 @@ CREATE TABLE raw_objects (
 CLUSTER BY source_system, object_type;
 ```
 - One row per unique object (MERGE provides idempotency)
-- Same object re-ingested → only `last_seen` updated
+- Same object re-ingested → `payload` and `last_seen` updated (state projection)
 - Payload stored as native BigQuery JSON type
 
 **Benefits:**
