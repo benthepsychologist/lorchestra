@@ -45,6 +45,15 @@ class HybridConnectionStore:
                 "user_email": cfg["user_email"],
             }
 
+        if cfg["provider"] == "dataverse":
+            from injest.config import INJEST_ROOT
+            return {
+                "tenant_id": os.environ[cfg["tenant_id_env"]],
+                "client_id": os.environ[cfg["client_id_env"]],
+                "dataverse_url": os.environ[cfg["dataverse_url_env"]],
+                "token_cache_path": str(INJEST_ROOT / cfg["token_cache_path"]),
+            }
+
         raise KeyError(f"Unknown provider: {cfg['provider']}")
 
     def save(self, identity: str, data: JSONDict) -> None:

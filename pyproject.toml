@@ -33,6 +33,9 @@ exchange_ingest_ben_mensio = "lorchestra.jobs.ingest_exchange:job_ingest_exchang
 exchange_ingest_booking_mensio = "lorchestra.jobs.ingest_exchange:job_ingest_exchange_booking_mensio"
 exchange_ingest_info_mensio = "lorchestra.jobs.ingest_exchange:job_ingest_exchange_info_mensio"
 exchange_ingest_ben_efs = "lorchestra.jobs.ingest_exchange:job_ingest_exchange_ben_efs"
+dataverse_ingest_contacts = "lorchestra.jobs.ingest_dataverse:job_ingest_dataverse_contacts"
+dataverse_ingest_sessions = "lorchestra.jobs.ingest_dataverse:job_ingest_dataverse_sessions"
+dataverse_ingest_reports = "lorchestra.jobs.ingest_dataverse:job_ingest_dataverse_reports"
 
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]

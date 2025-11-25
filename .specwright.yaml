@@ -8,5 +8,5 @@ user:
   default_owner: benthepsychologist
   default_tier: C
 current:
-  spec: .specwright/specs/dry-run-test-table.md
-  aip: .specwright/aips/dry-run-test-table.yaml
+  spec: .specwright/specs/prod-ingest-dataverse.md
+  aip: /workspace/lorchestra/.specwright/aips/prod-ingest-dataverse.yaml
