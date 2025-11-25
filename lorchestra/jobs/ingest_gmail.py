@@ -1,8 +1,8 @@
 """Gmail ingestion jobs for LifeOS.
 
-This module demonstrates the refactored event client pattern:
-1. Calls ingestor.extract_to_jsonl() to run Meltano → JSONL
-2. Streams JSONL records to batch upsert (no per-object events)
+This module uses InJest for Gmail extraction:
+1. Calls injest.get_stream() to get auth-aware Gmail stream
+2. Streams records to batch upsert (no per-object events)
 3. Logs telemetry events (ingestion.completed) with small payloads
 
 This is the ONLY place event_client is called for Gmail ingestion.
@@ -10,12 +10,15 @@ This is the ONLY place event_client is called for Gmail ingestion.
 Date filtering:
 - Supports --since and --until CLI parameters
 - If no --since provided, queries BigQuery for last sync timestamp
-- Uses Gmail query syntax: after:YYYY/MM/DD before:YYYY/MM/DD
+- InJest handles Gmail query syntax internally
 """
 
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+
+from injest import get_stream
+from lorchestra.injest_config import configure_injest
 
 logger = logging.getLogger(__name__)
 
@@ -96,33 +99,46 @@ def _format_gmail_query(since: Optional[str] = None, until: Optional[str] = None
     return " ".join(parts) if parts else ""
 
 
+def _parse_date_to_datetime(value: str) -> datetime:
+    """Parse date string to datetime for InJest."""
+    # Handle relative dates like "-7d"
+    if value.startswith("-") and value.endswith("d"):
+        days = int(value[1:-1])
+        return datetime.now(timezone.utc) - timedelta(days=days)
+    # Handle ISO format
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
 def _ingest_gmail(
-    tap_name: str,
+    source_system: str,
+    identity: str,
     account_id: str,
     bq_client,
     since: Optional[str] = None,
     until: Optional[str] = None
 ):
     """
-    Generic Gmail ingestion function with date filtering.
+    Generic Gmail ingestion function using InJest.
 
-    Refactored pattern:
+    Pattern:
     - 1 log_event() for ingestion.completed with telemetry payload
     - 1 batch upsert_objects() for all emails (no per-object events)
 
     Args:
-        tap_name: Meltano tap name (e.g., "tap-gmail--acct1-personal")
+        source_system: Source system identifier (e.g., "gmail--acct1-personal")
+        identity: InJest identity key (e.g., "gmail:acct1")
         account_id: Account identifier for run_id (e.g., "acct1")
         bq_client: BigQuery client for event emission
         since: Start date (ISO format, "-7d" relative, or None for last sync)
         until: End date (ISO format or None for now)
     """
-    from ingestor.extractors import extract_to_jsonl, iter_jsonl_records
     from lorchestra.stack_clients.event_client import log_event, upsert_objects
     from lorchestra.idem_keys import gmail_idem_key
     import time
 
-    source_system = tap_name
+    # Ensure InJest is configured
+    configure_injest()
+
     object_type = "email"
     run_id = f"gmail-{account_id}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
 
@@ -134,37 +150,32 @@ def _ingest_gmail(
             since = last_sync
             logger.info(f"Found last sync: {since}")
         else:
-            logger.info("No previous sync found, will use default from meltano.yml")
+            logger.info("No previous sync found, will extract all messages")
 
-    # Build Gmail query filter
-    gmail_query = _format_gmail_query(since, until)
-    config_overrides = {"messages.q": gmail_query} if gmail_query else None
+    # Parse dates for InJest
+    since_dt = _parse_date_to_datetime(since) if since else None
+    until_dt = _parse_date_to_datetime(until) if until else None
 
-    logger.info(f"Starting Gmail ingestion: {tap_name}, run_id={run_id}")
-    if gmail_query:
-        logger.info(f"Date filter: {gmail_query}")
+    logger.info(f"Starting Gmail ingestion: {source_system}, identity={identity}, run_id={run_id}")
+    if since_dt:
+        logger.info(f"Date filter: since={since_dt.isoformat()}")
+    if until_dt:
+        logger.info(f"Date filter: until={until_dt.isoformat()}")
 
     start_time = time.time()
 
     try:
-        # Step 1: Get JSONL from ingestor (Meltano wrapper)
-        jsonl_dir = extract_to_jsonl(tap_name, run_id, config_overrides=config_overrides)
-        logger.info(f"JSONL extracted to: {jsonl_dir}")
+        # Get stream from InJest (handles auth + API calls)
+        stream = get_stream("gmail.messages", identity=identity)
 
-        # target-jsonl creates a directory with separate files per stream
-        # For Gmail, we want the messages stream
-        jsonl_path = jsonl_dir / "messages.jsonl"
-        if not jsonl_path.exists():
-            raise RuntimeError(f"Expected messages.jsonl not found in {jsonl_dir}")
-
-        # Step 2: Batch upsert objects (no per-object events)
+        # Batch upsert objects (no per-object events)
         logger.info("Batch upserting emails to raw_objects...")
 
-        # Count records for telemetry (we need to track this)
+        # Count records for telemetry
         record_count = 0
         def count_and_yield():
             nonlocal record_count
-            for record in iter_jsonl_records(jsonl_path):
+            for record in stream.extract(since=since_dt, until=until_dt):
                 record_count += 1
                 yield record
 
@@ -219,35 +230,35 @@ def _ingest_gmail(
 
 def job_ingest_gmail_acct1(bq_client, since: Optional[str] = None, until: Optional[str] = None, **kwargs):
     """
-    Ingest Gmail messages from acct1-personal.
+    Ingest Gmail messages from acct1-personal using InJest.
 
     Args:
         bq_client: BigQuery client for event emission
         since: Start date (ISO, "-7d" relative, or None to auto-detect from BigQuery)
         until: End date (ISO or None for now)
     """
-    return _ingest_gmail("tap-gmail--acct1-personal", "acct1", bq_client, since=since, until=until)
+    return _ingest_gmail("gmail--acct1-personal", "gmail:acct1", "acct1", bq_client, since=since, until=until)
 
 
 def job_ingest_gmail_acct2(bq_client, since: Optional[str] = None, until: Optional[str] = None, **kwargs):
     """
-    Ingest Gmail messages from acct2-business1.
+    Ingest Gmail messages from acct2-business1 using InJest.
 
     Args:
         bq_client: BigQuery client for event emission
         since: Start date (ISO, "-7d" relative, or None to auto-detect from BigQuery)
         until: End date (ISO or None for now)
     """
-    return _ingest_gmail("tap-gmail--acct2-business1", "acct2", bq_client, since=since, until=until)
+    return _ingest_gmail("gmail--acct2-business1", "gmail:acct2", "acct2", bq_client, since=since, until=until)
 
 
 def job_ingest_gmail_acct3(bq_client, since: Optional[str] = None, until: Optional[str] = None, **kwargs):
     """
-    Ingest Gmail messages from acct3-bfarmstrong.
+    Ingest Gmail messages from acct3-bfarmstrong using InJest.
 
     Args:
         bq_client: BigQuery client for event emission
         since: Start date (ISO, "-7d" relative, or None to auto-detect from BigQuery)
         until: End date (ISO or None for now)
     """
-    return _ingest_gmail("tap-gmail--acct3-bfarmstrong", "acct3", bq_client, since=since, until=until)
+    return _ingest_gmail("gmail--acct3-bfarmstrong", "gmail:acct3", "acct3", bq_client, since=since, until=until)

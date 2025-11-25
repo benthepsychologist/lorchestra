@@ -1,8 +1,8 @@
 """Exchange/Microsoft Graph Mail ingestion jobs for LifeOS.
 
-This module implements the same refactored event client pattern as Gmail:
-1. Calls ingestor.extract_to_jsonl() to run Meltano → JSONL
-2. Streams JSONL records to batch upsert (no per-object events)
+This module uses InJest for Exchange extraction:
+1. Calls injest.get_stream() to get auth-aware Exchange stream
+2. Streams records to batch upsert (no per-object events)
 3. Logs telemetry events (ingestion.completed) with small payloads
 
 This is the ONLY place event_client is called for Exchange ingestion.
@@ -10,12 +10,15 @@ This is the ONLY place event_client is called for Exchange ingestion.
 Date filtering:
 - Supports --since and --until CLI parameters
 - If no --since provided, queries BigQuery for last sync timestamp
-- Uses ISO 8601 date format (Graph API standard)
+- InJest handles Graph API date filtering internally
 """
 
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+
+from injest import get_stream
+from lorchestra.injest_config import configure_injest
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +75,7 @@ def _format_date_filter(since: Optional[str] = None, until: Optional[str] = None
         until: End date (ISO format or None for now)
 
     Returns:
-        Dictionary with start_date config for tap-msgraph-mail
+        Dictionary with start_date and end_date config for tap-msgraph-mail
     """
     config_overrides = {}
 
@@ -81,47 +84,81 @@ def _format_date_filter(since: Optional[str] = None, until: Optional[str] = None
         if since.startswith("-"):
             days = int(since[1:-1])  # Extract number from "-7d"
             since_date = datetime.now(timezone.utc) - timedelta(days=days)
-            since_str = since_date.strftime("%Y-%m-%d")
+            since_str = since_date.isoformat()
         else:
-            # Parse ISO format
-            since_date = datetime.fromisoformat(since.replace("Z", "+00:00"))
-            since_str = since_date.strftime("%Y-%m-%d")
+            # Parse ISO format and ensure it has timezone
+            if "T" not in since:
+                # Date only (e.g., "2024-01-01") - add time and timezone
+                since_str = f"{since}T00:00:00+00:00"
+            else:
+                since_date = datetime.fromisoformat(since.replace("Z", "+00:00"))
+                since_str = since_date.isoformat()
 
         config_overrides["start_date"] = since_str
 
-    # Note: tap-msgraph-mail doesn't support end_date filtering
-    # It always syncs up to "now"
+    if until:
+        # Handle relative dates like "-7d"
+        if until.startswith("-"):
+            days = int(until[1:-1])  # Extract number from "-7d"
+            until_date = datetime.now(timezone.utc) - timedelta(days=days)
+            until_str = until_date.isoformat()
+        else:
+            # Parse ISO format and ensure it has timezone
+            if "T" not in until:
+                # Date only (e.g., "2024-01-31") - add end of day time and timezone
+                until_str = f"{until}T23:59:59+00:00"
+            else:
+                until_date = datetime.fromisoformat(until.replace("Z", "+00:00"))
+                until_str = until_date.isoformat()
+
+        config_overrides["end_date"] = until_str
 
     return config_overrides
 
 
+def _parse_date_to_datetime(value: str) -> datetime:
+    """Parse date string to datetime for InJest."""
+    # Handle relative dates like "-7d"
+    if value.startswith("-") and value.endswith("d"):
+        days = int(value[1:-1])
+        return datetime.now(timezone.utc) - timedelta(days=days)
+    # Handle date-only format
+    if "T" not in value:
+        return datetime.fromisoformat(f"{value}T00:00:00+00:00")
+    # Handle ISO format
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
 def _ingest_exchange(
-    tap_name: str,
+    source_system: str,
+    identity: str,
     account_id: str,
     bq_client,
     since: Optional[str] = None,
     until: Optional[str] = None
 ):
     """
-    Generic Exchange ingestion function with date filtering.
+    Generic Exchange ingestion function using InJest.
 
-    Refactored pattern:
+    Pattern:
     - 1 log_event() for ingestion.completed with telemetry payload
     - 1 batch upsert_objects() for all emails (no per-object events)
 
     Args:
-        tap_name: Meltano tap name (e.g., "tap-msgraph-mail--ben-mensio")
+        source_system: Source system identifier (e.g., "exchange--ben-mensio")
+        identity: InJest identity key (e.g., "exchange:ben-mensio")
         account_id: Account identifier for run_id (e.g., "ben-mensio")
         bq_client: BigQuery client for event emission
         since: Start date (ISO format, "-7d" relative, or None for last sync)
-        until: End date (ISO format or None for now) - Note: Graph API doesn't support end_date
+        until: End date (ISO format or None for now)
     """
-    from ingestor.extractors import extract_to_jsonl, iter_jsonl_records
     from lorchestra.stack_clients.event_client import log_event, upsert_objects
     from lorchestra.idem_keys import msgraph_idem_key
     import time
 
-    source_system = tap_name
+    # Ensure InJest is configured
+    configure_injest()
+
     object_type = "email"
     run_id = f"exchange-{account_id}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
 
@@ -133,37 +170,32 @@ def _ingest_exchange(
             since = last_sync
             logger.info(f"Found last sync: {since}")
         else:
-            logger.info("No previous sync found, will use default from meltano.yml")
+            logger.info("No previous sync found, will extract all messages")
 
-    # Build date filter config
-    config_overrides = _format_date_filter(since, until)
-    filter_display = config_overrides.get("start_date", "default")
+    # Parse dates for InJest
+    since_dt = _parse_date_to_datetime(since) if since else None
+    until_dt = _parse_date_to_datetime(until) if until else None
 
-    logger.info(f"Starting Exchange ingestion: {tap_name}, run_id={run_id}")
-    if config_overrides:
-        logger.info(f"Date filter: start_date={filter_display}")
+    logger.info(f"Starting Exchange ingestion: {source_system}, identity={identity}, run_id={run_id}")
+    if since_dt:
+        logger.info(f"Date filter: since={since_dt.isoformat()}")
+    if until_dt:
+        logger.info(f"Date filter: until={until_dt.isoformat()}")
 
     start_time = time.time()
 
     try:
-        # Step 1: Get JSONL from ingestor (Meltano wrapper)
-        jsonl_dir = extract_to_jsonl(tap_name, run_id, config_overrides=config_overrides)
-        logger.info(f"JSONL extracted to: {jsonl_dir}")
+        # Get stream from InJest (handles auth + API calls)
+        stream = get_stream("exchange.messages", identity=identity)
 
-        # target-jsonl creates a directory with separate files per stream
-        # For Exchange, we want the messages stream
-        jsonl_path = jsonl_dir / "messages.jsonl"
-        if not jsonl_path.exists():
-            raise RuntimeError(f"Expected messages.jsonl not found in {jsonl_dir}")
-
-        # Step 2: Batch upsert objects (no per-object events)
+        # Batch upsert objects (no per-object events)
         logger.info("Batch upserting emails to raw_objects...")
 
-        # Count records for telemetry (we need to track this)
+        # Count records for telemetry
         record_count = 0
         def count_and_yield():
             nonlocal record_count
-            for record in iter_jsonl_records(jsonl_path):
+            for record in stream.extract(since=since_dt, until=until_dt):
                 record_count += 1
                 yield record
 
@@ -218,47 +250,47 @@ def _ingest_exchange(
 
 def job_ingest_exchange_ben_mensio(bq_client, since: Optional[str] = None, until: Optional[str] = None, **kwargs):
     """
-    Ingest Exchange messages from ben@getmensio.com.
+    Ingest Exchange messages from ben@mensiomentalhealth.com using InJest.
 
     Args:
         bq_client: BigQuery client for event emission
         since: Start date (ISO, "-7d" relative, or None to auto-detect from BigQuery)
-        until: End date (ISO or None for now) - Note: Graph API doesn't support end_date
+        until: End date (ISO or None for now)
     """
-    return _ingest_exchange("tap-msgraph-mail--ben-mensio", "ben-mensio", bq_client, since=since, until=until)
+    return _ingest_exchange("exchange--ben-mensio", "exchange:ben-mensio", "ben-mensio", bq_client, since=since, until=until)
 
 
 def job_ingest_exchange_booking_mensio(bq_client, since: Optional[str] = None, until: Optional[str] = None, **kwargs):
     """
-    Ingest Exchange messages from booking@getmensio.com.
+    Ingest Exchange messages from booking@mensiomentalhealth.com using InJest.
 
     Args:
         bq_client: BigQuery client for event emission
         since: Start date (ISO, "-7d" relative, or None to auto-detect from BigQuery)
-        until: End date (ISO or None for now) - Note: Graph API doesn't support end_date
+        until: End date (ISO or None for now)
     """
-    return _ingest_exchange("tap-msgraph-mail--booking-mensio", "booking-mensio", bq_client, since=since, until=until)
+    return _ingest_exchange("exchange--booking-mensio", "exchange:booking-mensio", "booking-mensio", bq_client, since=since, until=until)
 
 
 def job_ingest_exchange_info_mensio(bq_client, since: Optional[str] = None, until: Optional[str] = None, **kwargs):
     """
-    Ingest Exchange messages from info@getmensio.com.
+    Ingest Exchange messages from info@mensiomentalhealth.com using InJest.
 
     Args:
         bq_client: BigQuery client for event emission
         since: Start date (ISO, "-7d" relative, or None to auto-detect from BigQuery)
-        until: End date (ISO or None for now) - Note: Graph API doesn't support end_date
+        until: End date (ISO or None for now)
     """
-    return _ingest_exchange("tap-msgraph-mail--info-mensio", "info-mensio", bq_client, since=since, until=until)
+    return _ingest_exchange("exchange--info-mensio", "exchange:info-mensio", "info-mensio", bq_client, since=since, until=until)
 
 
 def job_ingest_exchange_ben_efs(bq_client, since: Optional[str] = None, until: Optional[str] = None, **kwargs):
     """
-    Ingest Exchange messages from ben@ethicalfootprintsolutions.com.
+    Ingest Exchange messages from ben@ethicalfootprintsolutions.com using InJest.
 
     Args:
         bq_client: BigQuery client for event emission
         since: Start date (ISO, "-7d" relative, or None to auto-detect from BigQuery)
-        until: End date (ISO or None for now) - Note: Graph API doesn't support end_date
+        until: End date (ISO or None for now)
     """
-    return _ingest_exchange("tap-msgraph-mail--ben-efs", "ben-efs", bq_client, since=since, until=until)
+    return _ingest_exchange("exchange--ben-efs", "exchange:ben-efs", "ben-efs", bq_client, since=since, until=until)
