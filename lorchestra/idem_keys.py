@@ -153,26 +153,35 @@ def msgraph_idem_key(source_system: str, connection_name: str) -> Callable[[Dict
     return exchange_idem_key(source_system, connection_name)
 
 
-def stripe_charge_idem_key(source_system: str, connection_name: str) -> Callable[[Dict[str, Any]], str]:
+def stripe_idem_key(source_system: str, connection_name: str, object_type: str) -> Callable[[Dict[str, Any]], str]:
     """
-    Stripe charge idem_key function - uses 'id' field.
+    Generic Stripe idem_key function - uses 'id' field.
+
+    All Stripe objects have a unique 'id' field (cus_xxx, in_xxx, pi_xxx, re_xxx).
 
     Args:
         source_system: Provider family (always "stripe")
-        connection_name: Account identifier (e.g., "stripe-prod")
+        connection_name: Account identifier (e.g., "stripe-mensio")
+        object_type: Stripe object type (customer, invoice, payment_intent, refund)
 
     Returns:
-        Callable that computes idem_key from Stripe charge payload
+        Callable that computes idem_key from Stripe object payload
 
     Example:
-        >>> fn = stripe_charge_idem_key("stripe", "stripe-prod")
-        >>> fn({"id": "ch_123", "amount": 1000})
-        'stripe:stripe-prod:charge:ch_123'
+        >>> fn = stripe_idem_key("stripe", "stripe-mensio", "customer")
+        >>> fn({"id": "cus_123", "email": "test@example.com"})
+        'stripe:stripe-mensio:customer:cus_123'
     """
     def compute_idem_key(obj: Dict[str, Any]) -> str:
-        charge_id = obj.get('id')
-        if not charge_id:
-            raise ValueError(f"Stripe charge missing 'id' field: {obj}")
-        return f"{source_system}:{connection_name}:charge:{charge_id}"
+        stripe_id = obj.get('id')
+        if not stripe_id:
+            raise ValueError(f"Stripe {object_type} missing 'id' field: {obj}")
+        return f"{source_system}:{connection_name}:{object_type}:{stripe_id}"
 
     return compute_idem_key
+
+
+# Legacy alias
+def stripe_charge_idem_key(source_system: str, connection_name: str) -> Callable[[Dict[str, Any]], str]:
+    """Legacy alias for stripe_idem_key with object_type='charge'."""
+    return stripe_idem_key(source_system, connection_name, "charge")

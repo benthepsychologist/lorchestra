@@ -40,6 +40,10 @@ google_forms_ingest_ipip120 = "lorchestra.jobs.ingest_google_forms:job_ingest_go
 google_forms_ingest_intake_01 = "lorchestra.jobs.ingest_google_forms:job_ingest_google_forms_intake_01"
 google_forms_ingest_intake_02 = "lorchestra.jobs.ingest_google_forms:job_ingest_google_forms_intake_02"
 google_forms_ingest_followup = "lorchestra.jobs.ingest_google_forms:job_ingest_google_forms_followup"
+stripe_ingest_customers = "lorchestra.jobs.ingest_stripe:job_ingest_stripe_customers"
+stripe_ingest_invoices = "lorchestra.jobs.ingest_stripe:job_ingest_stripe_invoices"
+stripe_ingest_payment_intents = "lorchestra.jobs.ingest_stripe:job_ingest_stripe_payment_intents"
+stripe_ingest_refunds = "lorchestra.jobs.ingest_stripe:job_ingest_stripe_refunds"
 
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]

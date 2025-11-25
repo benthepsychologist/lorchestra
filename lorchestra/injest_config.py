@@ -61,6 +61,11 @@ class HybridConnectionStore:
                 "refresh_token": os.environ[cfg["refresh_token_env"]],
             }
 
+        if cfg["provider"] == "stripe":
+            return {
+                "api_key": os.environ[cfg["api_key_env"]],
+            }
+
         raise KeyError(f"Unknown provider: {cfg['provider']}")
 
     def save(self, identity: str, data: JSONDict) -> None:
