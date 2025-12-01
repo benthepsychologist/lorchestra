@@ -13,10 +13,10 @@ def test_run_job_command(tmp_path):
 
     runner = CliRunner()
 
-    # Create a temp specs directory with a test job spec
-    specs_dir = tmp_path / "specs"
-    specs_dir.mkdir()
-    (specs_dir / "test_job.json").write_text(json.dumps({
+    # Create a temp definitions directory with a test job spec
+    defs_dir = tmp_path / "definitions"
+    defs_dir.mkdir()
+    (defs_dir / "test_job.json").write_text(json.dumps({
         "job_id": "test_job",
         "job_type": "ingest",
         "source": {"stream": "test.messages", "identity": "test:acct1"},
@@ -27,7 +27,7 @@ def test_run_job_command(tmp_path):
     env = {"EVENTS_BQ_DATASET": "test_dataset"}
 
     with patch.dict(os.environ, env):
-        with patch('lorchestra.cli.SPECS_DIR', specs_dir):
+        with patch('lorchestra.cli.DEFINITIONS_DIR', defs_dir):
             with patch('lorchestra.job_runner.run_job') as mock_run:
                 with patch('google.cloud.bigquery.Client'):
                     with patch('lorchestra.stack_clients.event_client.ensure_test_tables_exist'):
@@ -44,10 +44,10 @@ def test_run_job_with_dry_run(tmp_path):
 
     runner = CliRunner()
 
-    # Create a temp specs directory with a test job spec
-    specs_dir = tmp_path / "specs"
-    specs_dir.mkdir()
-    (specs_dir / "test_job.json").write_text(json.dumps({
+    # Create a temp definitions directory with a test job spec
+    defs_dir = tmp_path / "definitions"
+    defs_dir.mkdir()
+    (defs_dir / "test_job.json").write_text(json.dumps({
         "job_id": "test_job",
         "job_type": "ingest",
         "source": {"stream": "test.messages", "identity": "test:acct1"},
@@ -57,7 +57,7 @@ def test_run_job_with_dry_run(tmp_path):
     env = {"EVENTS_BQ_DATASET": "test_dataset"}
 
     with patch.dict(os.environ, env):
-        with patch('lorchestra.cli.SPECS_DIR', specs_dir):
+        with patch('lorchestra.cli.DEFINITIONS_DIR', defs_dir):
             with patch('lorchestra.job_runner.run_job') as mock_run:
                 with patch('google.cloud.bigquery.Client'):
                     result = runner.invoke(main, ['run', 'test_job', '--dry-run'])
@@ -76,10 +76,10 @@ def test_run_job_with_test_table(tmp_path):
 
     runner = CliRunner()
 
-    # Create a temp specs directory with a test job spec
-    specs_dir = tmp_path / "specs"
-    specs_dir.mkdir()
-    (specs_dir / "test_job.json").write_text(json.dumps({
+    # Create a temp definitions directory with a test job spec
+    defs_dir = tmp_path / "definitions"
+    defs_dir.mkdir()
+    (defs_dir / "test_job.json").write_text(json.dumps({
         "job_id": "test_job",
         "job_type": "ingest",
         "source": {"stream": "test.messages", "identity": "test:acct1"},
@@ -89,7 +89,7 @@ def test_run_job_with_test_table(tmp_path):
     env = {"EVENTS_BQ_DATASET": "test_dataset"}
 
     with patch.dict(os.environ, env):
-        with patch('lorchestra.cli.SPECS_DIR', specs_dir):
+        with patch('lorchestra.cli.DEFINITIONS_DIR', defs_dir):
             with patch('lorchestra.job_runner.run_job') as mock_run:
                 with patch('google.cloud.bigquery.Client'):
                     with patch('lorchestra.stack_clients.event_client.ensure_test_tables_exist'):
@@ -109,10 +109,10 @@ def test_run_job_failure(tmp_path):
 
     runner = CliRunner()
 
-    # Create a temp specs directory with a test job spec
-    specs_dir = tmp_path / "specs"
-    specs_dir.mkdir()
-    (specs_dir / "test_job.json").write_text(json.dumps({
+    # Create a temp definitions directory with a test job spec
+    defs_dir = tmp_path / "definitions"
+    defs_dir.mkdir()
+    (defs_dir / "test_job.json").write_text(json.dumps({
         "job_id": "test_job",
         "job_type": "ingest",
         "source": {"stream": "test.messages", "identity": "test:acct1"},
@@ -122,7 +122,7 @@ def test_run_job_failure(tmp_path):
     env = {"EVENTS_BQ_DATASET": "test_dataset"}
 
     with patch.dict(os.environ, env):
-        with patch('lorchestra.cli.SPECS_DIR', specs_dir):
+        with patch('lorchestra.cli.DEFINITIONS_DIR', defs_dir):
             with patch('lorchestra.job_runner.run_job') as mock_run:
                 mock_run.side_effect = RuntimeError("Job failed")
                 with patch('google.cloud.bigquery.Client'):
@@ -138,11 +138,11 @@ def test_run_job_unknown_job(tmp_path):
 
     runner = CliRunner()
 
-    # Create an empty specs directory
-    specs_dir = tmp_path / "specs"
-    specs_dir.mkdir()
+    # Create an empty definitions directory
+    defs_dir = tmp_path / "definitions"
+    defs_dir.mkdir()
 
-    with patch('lorchestra.cli.SPECS_DIR', specs_dir):
+    with patch('lorchestra.cli.DEFINITIONS_DIR', defs_dir):
         result = runner.invoke(main, ['run', 'nonexistent_job'])
 
     assert result.exit_code == 1
@@ -155,23 +155,23 @@ def test_jobs_list_command(tmp_path):
 
     runner = CliRunner()
 
-    # Create a temp specs directory with test job specs
-    specs_dir = tmp_path / "specs"
-    specs_dir.mkdir()
-    (specs_dir / "ingest_gmail.json").write_text(json.dumps({
+    # Create a temp definitions directory with test job definitions
+    defs_dir = tmp_path / "definitions"
+    defs_dir.mkdir()
+    (defs_dir / "ingest_gmail.json").write_text(json.dumps({
         "job_id": "ingest_gmail",
         "job_type": "ingest",
     }))
-    (specs_dir / "ingest_exchange.json").write_text(json.dumps({
+    (defs_dir / "ingest_exchange.json").write_text(json.dumps({
         "job_id": "ingest_exchange",
         "job_type": "ingest",
     }))
-    (specs_dir / "canonize_email.json").write_text(json.dumps({
+    (defs_dir / "canonize_email.json").write_text(json.dumps({
         "job_id": "canonize_email",
         "job_type": "canonize",
     }))
 
-    with patch('lorchestra.cli.SPECS_DIR', specs_dir):
+    with patch('lorchestra.cli.DEFINITIONS_DIR', defs_dir):
         result = runner.invoke(main, ['jobs', 'list'])
 
     assert result.exit_code == 0
@@ -188,19 +188,19 @@ def test_jobs_list_with_type_filter(tmp_path):
 
     runner = CliRunner()
 
-    # Create a temp specs directory with test job specs
-    specs_dir = tmp_path / "specs"
-    specs_dir.mkdir()
-    (specs_dir / "ingest_gmail.json").write_text(json.dumps({
+    # Create a temp definitions directory with test job definitions
+    defs_dir = tmp_path / "definitions"
+    defs_dir.mkdir()
+    (defs_dir / "ingest_gmail.json").write_text(json.dumps({
         "job_id": "ingest_gmail",
         "job_type": "ingest",
     }))
-    (specs_dir / "canonize_email.json").write_text(json.dumps({
+    (defs_dir / "canonize_email.json").write_text(json.dumps({
         "job_id": "canonize_email",
         "job_type": "canonize",
     }))
 
-    with patch('lorchestra.cli.SPECS_DIR', specs_dir):
+    with patch('lorchestra.cli.DEFINITIONS_DIR', defs_dir):
         result = runner.invoke(main, ['jobs', 'list', '--type', 'ingest'])
 
     assert result.exit_code == 0
@@ -215,15 +215,15 @@ def test_jobs_list_unknown_type(tmp_path):
 
     runner = CliRunner()
 
-    # Create a temp specs directory with test job specs
-    specs_dir = tmp_path / "specs"
-    specs_dir.mkdir()
-    (specs_dir / "ingest_gmail.json").write_text(json.dumps({
+    # Create a temp definitions directory with test job definitions
+    defs_dir = tmp_path / "definitions"
+    defs_dir.mkdir()
+    (defs_dir / "ingest_gmail.json").write_text(json.dumps({
         "job_id": "ingest_gmail",
         "job_type": "ingest",
     }))
 
-    with patch('lorchestra.cli.SPECS_DIR', specs_dir):
+    with patch('lorchestra.cli.DEFINITIONS_DIR', defs_dir):
         result = runner.invoke(main, ['jobs', 'list', '--type', 'nonexistent'])
 
     assert result.exit_code == 0  # Not an error, just no jobs found
@@ -236,16 +236,16 @@ def test_jobs_show_command(tmp_path):
 
     runner = CliRunner()
 
-    # Create a temp specs directory with a test job spec
-    specs_dir = tmp_path / "specs"
-    specs_dir.mkdir()
-    (specs_dir / "test_job.json").write_text(json.dumps({
+    # Create a temp definitions directory with a test job spec
+    defs_dir = tmp_path / "definitions"
+    defs_dir.mkdir()
+    (defs_dir / "test_job.json").write_text(json.dumps({
         "job_id": "test_job",
         "job_type": "ingest",
         "source": {"stream": "test.messages"},
     }))
 
-    with patch('lorchestra.cli.SPECS_DIR', specs_dir):
+    with patch('lorchestra.cli.DEFINITIONS_DIR', defs_dir):
         result = runner.invoke(main, ['jobs', 'show', 'test_job'])
 
     assert result.exit_code == 0
@@ -260,11 +260,11 @@ def test_jobs_show_unknown_job(tmp_path):
 
     runner = CliRunner()
 
-    # Create an empty specs directory
-    specs_dir = tmp_path / "specs"
-    specs_dir.mkdir()
+    # Create an empty definitions directory
+    defs_dir = tmp_path / "definitions"
+    defs_dir.mkdir()
 
-    with patch('lorchestra.cli.SPECS_DIR', specs_dir):
+    with patch('lorchestra.cli.DEFINITIONS_DIR', defs_dir):
         result = runner.invoke(main, ['jobs', 'show', 'nonexistent'])
 
     assert result.exit_code == 1
@@ -277,10 +277,10 @@ def test_mutually_exclusive_options(tmp_path):
 
     runner = CliRunner()
 
-    # Create a temp specs directory with a test job spec
-    specs_dir = tmp_path / "specs"
-    specs_dir.mkdir()
-    (specs_dir / "test_job.json").write_text(json.dumps({
+    # Create a temp definitions directory with a test job spec
+    defs_dir = tmp_path / "definitions"
+    defs_dir.mkdir()
+    (defs_dir / "test_job.json").write_text(json.dumps({
         "job_id": "test_job",
         "job_type": "ingest",
     }))
@@ -288,7 +288,7 @@ def test_mutually_exclusive_options(tmp_path):
     env = {"EVENTS_BQ_DATASET": "test_dataset"}
 
     with patch.dict(os.environ, env):
-        with patch('lorchestra.cli.SPECS_DIR', specs_dir):
+        with patch('lorchestra.cli.DEFINITIONS_DIR', defs_dir):
             with patch('google.cloud.bigquery.Client'):
                 result = runner.invoke(main, ['run', 'test_job', '--dry-run', '--test-table'])
 

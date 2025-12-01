@@ -9,62 +9,62 @@ from unittest.mock import MagicMock, patch
 from lorchestra.job_runner import (
     BigQueryStorageClient,
     BigQueryEventClient,
-    load_job_spec,
+    load_job_definition,
     run_job,
 )
 from lorchestra.processors.base import JobContext
 
 
-class TestLoadJobSpec:
-    """Tests for load_job_spec function."""
+class TestLoadJobDefinition:
+    """Tests for load_job_definition function."""
 
-    def test_load_valid_spec(self):
-        """Load a valid job spec from file."""
+    def test_load_valid_definition(self):
+        """Load a valid job definition from file."""
         with TemporaryDirectory() as tmpdir:
-            specs_dir = Path(tmpdir)
-            spec_file = specs_dir / "test_job.json"
-            spec_file.write_text(json.dumps({
+            defs_dir = Path(tmpdir)
+            def_file = defs_dir / "test_job.json"
+            def_file.write_text(json.dumps({
                 "job_id": "test_job",
                 "job_type": "ingest",
                 "source": {"stream": "test.stream"},
             }))
 
-            spec = load_job_spec("test_job", specs_dir=specs_dir)
+            job_def = load_job_definition("test_job", definitions_dir=defs_dir)
 
-            assert spec["job_id"] == "test_job"
-            assert spec["job_type"] == "ingest"
-            assert spec["source"]["stream"] == "test.stream"
+            assert job_def["job_id"] == "test_job"
+            assert job_def["job_type"] == "ingest"
+            assert job_def["source"]["stream"] == "test.stream"
 
-    def test_load_spec_adds_job_id_if_missing(self):
-        """Job ID is added from filename if not in spec."""
+    def test_load_definition_adds_job_id_if_missing(self):
+        """Job ID is added from filename if not in definition."""
         with TemporaryDirectory() as tmpdir:
-            specs_dir = Path(tmpdir)
-            spec_file = specs_dir / "my_job.json"
-            spec_file.write_text(json.dumps({
+            defs_dir = Path(tmpdir)
+            def_file = defs_dir / "my_job.json"
+            def_file.write_text(json.dumps({
                 "job_type": "ingest",
             }))
 
-            spec = load_job_spec("my_job", specs_dir=specs_dir)
+            job_def = load_job_definition("my_job", definitions_dir=defs_dir)
 
-            assert spec["job_id"] == "my_job"
+            assert job_def["job_id"] == "my_job"
 
-    def test_load_nonexistent_spec_raises(self):
-        """Loading nonexistent spec raises FileNotFoundError."""
+    def test_load_nonexistent_definition_raises(self):
+        """Loading nonexistent definition raises FileNotFoundError."""
         with TemporaryDirectory() as tmpdir:
-            specs_dir = Path(tmpdir)
+            defs_dir = Path(tmpdir)
 
-            with pytest.raises(FileNotFoundError, match="Job spec not found"):
-                load_job_spec("nonexistent", specs_dir=specs_dir)
+            with pytest.raises(FileNotFoundError, match="Job definition not found"):
+                load_job_definition("nonexistent", definitions_dir=defs_dir)
 
     def test_load_invalid_json_raises(self):
         """Loading invalid JSON raises JSONDecodeError."""
         with TemporaryDirectory() as tmpdir:
-            specs_dir = Path(tmpdir)
-            spec_file = specs_dir / "bad_spec.json"
-            spec_file.write_text("{ invalid json }")
+            defs_dir = Path(tmpdir)
+            def_file = defs_dir / "bad_def.json"
+            def_file.write_text("{ invalid json }")
 
             with pytest.raises(json.JSONDecodeError):
-                load_job_spec("bad_spec", specs_dir=specs_dir)
+                load_job_definition("bad_def", definitions_dir=defs_dir)
 
 
 class TestBigQueryStorageClient:
@@ -223,12 +223,12 @@ class TestRunJob:
         return MagicMock()
 
     @pytest.fixture
-    def specs_dir(self):
-        """Create temporary specs directory with test job."""
+    def defs_dir(self):
+        """Create temporary definitions directory with test job."""
         with TemporaryDirectory() as tmpdir:
-            specs_dir = Path(tmpdir)
-            spec_file = specs_dir / "test_ingest.json"
-            spec_file.write_text(json.dumps({
+            defs_dir = Path(tmpdir)
+            def_file = defs_dir / "test_ingest.json"
+            def_file.write_text(json.dumps({
                 "job_id": "test_ingest",
                 "job_type": "ingest",
                 "source": {
@@ -241,10 +241,10 @@ class TestRunJob:
                     "object_type": "item",
                 },
             }))
-            yield specs_dir
+            yield defs_dir
 
-    def test_run_job_loads_spec_and_dispatches(self, specs_dir, mock_bq_client):
-        """run_job loads spec and dispatches to processor."""
+    def test_run_job_loads_definition_and_dispatches(self, defs_dir, mock_bq_client):
+        """run_job loads definition and dispatches to processor."""
         mock_processor = MagicMock()
 
         with patch("lorchestra.job_runner.registry") as mock_registry:
@@ -253,7 +253,7 @@ class TestRunJob:
 
                 run_job(
                     "test_ingest",
-                    specs_dir=specs_dir,
+                    definitions_dir=defs_dir,
                     bq_client=mock_bq_client,
                     dry_run=True,
                 )
@@ -261,18 +261,18 @@ class TestRunJob:
                 # Verify processor was called
                 mock_processor.run.assert_called_once()
 
-                # Verify job_spec was passed
+                # Verify job_def was passed
                 call_args = mock_processor.run.call_args
-                job_spec = call_args[0][0]
-                assert job_spec["job_id"] == "test_ingest"
-                assert job_spec["job_type"] == "ingest"
+                job_def = call_args[0][0]
+                assert job_def["job_id"] == "test_ingest"
+                assert job_def["job_type"] == "ingest"
 
                 # Verify context was passed
                 context = call_args[0][1]
                 assert isinstance(context, JobContext)
                 assert context.dry_run is True
 
-    def test_run_job_emits_lifecycle_events(self, specs_dir, mock_bq_client):
+    def test_run_job_emits_lifecycle_events(self, defs_dir, mock_bq_client):
         """run_job emits job.started and job.completed events."""
         mock_processor = MagicMock()
 
@@ -282,7 +282,7 @@ class TestRunJob:
 
                 run_job(
                     "test_ingest",
-                    specs_dir=specs_dir,
+                    definitions_dir=defs_dir,
                     bq_client=mock_bq_client,
                 )
 
@@ -293,7 +293,7 @@ class TestRunJob:
                 assert "job.started" in event_types
                 assert "job.completed" in event_types
 
-    def test_run_job_emits_failed_event_on_error(self, specs_dir, mock_bq_client):
+    def test_run_job_emits_failed_event_on_error(self, defs_dir, mock_bq_client):
         """run_job emits job.failed event on processor error."""
         mock_processor = MagicMock()
         mock_processor.run.side_effect = RuntimeError("Processor error")
@@ -305,7 +305,7 @@ class TestRunJob:
                 with pytest.raises(RuntimeError, match="Processor error"):
                     run_job(
                         "test_ingest",
-                        specs_dir=specs_dir,
+                        definitions_dir=defs_dir,
                         bq_client=mock_bq_client,
                     )
 
@@ -317,7 +317,7 @@ class TestRunJob:
                 assert "job.failed" in event_types
                 assert "job.completed" not in event_types
 
-    def test_run_job_sets_run_mode(self, specs_dir, mock_bq_client):
+    def test_run_job_sets_run_mode(self, defs_dir, mock_bq_client):
         """run_job sets and resets run mode."""
         mock_processor = MagicMock()
 
@@ -327,7 +327,7 @@ class TestRunJob:
 
                 run_job(
                     "test_ingest",
-                    specs_dir=specs_dir,
+                    definitions_dir=defs_dir,
                     bq_client=mock_bq_client,
                     dry_run=True,
                     test_table=True,
@@ -342,27 +342,27 @@ class TestRunJob:
     def test_run_job_missing_job_type_raises(self, mock_bq_client):
         """run_job raises ValueError if job_type is missing."""
         with TemporaryDirectory() as tmpdir:
-            specs_dir = Path(tmpdir)
-            spec_file = specs_dir / "bad_job.json"
-            spec_file.write_text(json.dumps({
+            defs_dir = Path(tmpdir)
+            def_file = defs_dir / "bad_job.json"
+            def_file.write_text(json.dumps({
                 "job_id": "bad_job",
                 # Missing job_type
             }))
 
             with patch("lorchestra.job_runner.ec"):
                 with pytest.raises(ValueError, match="missing job_type"):
-                    run_job("bad_job", specs_dir=specs_dir, bq_client=mock_bq_client)
+                    run_job("bad_job", definitions_dir=defs_dir, bq_client=mock_bq_client)
 
     def test_run_job_unknown_job_type_raises(self, mock_bq_client):
         """run_job raises KeyError for unknown job_type."""
         with TemporaryDirectory() as tmpdir:
-            specs_dir = Path(tmpdir)
-            spec_file = specs_dir / "unknown_type.json"
-            spec_file.write_text(json.dumps({
+            defs_dir = Path(tmpdir)
+            def_file = defs_dir / "unknown_type.json"
+            def_file.write_text(json.dumps({
                 "job_id": "unknown_type",
                 "job_type": "nonexistent_type",
             }))
 
             with patch("lorchestra.job_runner.ec"):
                 with pytest.raises(KeyError, match="Unknown job_type"):
-                    run_job("unknown_type", specs_dir=specs_dir, bq_client=mock_bq_client)
+                    run_job("unknown_type", definitions_dir=defs_dir, bq_client=mock_bq_client)

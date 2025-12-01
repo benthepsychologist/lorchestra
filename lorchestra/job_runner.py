@@ -1,7 +1,7 @@
 """JobRunner - Central dispatcher for lorchestra jobs.
 
 This module provides the main entry point for executing jobs:
-1. Loads JSON job specs from jobs/specs/
+1. Loads JSON job definitions from jobs/definitions/
 2. Instantiates shared clients (BigQuery, EventClient, StorageClient)
 3. Dispatches to the appropriate processor by job_type
 4. Handles errors and emits job lifecycle events
@@ -9,7 +9,7 @@ This module provides the main entry point for executing jobs:
 Usage:
     from lorchestra.job_runner import run_job
 
-    # Run a job by ID (loads from jobs/specs/{job_id}.json)
+    # Run a job by ID (loads from jobs/definitions/{job_id}.json)
     run_job("gmail_ingest_acct1")
 
     # Run with options
@@ -35,8 +35,8 @@ from lorchestra.stack_clients import event_client as ec
 
 logger = logging.getLogger(__name__)
 
-# Default job specs directory
-SPECS_DIR = Path(__file__).parent / "jobs" / "specs"
+# Default job definitions directory
+DEFINITIONS_DIR = Path(__file__).parent / "jobs" / "definitions"
 
 
 class BigQueryStorageClient:
@@ -337,34 +337,34 @@ class BigQueryEventClient:
         )
 
 
-def load_job_spec(job_id: str, specs_dir: Path | None = None) -> dict[str, Any]:
-    """Load a job spec from JSON file.
+def load_job_definition(job_id: str, definitions_dir: Path | None = None) -> dict[str, Any]:
+    """Load a job definition from JSON file.
 
     Args:
         job_id: Job identifier (e.g., "gmail_ingest_acct1")
-        specs_dir: Directory containing job specs (defaults to jobs/specs/)
+        definitions_dir: Directory containing job definitions (defaults to jobs/definitions/)
 
     Returns:
-        Parsed job specification dict
+        Parsed job definition dict
 
     Raises:
-        FileNotFoundError: If job spec file doesn't exist
-        json.JSONDecodeError: If job spec is invalid JSON
+        FileNotFoundError: If job definition file doesn't exist
+        json.JSONDecodeError: If job definition is invalid JSON
     """
-    specs_dir = specs_dir or SPECS_DIR
-    spec_path = specs_dir / f"{job_id}.json"
+    definitions_dir = definitions_dir or DEFINITIONS_DIR
+    def_path = definitions_dir / f"{job_id}.json"
 
-    if not spec_path.exists():
-        raise FileNotFoundError(f"Job spec not found: {spec_path}")
+    if not def_path.exists():
+        raise FileNotFoundError(f"Job definition not found: {def_path}")
 
-    with open(spec_path) as f:
-        spec = json.load(f)
+    with open(def_path) as f:
+        job_def = json.load(f)
 
-    # Ensure job_id in spec matches filename
-    if "job_id" not in spec:
-        spec["job_id"] = job_id
+    # Ensure job_id in definition matches filename
+    if "job_id" not in job_def:
+        job_def["job_id"] = job_id
 
-    return spec
+    return job_def
 
 
 def run_job(
@@ -372,13 +372,13 @@ def run_job(
     *,
     dry_run: bool = False,
     test_table: bool = False,
-    specs_dir: Path | None = None,
+    definitions_dir: Path | None = None,
     bq_client: bigquery.Client | None = None,
 ) -> None:
     """Run a job by ID.
 
     This is the main entry point for job execution. It:
-    1. Loads the job spec from jobs/specs/{job_id}.json
+    1. Loads the job definition from jobs/definitions/{job_id}.json
     2. Creates shared clients (BigQuery, StorageClient, EventClient)
     3. Dispatches to the appropriate processor by job_type
     4. Emits job.started and job.completed/job.failed events
@@ -387,23 +387,23 @@ def run_job(
         job_id: Job identifier (e.g., "gmail_ingest_acct1")
         dry_run: If True, skip all writes and log what would happen
         test_table: If True, write to test tables instead of production
-        specs_dir: Optional directory containing job specs
+        definitions_dir: Optional directory containing job definitions
         bq_client: Optional BigQuery client (created if not provided)
 
     Raises:
-        FileNotFoundError: If job spec doesn't exist
+        FileNotFoundError: If job definition doesn't exist
         KeyError: If job_type is not registered
         Exception: If processor raises an error
     """
     # Generate run ID for correlation
     run_id = f"{job_id}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
 
-    # Load job spec
-    job_spec = load_job_spec(job_id, specs_dir)
-    job_type = job_spec.get("job_type")
+    # Load job definition
+    job_def = load_job_definition(job_id, definitions_dir)
+    job_type = job_def.get("job_type")
 
     if not job_type:
-        raise ValueError(f"Job spec missing job_type: {job_id}")
+        raise ValueError(f"Job definition missing job_type: {job_id}")
 
     logger.info(f"Starting job: {job_id} (type={job_type}, run_id={run_id})")
     if dry_run:
@@ -455,7 +455,7 @@ def run_job(
 
         # Get processor and run
         processor = registry.get(job_type)
-        processor.run(job_spec, context, storage_client, event_client)
+        processor.run(job_def, context, storage_client, event_client)
 
         # Emit job.completed event
         event_client.log_event(

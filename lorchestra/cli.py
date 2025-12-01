@@ -3,7 +3,7 @@ CLI interface for lorchestra job orchestrator.
 
 Provides commands to discover, inspect, and run jobs.
 
-Jobs are defined as JSON specs in jobs/specs/*.json and dispatched
+Jobs are defined as JSON files in jobs/definitions/*.json and dispatched
 via the JobRunner to typed processors (ingest, canonize, final_form).
 """
 
@@ -14,15 +14,15 @@ from pathlib import Path
 from lorchestra import __version__
 
 
-# Job specs directory
-SPECS_DIR = Path(__file__).parent / "jobs" / "specs"
+# Job definitions directory
+DEFINITIONS_DIR = Path(__file__).parent / "jobs" / "definitions"
 
 
-def _get_available_specs() -> list[str]:
-    """Get list of available job spec IDs."""
-    if not SPECS_DIR.exists():
+def _get_available_jobs() -> list[str]:
+    """Get list of available job IDs."""
+    if not DEFINITIONS_DIR.exists():
         return []
-    return sorted([f.stem for f in SPECS_DIR.glob("*.json")])
+    return sorted([f.stem for f in DEFINITIONS_DIR.glob("*.json")])
 
 
 @click.group()
@@ -57,19 +57,19 @@ def _run_job_impl(job: str, dry_run: bool = False, test_table: bool = False, **k
         click.echo("Writing to: test_event_log, test_raw_objects")
         click.echo("=" * 50)
 
-    # Check if job spec exists
-    available_specs = _get_available_specs()
+    # Check if job definition exists
+    available_jobs = _get_available_jobs()
 
     # Handle job_<name> -> <name> aliasing for backwards compat
     job_id = job
     if job_id.startswith("job_"):
         job_id = job_id[4:]  # Remove "job_" prefix
 
-    if job_id not in available_specs:
+    if job_id not in available_jobs:
         click.echo(f"✗ Unknown job: {job}", err=True)
         click.echo("\nAvailable jobs:", err=True)
-        for spec_id in available_specs:
-            click.echo(f"  {spec_id}", err=True)
+        for jid in available_jobs:
+            click.echo(f"  {jid}", err=True)
         raise SystemExit(1)
 
     # Create BQ client
@@ -85,7 +85,7 @@ def _run_job_impl(job: str, dry_run: bool = False, test_table: bool = False, **k
             job_id,
             dry_run=dry_run,
             test_table=test_table,
-            specs_dir=SPECS_DIR,
+            definitions_dir=DEFINITIONS_DIR,
             bq_client=bq_client,
         )
 
@@ -110,7 +110,7 @@ def run(job: str, dry_run: bool, test_table: bool):
     """
     Run a job by ID.
 
-    JOB is the job spec ID (filename without .json extension).
+    JOB is the job ID (filename without .json extension).
 
     Examples:
 
@@ -139,22 +139,22 @@ def list_jobs(job_type: str = None):
     """List available jobs."""
     import json
 
-    specs = _get_available_specs()
+    jobs = _get_available_jobs()
 
-    if not specs:
-        click.echo("No job specs found.")
+    if not jobs:
+        click.echo("No job definitions found.")
         return
 
     # Group by job_type
     by_type: dict[str, list[str]] = {}
-    for spec_id in specs:
-        spec_path = SPECS_DIR / f"{spec_id}.json"
-        with open(spec_path) as f:
-            spec = json.load(f)
-        jt = spec.get("job_type", "unknown")
+    for job_id in jobs:
+        def_path = DEFINITIONS_DIR / f"{job_id}.json"
+        with open(def_path) as f:
+            job_def = json.load(f)
+        jt = job_def.get("job_type", "unknown")
         if jt not in by_type:
             by_type[jt] = []
-        by_type[jt].append(spec_id)
+        by_type[jt].append(job_id)
 
     # Filter if requested
     if job_type:
@@ -166,33 +166,33 @@ def list_jobs(job_type: str = None):
     # Print grouped list
     for jt in sorted(by_type.keys()):
         click.echo(f"{jt}:")
-        for spec_id in sorted(by_type[jt]):
-            click.echo(f"  {spec_id}")
+        for job_id in sorted(by_type[jt]):
+            click.echo(f"  {job_id}")
 
 
 @jobs_group.command("show")
 @click.argument("job")
 def show_job(job: str):
-    """Show job spec details."""
+    """Show job definition details."""
     import json
 
     job_id = job
     if job_id.startswith("job_"):
         job_id = job_id[4:]
 
-    spec_path = SPECS_DIR / f"{job_id}.json"
-    if not spec_path.exists():
+    def_path = DEFINITIONS_DIR / f"{job_id}.json"
+    if not def_path.exists():
         click.echo(f"✗ Unknown job: {job}", err=True)
         raise SystemExit(1)
 
-    with open(spec_path) as f:
-        spec = json.load(f)
+    with open(def_path) as f:
+        job_def = json.load(f)
 
     click.echo(f"Job: {job_id}")
-    click.echo(f"Type: {spec.get('job_type', 'unknown')}")
-    click.echo(f"Spec: {spec_path}")
+    click.echo(f"Type: {job_def.get('job_type', 'unknown')}")
+    click.echo(f"Definition: {def_path}")
     click.echo()
-    click.echo(json.dumps(spec, indent=2))
+    click.echo(json.dumps(job_def, indent=2))
 
 
 if __name__ == "__main__":

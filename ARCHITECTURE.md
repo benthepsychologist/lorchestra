@@ -61,7 +61,7 @@ lorchestra does NOT become a monorepo. Domain logic remains in separate packages
 
 ### 2.4 JSON Job Specs with Typed Processors
 
-Jobs are defined as JSON spec files in `lorchestra/jobs/specs/*.json`. Each spec declares:
+Jobs are defined as JSON spec files in `lorchestra/jobs/definitions/*.json`. Each spec declares:
 - `job_id`: Unique identifier (matches filename)
 - `job_type`: One of `ingest`, `canonize`, or `final_form`
 - Type-specific configuration (source, sink, transform options)
@@ -94,7 +94,7 @@ These remain out of scope until the three target lanes are operational.
 
 **Responsibilities:**
 - Provides the `lorchestra` command-line interface for running jobs
-- Loads JSON job specs from `jobs/specs/*.json`
+- Loads JSON job specs from `jobs/definitions/*.json`
 - Dispatches jobs to typed processors (IngestProcessor, CanonizeProcessor, FinalFormProcessor)
 - Hosts client libraries (event_client, storage_client)
 - Manages pipeline state and logging
@@ -104,7 +104,7 @@ These remain out of scope until the three target lanes are operational.
 ```
 lorchestra run <job_id>
     │
-    ├── Loads job spec from jobs/specs/{job_id}.json
+    ├── Loads job spec from jobs/definitions/{job_id}.json
     │
     ├── Creates BigQueryStorageClient and BigQueryEventClient
     │
