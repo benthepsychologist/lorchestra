@@ -1,0 +1,16 @@
+{
+  "job_id": "ingest_gmail_acct3",
+  "job_type": "ingest",
+  "source": {
+    "stream": "gmail.messages",
+    "identity": "gmail:acct3"
+  },
+  "sink": {
+    "source_system": "gmail",
+    "connection_name": "gmail-acct3",
+    "object_type": "email"
+  },
+  "options": {
+    "auto_since": true
+  }
+}

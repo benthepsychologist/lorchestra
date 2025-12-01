@@ -49,6 +49,9 @@ phi-data/
 *.jsonl
 *.json
 
+# But allow job definitions
+!lorchestra/jobs/definitions/*.json
+
 # Testing
 .pytest_cache/
 .coverage

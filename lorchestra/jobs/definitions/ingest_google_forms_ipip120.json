@@ -1,0 +1,16 @@
+{
+  "job_id": "ingest_google_forms_ipip120",
+  "job_type": "ingest",
+  "source": {
+    "stream": "google_forms.responses",
+    "identity": "google_forms:ipip120"
+  },
+  "sink": {
+    "source_system": "google_forms",
+    "connection_name": "google-forms-ipip120",
+    "object_type": "form_response"
+  },
+  "options": {
+    "auto_since": true
+  }
+}

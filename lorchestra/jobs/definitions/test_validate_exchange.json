@@ -1,0 +1,12 @@
+{
+  "job_id": "test_validate_exchange",
+  "job_type": "canonize",
+  "source": {
+    "source_system": "exchange",
+    "object_type": "email"
+  },
+  "transform": {
+    "mode": "validate_only",
+    "schema_in": "iglu:com.microsoft/exchange_email/jsonschema/1-0-2"
+  }
+}

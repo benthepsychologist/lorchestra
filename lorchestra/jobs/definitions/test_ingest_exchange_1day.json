@@ -1,0 +1,17 @@
+{
+  "job_id": "test_ingest_exchange_1day",
+  "job_type": "ingest",
+  "source": {
+    "stream": "exchange.messages",
+    "identity": "exchange:ben-mensio"
+  },
+  "sink": {
+    "source_system": "exchange",
+    "connection_name": "exchange-ben-mensio",
+    "object_type": "email"
+  },
+  "options": {
+    "since": "-1d",
+    "auto_since": false
+  }
+}
