@@ -67,9 +67,10 @@ class TestDryRunMode:
         upsert_objects(
             objects=test_objects,
             source_system="test-system",
+            connection_name="test-conn",
             object_type="test_object",
             correlation_id="test-123",
-            idem_key_fn=lambda x: f"test:{x['id']}",
+            idem_key_fn=lambda x: f"test-system:test-conn:test_object:{x['id']}",
             bq_client=mock_bq_client,
         )
 
@@ -97,9 +98,10 @@ class TestDryRunMode:
         upsert_objects(
             objects=object_generator(),
             source_system="test-system",
+            connection_name="test-conn",
             object_type="test_object",
             correlation_id="test-123",
-            idem_key_fn=lambda x: f"test:{x['id']}",
+            idem_key_fn=lambda x: f"test-system:test-conn:test_object:{x['id']}",
             bq_client=mock_bq_client,
         )
 
@@ -123,9 +125,10 @@ class TestDryRunMode:
             upsert_objects(
                 objects=test_objects,
                 source_system="test-system",
+                connection_name="test-conn",
                 object_type="test_object",
                 correlation_id="test-123",
-                idem_key_fn=lambda x: f"test:{x['id']}",
+                idem_key_fn=lambda x: f"test-system:test-conn:test_object:{x['id']}",
                 bq_client=mock_bq_client,
             )
 
@@ -133,9 +136,9 @@ class TestDryRunMode:
         assert "Would upsert 10 test_object objects" in caplog.text
 
         # Check that we logged sample idem_keys (first 3)
-        assert "Sample 1 idem_key=test:obj0" in caplog.text
-        assert "Sample 2 idem_key=test:obj1" in caplog.text
-        assert "Sample 3 idem_key=test:obj2" in caplog.text
+        assert "Sample 1 idem_key=test-system:test-conn:test_object:obj0" in caplog.text
+        assert "Sample 2 idem_key=test-system:test-conn:test_object:obj1" in caplog.text
+        assert "Sample 3 idem_key=test-system:test-conn:test_object:obj2" in caplog.text
 
     def test_normal_mode_calls_bq(self):
         """Without dry-run, log_event should call BigQuery."""

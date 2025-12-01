@@ -19,6 +19,8 @@ def mock_bq_client():
     # Mock query for MERGE operations
     mock_query_job = MagicMock()
     mock_query_job.result.return_value = None
+    # Return an integer for num_dml_affected_rows, not a MagicMock
+    mock_query_job.num_dml_affected_rows = 2
     client.query.return_value = mock_query_job
 
     # Mock delete_table for cleanup
@@ -48,7 +50,7 @@ def test_log_event_basic(mock_bq_client, env_vars):
         event_type="job.started",
         source_system="lorchestra",
         correlation_id="test-run-123",
-        object_type="job_run",
+        target_object_type="job_run",
         status="ok",
         bq_client=mock_bq_client,
     )
@@ -63,7 +65,7 @@ def test_log_event_basic(mock_bq_client, env_vars):
     assert envelope["event_type"] == "job.started"
     assert envelope["source_system"] == "lorchestra"
     assert envelope["correlation_id"] == "test-run-123"
-    assert envelope["object_type"] == "job_run"
+    assert envelope["target_object_type"] == "job_run"
     assert envelope["status"] == "ok"
     # Optional fields are not included when None
     assert "idem_key" not in envelope
@@ -98,7 +100,7 @@ def test_log_event_with_error(mock_bq_client, env_vars):
         event_type="job.failed",
         source_system="lorchestra",
         correlation_id="test-run-789",
-        object_type="job_run",
+        target_object_type="job_run",
         status="failed",
         error_message="Connection timeout",
         payload={"error_type": "TimeoutError", "retryable": True},
@@ -198,11 +200,12 @@ def test_upsert_objects_basic(mock_bq_client, env_vars):
     ]
 
     def idem_key_fn(obj):
-        return f"email:test-source:{obj['id']}"
+        return f"test-source:test-conn:email:{obj['id']}"
 
     upsert_objects(
         objects=objects,
         source_system="test-source",
+        connection_name="test-conn",
         object_type="email",
         correlation_id="test-run-123",
         idem_key_fn=idem_key_fn,
@@ -228,11 +231,12 @@ def test_upsert_objects_with_iterator(mock_bq_client, env_vars):
         yield {"id": "msg2", "subject": "Test 2"}
 
     def idem_key_fn(obj):
-        return f"email:test-source:{obj['id']}"
+        return f"test-source:test-conn:email:{obj['id']}"
 
     upsert_objects(
         objects=object_generator(),
         source_system="test-source",
+        connection_name="test-conn",
         object_type="email",
         correlation_id="test-run-123",
         idem_key_fn=idem_key_fn,
@@ -254,11 +258,12 @@ def test_upsert_objects_batching(mock_bq_client, env_vars):
     ]
 
     def idem_key_fn(obj):
-        return f"email:test-source:{obj['id']}"
+        return f"test-source:test-conn:email:{obj['id']}"
 
     upsert_objects(
         objects=objects,
         source_system="test-source",
+        connection_name="test-conn",
         object_type="email",
         correlation_id="test-run-123",
         idem_key_fn=idem_key_fn,
@@ -281,6 +286,7 @@ def test_upsert_objects_missing_source_system(mock_bq_client, env_vars):
         upsert_objects(
             objects=[],
             source_system="",
+            connection_name="test-conn",
             object_type="email",
             correlation_id="test-123",
             idem_key_fn=lambda x: "test",
@@ -296,6 +302,7 @@ def test_upsert_objects_missing_idem_key_fn(mock_bq_client, env_vars):
         upsert_objects(
             objects=[],
             source_system="test",
+            connection_name="test-conn",
             object_type="email",
             correlation_id="test-123",
             idem_key_fn=None,  # Missing!
@@ -311,12 +318,13 @@ def test_upsert_objects_load_failure(mock_bq_client, env_vars):
     mock_bq_client.load_table_from_json.side_effect = Exception("Load failed")
 
     def idem_key_fn(obj):
-        return f"email:test-source:{obj['id']}"
+        return f"test:test-conn:email:{obj['id']}"
 
     with pytest.raises(RuntimeError, match="Batch upsert failed"):
         upsert_objects(
             objects=[{"id": "msg1"}],
             source_system="test",
+            connection_name="test-conn",
             object_type="email",
             correlation_id="test-123",
             idem_key_fn=idem_key_fn,
@@ -331,11 +339,12 @@ def test_upsert_objects_cleanup_temp_table(mock_bq_client, env_vars):
     objects = [{"id": "msg1", "subject": "Test"}]
 
     def idem_key_fn(obj):
-        return f"email:test-source:{obj['id']}"
+        return f"test-source:test-conn:email:{obj['id']}"
 
     upsert_objects(
         objects=objects,
         source_system="test-source",
+        connection_name="test-conn",
         object_type="email",
         correlation_id="test-run-123",
         idem_key_fn=idem_key_fn,
@@ -357,17 +366,17 @@ def test_gmail_idem_key():
     """Test gmail_idem_key function."""
     from lorchestra.idem_keys import gmail_idem_key
 
-    fn = gmail_idem_key("tap-gmail--acct1")
+    fn = gmail_idem_key("gmail", "gmail-acct1")
     idem_key = fn({"id": "msg123", "subject": "Test"})
 
-    assert idem_key == "email:tap-gmail--acct1:msg123"
+    assert idem_key == "gmail:gmail-acct1:email:msg123"
 
 
 def test_gmail_idem_key_missing_id():
     """Test gmail_idem_key raises error when id is missing."""
     from lorchestra.idem_keys import gmail_idem_key
 
-    fn = gmail_idem_key("tap-gmail--acct1")
+    fn = gmail_idem_key("gmail", "gmail-acct1")
 
     with pytest.raises(ValueError, match="missing 'id' field"):
         fn({"subject": "Test"})  # No id field
@@ -377,17 +386,17 @@ def test_stripe_charge_idem_key():
     """Test stripe_charge_idem_key function."""
     from lorchestra.idem_keys import stripe_charge_idem_key
 
-    fn = stripe_charge_idem_key("tap-stripe--prod")
+    fn = stripe_charge_idem_key("stripe", "stripe-mensio")
     idem_key = fn({"id": "ch_123", "amount": 1000})
 
-    assert idem_key == "charge:tap-stripe--prod:ch_123"
+    assert idem_key == "stripe:stripe-mensio:charge:ch_123"
 
 
 def test_stripe_charge_idem_key_missing_id():
     """Test stripe_charge_idem_key raises error when id is missing."""
     from lorchestra.idem_keys import stripe_charge_idem_key
 
-    fn = stripe_charge_idem_key("tap-stripe--prod")
+    fn = stripe_charge_idem_key("stripe", "stripe-mensio")
 
     with pytest.raises(ValueError, match="missing 'id' field"):
         fn({"amount": 1000})  # No id field
@@ -397,17 +406,17 @@ def test_msgraph_idem_key():
     """Test msgraph_idem_key function."""
     from lorchestra.idem_keys import msgraph_idem_key
 
-    fn = msgraph_idem_key("tap-msgraph-mail--ben-mensio")
+    fn = msgraph_idem_key("exchange", "exchange-ben-mensio")
     idem_key = fn({"id": "AAMkAGI2NGU...", "subject": "Test"})
 
-    assert idem_key == "email:tap-msgraph-mail--ben-mensio:AAMkAGI2NGU..."
+    assert idem_key == "exchange:exchange-ben-mensio:email:AAMkAGI2NGU..."
 
 
 def test_msgraph_idem_key_missing_id():
     """Test msgraph_idem_key raises error when id is missing."""
     from lorchestra.idem_keys import msgraph_idem_key
 
-    fn = msgraph_idem_key("tap-msgraph-mail--ben-mensio")
+    fn = msgraph_idem_key("exchange", "exchange-ben-mensio")
 
     with pytest.raises(ValueError, match="missing 'id' field"):
         fn({"subject": "Test"})  # No id field
@@ -430,7 +439,7 @@ def test_log_event_and_upsert_objects_together(mock_bq_client, env_vars):
         event_type="job.started",
         source_system="lorchestra",
         correlation_id=correlation_id,
-        object_type="job_run",
+        target_object_type="job_run",
         status="ok",
         payload={"job_name": "gmail_ingest"},
         bq_client=mock_bq_client,
@@ -444,17 +453,19 @@ def test_log_event_and_upsert_objects_together(mock_bq_client, env_vars):
 
     upsert_objects(
         objects=emails,
-        source_system="tap-gmail--acct1",
+        source_system="gmail",
+        connection_name="gmail-acct1",
         object_type="email",
         correlation_id=correlation_id,
-        idem_key_fn=gmail_idem_key("tap-gmail--acct1"),
+        idem_key_fn=gmail_idem_key("gmail", "gmail-acct1"),
         bq_client=mock_bq_client,
     )
 
     # Log ingestion completed
     log_event(
         event_type="ingestion.completed",
-        source_system="tap-gmail--acct1",
+        source_system="gmail",
+        connection_name="gmail-acct1",
         correlation_id=correlation_id,
         status="ok",
         payload={"records_extracted": 2, "duration_seconds": 5.2},
@@ -466,14 +477,14 @@ def test_log_event_and_upsert_objects_together(mock_bq_client, env_vars):
         event_type="job.completed",
         source_system="lorchestra",
         correlation_id=correlation_id,
-        object_type="job_run",
+        target_object_type="job_run",
         status="ok",
         payload={"job_name": "gmail_ingest", "duration_seconds": 6.0},
         bq_client=mock_bq_client,
     )
 
-    # Should have 3 event_log inserts
-    assert mock_bq_client.insert_rows_json.call_count == 3
+    # Should have 4 event_log inserts (3 manual + 1 auto from upsert_objects)
+    assert mock_bq_client.insert_rows_json.call_count == 4
 
     # Should have 1 batch upsert
     assert mock_bq_client.load_table_from_json.call_count == 1

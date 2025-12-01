@@ -1,0 +1,218 @@
+aip_id: AIP-lorchestra-2025-11-25-001
+context:
+  background: "The `authctl` package has been implemented at `/workspace/authctl/` and provides:\n- Unified\
+    \ credential storage at `$AUTHCTL_HOME/credentials.json`\n- Provider factories that return SDK-native\
+    \ objects:\n  - `build_gmail_credentials(account)` → `google.oauth2.credentials.Credentials`\n  -\
+    \ `build_msgraph_app(account)` → `msal.PublicClientApplication`\n  - `get_api_key(account)` → `str`\n\
+    \nCurrently, lorchestra has legacy auth artifacts:\n- `scripts/gmail_*.py` - duplicated OAuth setup\
+    \ scripts (one per account)\n- `scripts/get_gmail_refresh_token.py` - another OAuth helper\n- `.env`\
+    \ contains credential env vars that should now come from authctl"
+  constraints:
+  - '`authctl` must be installed before this migration runs'
+  - All accounts must already be authorized in `$AUTHCTL_HOME`
+  - Jobs should continue to work with `--dry-run` and `--test-table` flags
+  - Provider factories must be called with only the account name** - all client IDs, secrets, and refresh
+    tokens come from `$AUTHCTL_HOME/credentials.json`. Lorchestra must not supply or override these values.
+  - No token cache directories in lorchestra** - MSAL caches live exclusively under `$AUTHCTL_HOME/msgraph/<account>/token_cache.bin`,
+    managed by authctl. Lorchestra must not create `.tokens/`, `.msgraph/`, or similar directories.
+created: '2025-11-25T16:37:01.999734+00:00'
+meta:
+  created_at: '2025-11-25T16:37:01.999734+00:00'
+  created_by: benthepsychologist
+objective:
+  acceptance_criteria:
+  - '`authctl` added as dependency in `pyproject.toml`'
+  - All jobs use authctl providers for credentials (no direct `.env` credential access)
+  - All `scripts/gmail_*.py` OAuth scripts deleted
+  - '`scripts/get_gmail_refresh_token.py` deleted'
+  - Credential env vars removed from `.env` (keep non-auth vars like `GCP_PROJECT`)
+  - '`AUTHCTL_HOME=/workspace/.authctl` added to `.env`'
+  - '`lorchestra run gmail_ingest_acct1 --dry-run` works'
+  - '`lorchestra run exchange_ingest_ben_mensio --dry-run` works'
+  - '`lorchestra run stripe_ingest_customers --dry-run` works'
+  - All production jobs run successfully
+  - No credential parsing, token refresh helpers, or OAuth/device-flow logic remains in lorchestra
+  - All functions that previously constructed Gmail/MS Graph/Stripe clients now delegate 100% to authctl
+    provider factories
+  - 'Missing credentials raise `authctl.secrets.MissingCredentialsError` with actionable message (e.g.,
+    "Run: authctl auth gmail --account acct1")'
+  - No `.tokens/` or `.msgraph/` directories created by lorchestra (token caches live exclusively under
+    `$AUTHCTL_HOME`)
+  goal: Update lorchestra to consume credentials via authctl package
+orchestrator_contract:
+  artifacts_dir: .aip_artifacts/AIP-lorchestra-2025-11-25-001
+  logging: jsonl
+  state_machine:
+    events:
+    - run_step
+    - await_gate
+    - approve
+    - reject
+    - retry
+    - escalate
+    - complete
+    states:
+    - pending
+    - running
+    - awaiting_human
+    - failed
+    - succeeded
+    - rolled_back
+plan:
+- description: Add authctl Dependency
+  gate_ref: 'G0: Setup'
+  kind: code
+  prompt: "Add `authctl` as a dependency to lorchestra:\n1. Update `pyproject.toml` to add authctl dependency:\n\
+    \   ```toml\n   dependencies = [\n       ...\n       \"authctl\",\n   ]\n   ```\n2. Add `AUTHCTL_HOME=/workspace/.authctl`\
+    \ to `.env`\n3. Reinstall package to pick up new dependency"
+  role: coding_agent
+  step_id: step-001
+- description: Update injest_config.py
+  gate_ref: 'G1: Code Migration'
+  kind: code
+  prompt: 'Update `lorchestra/injest_config.py` to use authctl for credential resolution:
+
+    1. Remove any direct credential loading from env vars
+
+    2. Keep the account identity mappings (these map lorchestra job names to authctl account names)
+
+    3. If there are functions that build credentials, replace them with authctl provider calls
+
+    Review the current implementation and determine what needs to change.'
+  role: coding_agent
+  step_id: step-002
+- description: Update Job Files
+  gate_ref: 'G1: Code Migration'
+  kind: code
+  prompt: 'Update job files to use authctl providers. The jobs likely call into `injest` which handles
+    credential loading, but verify:
+
+    1. Check `lorchestra/jobs/ingest_gmail.py` - ensure it uses authctl via injest
+
+    2. Check `lorchestra/jobs/ingest_exchange.py` - ensure it uses authctl via injest
+
+    3. Check `lorchestra/jobs/ingest_stripe.py` - ensure it uses authctl via injest
+
+    If jobs directly access credentials (not via injest), update them to use:
+
+    - `from authctl.providers.gmail import build_gmail_credentials`
+
+    - `from authctl.providers.msgraph import build_msgraph_app`
+
+    - `from authctl.providers.stripe import get_api_key`
+
+    **CRITICAL:** Provider factories must be called with **only the account name**:
+
+    ```python
+
+    # CORRECT - account name only
+
+    creds = build_gmail_credentials("acct1")
+
+    app = build_msgraph_app("ben-mensio")
+
+    key = get_api_key("mensio")
+
+    # WRONG - do NOT pass client IDs or secrets
+
+    creds = build_gmail_credentials("acct1", client_id="...", client_secret="...")  # NO!
+
+    ```
+
+    All client IDs, secrets, and tokens come from `$AUTHCTL_HOME/credentials.json`. Lorchestra must not
+    supply or override these values.'
+  role: coding_agent
+  step_id: step-003
+- description: Delete Legacy Auth Scripts & Verify No Token Caches
+  gate_ref: 'G1: Cleanup'
+  kind: code
+  prompt: 'Delete all legacy OAuth setup scripts from `scripts/`:
+
+    1. Delete `scripts/gmail_oauth_url.py`
+
+    2. Delete `scripts/gmail_oauth_url_acct2.py`
+
+    3. Delete `scripts/gmail_oauth_url_acct3.py`
+
+    4. Delete `scripts/gmail_exchange_code.py`
+
+    5. Delete `scripts/gmail_exchange_code_acct2.py`
+
+    6. Delete `scripts/gmail_exchange_code_acct3.py`
+
+    7. Delete `scripts/get_gmail_refresh_token.py`
+
+    Keep utility scripts that are still useful:
+
+    - `scripts/daily_ingest.sh` - cron runner
+
+    - `scripts/cleanup_test_data.py` - maintenance
+
+    - `scripts/query_events.py` - debugging
+
+    Also verify lorchestra has no token cache directories:
+
+    - No `.tokens/` directory
+
+    - No `.msgraph/` directory
+
+    - No `.authctl/` directory (credentials live at `$AUTHCTL_HOME`, not repo-local)'
+  role: coding_agent
+  step_id: step-004
+- description: Clean .env File
+  gate_ref: 'G1: Cleanup'
+  kind: code
+  prompt: 'Remove credential environment variables from `.env`:
+
+    Variables to REMOVE (now handled by authctl):
+
+    - `TAP_GMAIL_*` (all Gmail OAuth vars)
+
+    - `TAP_MSGRAPH_*` (all MS Graph vars)
+
+    - `STRIPE_API_KEY`
+
+    - Any `*_CLIENT_ID`, `*_CLIENT_SECRET`, `*_REFRESH_TOKEN` vars
+
+    Variables to KEEP:
+
+    - `AUTHCTL_HOME=/workspace/.authctl` (added in Step 1)
+
+    - `GCP_PROJECT`
+
+    - `DATASET_NAME`
+
+    - `GOOGLE_APPLICATION_CREDENTIALS`
+
+    - Any non-credential config vars'
+  role: coding_agent
+  step_id: step-005
+- description: Dry-Run Validation
+  gate_ref: 'G2: Pre-Release'
+  kind: code
+  prompt: 'Verify all jobs work with `--dry-run`:
+
+    1. Gmail jobs
+
+    2. Exchange jobs
+
+    3. Stripe jobs'
+  role: coding_agent
+  step_id: step-006
+- description: Production Validation
+  gate_ref: 'G2: Pre-Release'
+  kind: code
+  prompt: 'Run one job of each type with production data to verify end-to-end:'
+  role: coding_agent
+  step_id: step-007
+project_slug: lorchestra
+repo:
+  default_branch: main
+  url: git@github.com:benthepsychologist/lorchestra.git
+  working_branch: main
+spec_version: 1.0.0
+tier: C
+title: Migrate lorchestra to authctl
+updated: '2025-11-25T17:00:00+00:00'
+version: '0.1'
+

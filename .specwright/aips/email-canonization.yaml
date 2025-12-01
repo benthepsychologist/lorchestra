@@ -1,0 +1,273 @@
+aip_id: AIP-lorchestra-2025-11-26-001
+title: Email Canonization Pipeline
+tier: C
+spec_ref: .specwright/specs/email-canonization.md
+created: 2025-11-26T02:00:00+00:00
+status: pending
+
+objective:
+  goal: >
+    Validate raw Gmail and Exchange email payloads against source schemas, then transform to canonical
+    JMAP Lite format. Validation and canonization are separate jobs. All schemas (source AND canonical)
+    are validated by canonizer.
+  acceptance_criteria:
+    - canonical_objects BigQuery table created with proper schema
+    - raw_objects updated with schema_source, schema_iglu, validation_stamp columns
+    - Canonizer configured with explicit CANONIZER_REGISTRY_ROOT env var
+    - lorchestra run validate_gmail_source validates Gmail emails and stamps them
+    - lorchestra run validate_exchange_source validates Exchange emails and stamps them
+    - lorchestra run canonize_gmail_jmap transforms validated Gmail emails to JMAP Lite
+    - lorchestra run canonize_exchange_jmap transforms validated Exchange emails to JMAP Lite
+    - canonize_* jobs FAIL if source payload doesn't pass validation (canonizer enforces this)
+    - Validation failures emit validation.failed events with error details
+    - Transform failures emit canonize.failed events with error details
+    - --dry-run mode works (no BQ writes)
+    - --test-table mode works (writes to test tables)
+    - All 7,654 existing emails validated and canonized
+
+context:
+  constraints:
+    - Do not modify canonizer core - only add schemas if needed
+    - Use CANONIZER_REGISTRY_ROOT env var, not CWD magic
+    - Validation and canonization must be separate jobs
+  dependencies:
+    - canonizer (local: /workspace/canonizer)
+    - google-cloud-bigquery
+  environment:
+    - CANONIZER_REGISTRY_ROOT=/workspace/canonizer
+    - GCP_PROJECT=local-orchestration
+    - EVENTS_BQ_DATASET=events_dev
+
+plan:
+  - step_id: step-01-bq-schema
+    description: "BigQuery Schema Updates"
+    gate_ref: G0
+    role: implementation_agent
+    prompt: |
+      Add schema_source, schema_iglu, validation_stamp columns to raw_objects.
+      Create canonical_objects table with full schema.
+      Create test_canonical_objects table for --test-table mode.
+
+      SQL to run:
+      ```sql
+      ALTER TABLE `local-orchestration.events_dev.raw_objects`
+      ADD COLUMN IF NOT EXISTS schema_source STRING,
+      ADD COLUMN IF NOT EXISTS schema_iglu STRING,
+      ADD COLUMN IF NOT EXISTS validation_stamp STRING;
+
+      CREATE TABLE IF NOT EXISTS `local-orchestration.events_dev.canonical_objects` (
+        idem_key STRING NOT NULL,
+        source_system STRING NOT NULL,
+        connection_name STRING NOT NULL,
+        object_type STRING NOT NULL,
+        canonical_schema STRING NOT NULL,
+        canonical_format STRING NOT NULL,
+        transform_ref STRING,
+        validation_stamp STRING NOT NULL,
+        payload JSON NOT NULL,
+        correlation_id STRING,
+        trace_id STRING,
+        created_at TIMESTAMP NOT NULL,
+        source_first_seen TIMESTAMP,
+        source_last_seen TIMESTAMP
+      )
+      PARTITION BY DATE(created_at)
+      CLUSTER BY source_system, object_type;
+      ```
+    commands:
+      - "python3 -c \"...\" # Execute schema updates via BigQuery client"
+    outputs:
+      - raw_objects table with new columns
+      - canonical_objects table created
+      - test_canonical_objects table created
+
+  - step_id: step-02-canonizer-config
+    description: "Canonizer Configuration"
+    gate_ref: G0
+    role: implementation_agent
+    prompt: |
+      1. Add CANONIZER_REGISTRY_ROOT=/workspace/canonizer to .env
+      2. Create lorchestra/canonizer_client.py with:
+         - get_canonizer_root() - returns Path from env
+         - validate_payload(payload, schema_iglu) - returns (is_valid, errors)
+         - canonicalize_payload(payload, transform_id) - returns canonical dict
+         - make_validation_stamp(schema_iglu) - returns stamp string
+      3. Verify source schemas exist in canonizer registry
+    outputs:
+      - .env updated with CANONIZER_REGISTRY_ROOT
+      - lorchestra/canonizer_client.py created
+
+  - step_id: step-03-schema-verify
+    description: "Schema Verification"
+    gate_ref: G1
+    role: implementation_agent
+    prompt: |
+      1. Sample a few Gmail payloads from BQ and validate against iglu:com.google/gmail_email/jsonschema/1-0-0
+      2. Sample a few Exchange payloads from BQ and validate against iglu:com.microsoft/exchange_email/jsonschema/1-0-0
+      3. Fix any schema mismatches in canonizer
+      4. Document any schema adjustments needed
+    commands:
+      - "python3 -c \"...\" # Test validation on sample payloads"
+    outputs:
+      - Confirmed schemas match actual data
+      - Schema fixes applied if needed
+
+  - step_id: step-04-validate-gmail-job
+    description: "Gmail Validation Job"
+    gate_ref: G1
+    role: implementation_agent
+    prompt: |
+      Create lorchestra/jobs/validate_gmail.py with job_validate_gmail_source() function.
+
+      The job should:
+      1. Query raw_objects where source_system='gmail' AND object_type='email' AND validation_stamp IS NULL
+      2. For each row, call canonizer.validate(payload, schema_iglu)
+      3. If valid: batch UPDATE with schema_source, schema_iglu, validation_stamp
+      4. If invalid: emit validation.failed event, skip row
+      5. Emit validation.completed event with counts
+
+      Support --since, --force, --dry-run options.
+      Register entry point in pyproject.toml.
+    outputs:
+      - lorchestra/jobs/validate_gmail.py
+      - pyproject.toml updated with validate_gmail_source entry point
+
+  - step_id: step-05-validate-exchange-job
+    description: "Exchange Validation Job"
+    gate_ref: G1
+    role: implementation_agent
+    prompt: |
+      Create lorchestra/jobs/validate_exchange.py with job_validate_exchange_source() function.
+
+      Same pattern as Gmail validation but with:
+      - source_system='exchange'
+      - schema_source='microsoft.graph/v1.0/message'
+      - schema_iglu='iglu:com.microsoft/exchange_email/jsonschema/1-0-0'
+
+      Register entry point in pyproject.toml.
+    outputs:
+      - lorchestra/jobs/validate_exchange.py
+      - pyproject.toml updated with validate_exchange_source entry point
+
+  - step_id: step-06-canonize-gmail-job
+    description: "Gmail Canonization Job"
+    gate_ref: G1
+    role: implementation_agent
+    prompt: |
+      Create lorchestra/jobs/canonize_gmail.py with job_canonize_gmail_jmap() function.
+
+      The job should:
+      1. Query raw_objects where source_system='gmail' AND object_type='email' AND validation_stamp IS NOT NULL
+      2. For each row, call canonizer.canonicalize(payload, transform_id='email/gmail_to_jmap_lite@1.0.0')
+      3. Build canonical_objects row with full provenance
+      4. Batch INSERT to canonical_objects
+      5. Emit canonize.completed event with counts
+
+      Support --since, --dry-run, --test-table options.
+      Register entry point in pyproject.toml.
+    outputs:
+      - lorchestra/jobs/canonize_gmail.py
+      - pyproject.toml updated with canonize_gmail_jmap entry point
+
+  - step_id: step-07-canonize-exchange-job
+    description: "Exchange Canonization Job"
+    gate_ref: G1
+    role: implementation_agent
+    prompt: |
+      Create lorchestra/jobs/canonize_exchange.py with job_canonize_exchange_jmap() function.
+
+      Same pattern as Gmail canonization but with:
+      - source_system='exchange'
+      - transform_id='email/exchange_to_jmap_lite@1.0.0'
+
+      Register entry point in pyproject.toml.
+    outputs:
+      - lorchestra/jobs/canonize_exchange.py
+      - pyproject.toml updated with canonize_exchange_jmap entry point
+
+  - step_id: step-08-run-validation
+    description: "Run Validation Jobs"
+    gate_ref: G2
+    role: execution_agent
+    prompt: |
+      Run validation jobs on all existing emails:
+
+      1. lorchestra run validate_gmail_source
+      2. lorchestra run validate_exchange_source
+      3. Verify validation stamps are set
+      4. Check for any validation.failed events
+    commands:
+      - "lorchestra run validate_gmail_source"
+      - "lorchestra run validate_exchange_source"
+    outputs:
+      - All 4,306 Gmail emails validated and stamped
+      - All 3,348 Exchange emails validated and stamped
+
+  - step_id: step-09-run-canonization
+    description: "Run Canonization Jobs"
+    gate_ref: G2
+    role: execution_agent
+    prompt: |
+      Run canonization jobs on all validated emails:
+
+      1. lorchestra run canonize_gmail_jmap
+      2. lorchestra run canonize_exchange_jmap
+      3. Verify canonical_objects contains expected data
+      4. Check for any canonize.failed events
+    commands:
+      - "lorchestra run canonize_gmail_jmap"
+      - "lorchestra run canonize_exchange_jmap"
+    outputs:
+      - All 7,654 emails canonized in canonical_objects table
+
+  - step_id: step-10-verify-pipeline
+    description: "Verify Full Pipeline"
+    gate_ref: G3
+    role: verification_agent
+    prompt: |
+      Verify the complete pipeline:
+
+      1. Query canonical_objects counts by source_system
+      2. Verify event_log has completion events
+      3. Check for any failed events
+      4. Sample canonical payloads to verify JMAP structure
+      5. Test --dry-run mode
+      6. Test --test-table mode
+    commands:
+      - "python3 -c \"...\" # Verify counts and sample data"
+    outputs:
+      - Pipeline verification report
+      - All acceptance criteria confirmed
+
+gates:
+  G0:
+    name: "Foundation Complete"
+    checklist:
+      - BigQuery schema updated with new columns
+      - canonical_objects table exists
+      - CANONIZER_REGISTRY_ROOT configured
+      - canonizer_client.py working
+  G1:
+    name: "Implementation Complete"
+    checklist:
+      - Source schemas verified against actual data
+      - validate_gmail_source job implemented
+      - validate_exchange_source job implemented
+      - canonize_gmail_jmap job implemented
+      - canonize_exchange_jmap job implemented
+      - All entry points registered
+  G2:
+    name: "Validation Complete"
+    checklist:
+      - All Gmail emails validated (4,306)
+      - All Exchange emails validated (3,348)
+      - Validation stamps set on raw_objects
+      - Any failures logged and documented
+  G3:
+    name: "Pipeline Complete"
+    checklist:
+      - All emails canonized (7,654)
+      - canonical_objects populated
+      - Event telemetry working
+      - --dry-run mode tested
+      - --test-table mode tested

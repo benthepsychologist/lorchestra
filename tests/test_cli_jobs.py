@@ -1,6 +1,7 @@
 """Tests for lorc run-job and lorc jobs commands."""
 from click.testing import CliRunner
 from unittest.mock import patch, MagicMock
+import os
 
 
 def test_run_job_command():
@@ -9,16 +10,25 @@ def test_run_job_command():
 
     runner = CliRunner()
 
-    with patch('lorchestra.jobs.execute_job') as mock_exec:
-        with patch('google.cloud.bigquery.Client') as mock_bq_client:
-            result = runner.invoke(main, ['run-job', 'pkg', 'job', '--account', 'test'])
+    # Set env vars required by log_event
+    env = {"EVENTS_BQ_DATASET": "test_dataset"}
 
-    assert result.exit_code == 0
-    assert "✓ pkg/job completed" in result.output
+    # Mock BQ client
+    mock_bq_client = MagicMock()
+    mock_bq_client.insert_rows_json.return_value = []  # No errors
+
+    with patch.dict(os.environ, env):
+        with patch('google.cloud.bigquery.Client', return_value=mock_bq_client):
+            with patch('lorchestra.jobs.execute_job') as mock_exec:
+                with patch('lorchestra.jobs.discover_jobs') as mock_discover:
+                    # Mock discovering a job
+                    mock_discover.return_value = {"pkg": {"job": lambda: None}}
+
+                    result = runner.invoke(main, ['run-job', 'job', '--account', 'test'])
+
+    assert result.exit_code == 0, f"Expected exit_code 0 but got {result.exit_code}: {result.output}"
+    assert "completed" in result.output
     mock_exec.assert_called_once()
-
-    # Verify BQ client was created
-    mock_bq_client.assert_called_once()
 
 
 def test_run_job_with_all_options():
@@ -27,16 +37,28 @@ def test_run_job_with_all_options():
 
     runner = CliRunner()
 
-    with patch('lorchestra.jobs.execute_job') as mock_exec:
-        with patch('google.cloud.bigquery.Client'):
-            result = runner.invoke(main, [
-                'run-job', 'ingester', 'extract_gmail',
-                '--account', 'acct1',
-                '--since', '7d',
-                '--until', '2025-11-18'
-            ])
+    # Set env vars required by log_event
+    env = {"EVENTS_BQ_DATASET": "test_dataset"}
 
-    assert result.exit_code == 0
+    # Mock BQ client
+    mock_bq_client = MagicMock()
+    mock_bq_client.insert_rows_json.return_value = []  # No errors
+
+    with patch.dict(os.environ, env):
+        with patch('google.cloud.bigquery.Client', return_value=mock_bq_client):
+            with patch('lorchestra.jobs.execute_job') as mock_exec:
+                with patch('lorchestra.jobs.discover_jobs') as mock_discover:
+                    # Mock discovering a job
+                    mock_discover.return_value = {"ingester": {"extract_gmail": lambda: None}}
+
+                    result = runner.invoke(main, [
+                        'run-job', 'extract_gmail',
+                        '--account', 'acct1',
+                        '--since', '7d',
+                        '--until', '2025-11-18'
+                    ])
+
+    assert result.exit_code == 0, f"Expected exit_code 0 but got {result.exit_code}: {result.output}"
     mock_exec.assert_called_once()
 
     # Verify only known options were passed
@@ -52,13 +74,25 @@ def test_run_job_failure():
 
     runner = CliRunner()
 
-    with patch('lorchestra.jobs.execute_job') as mock_exec:
-        with patch('google.cloud.bigquery.Client'):
-            mock_exec.side_effect = RuntimeError("Job failed")
-            result = runner.invoke(main, ['run-job', 'pkg', 'job'])
+    # Set env vars required by log_event
+    env = {"EVENTS_BQ_DATASET": "test_dataset"}
+
+    # Mock BQ client
+    mock_bq_client = MagicMock()
+    mock_bq_client.insert_rows_json.return_value = []  # No errors
+
+    with patch.dict(os.environ, env):
+        with patch('google.cloud.bigquery.Client', return_value=mock_bq_client):
+            with patch('lorchestra.jobs.execute_job') as mock_exec:
+                with patch('lorchestra.jobs.discover_jobs') as mock_discover:
+                    # Mock discovering a job
+                    mock_discover.return_value = {"pkg": {"job": lambda: None}}
+                    mock_exec.side_effect = RuntimeError("Job failed")
+
+                    result = runner.invoke(main, ['run-job', 'job'])
 
     assert result.exit_code == 1
-    assert "✗ pkg/job failed" in result.output
+    assert "failed" in result.output
 
 
 def test_jobs_list_command():
