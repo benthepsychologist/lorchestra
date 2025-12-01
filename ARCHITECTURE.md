@@ -415,56 +415,63 @@ Projections are derived from canonical events and can be rebuilt at any time.
 
 ## 7. Milestones for "Feels Real"
 
-### 7.1 Sales Pipeline Alive
+### 7.1 Sales Pipeline Alive ✓
 
 **Definition:** End-to-end flow from email ingestion to actionable sales data
 
+**Status:** ACHIEVED (2025-12)
+
 **Success Criteria:**
-1. Raw email events flowing from Gmail and Exchange into BQ
-2. Canonical email events available in `canonical_events` table
-3. inbox_view projection built and queryable
-4. Manual or scheduled job runs via lorc
-5. At least 7 days of historical email data processed
+1. ✓ Raw email events flowing from Gmail and Exchange into BQ
+2. ✓ Canonical email events available in `canonical_objects` table
+3. inbox_view projection built and queryable (pending)
+4. ✓ Manual job runs via lorchestra
+5. ✓ Historical email data processed (7,683 emails)
 
 **Deliverables:**
-- `lorc run extract_email` works for Gmail and Exchange
-- `lorc run canonicalize_email` produces valid canonical events
-- `lorc run build_inbox_view` creates queryable projection
-- BQ tables visible and query-able via BQ console or CLI
+- ✓ `lorchestra run ingest_gmail_acct1` (and acct2, acct3) works
+- ✓ `lorchestra run ingest_exchange_ben_mensio` (and other accounts) works
+- ✓ `lorchestra run validate_gmail_source` validates against schema
+- ✓ `lorchestra run canonize_gmail_jmap` produces JMAP Lite canonical events
+- ✓ BQ tables visible and queryable (raw_objects, canonical_objects)
 
 ### 7.2 Measurement Pipeline Alive
 
 **Definition:** End-to-end flow from questionnaire submission to scored measurements
 
+**Status:** IN PROGRESS
+
 **Success Criteria:**
-1. Raw form submission events flowing from Google Sheets into BQ
-2. Canonical questionnaire_response events available
-3. Scored PHQ-9 and GAD-7 measurements available in `canonical_events` or dedicated table
-4. measurement_timeseries projection built and queryable
+1. ✓ Raw form submission events flowing from Google Forms into BQ
+2. Canonical questionnaire_response events available (pending canonizer)
+3. Scored PHQ-9 and GAD-7 measurements available (pending final-form)
+4. measurement_timeseries projection built and queryable (pending)
 5. At least 10 real or test questionnaire responses processed
 
 **Deliverables:**
-- `lorc run extract_forms` ingests Google Sheets responses
-- `lorc run canonicalize_questionnaires` produces questionnaire_response events
-- `lorc run score_phq9` and `lorc run score_gad7` emit measurement.scored events
-- measurement_timeseries projection shows trends over time
+- ✓ `lorchestra run ingest_google_forms_ipip120` ingests form responses
+- `lorchestra run validate_google_forms_source` (pending job spec)
+- `lorchestra run canonize_google_forms` (pending transform)
+- FinalFormProcessor ready, awaiting final-form library integration
 
 ### 7.3 Reporting Alive
 
 **Definition:** Automated weekly client reports generated and delivered
 
+**Status:** NOT STARTED
+
 **Success Criteria:**
 1. Reporter job queries BQ for canonical/scored events
 2. Report generated in PDF or HTML format
 3. Report sent via email to test recipient
-4. Scheduled execution via lorc (manual cron or simple scheduler)
+4. Scheduled execution via lorchestra (manual cron or simple scheduler)
 5. At least one real client report delivered
 
 **Deliverables:**
-- `lorc run generate_weekly_report` produces report artifact
+- `lorchestra run generate_weekly_report` (pending reporter package)
 - Report includes sales pipeline summary and measurement trends
 - Report delivered via email with proper formatting
-- Execution logged and auditable via lorc logs
+- Execution logged and auditable via lorchestra logs
 
 ---
 
@@ -484,7 +491,7 @@ All components deploy to a single cloud provider (likely GCP for BQ proximity). 
 
 ### 8.4 Manual Scheduling Initially
 
-Jobs are triggered manually via `lorc run {job_name}` or via simple cron. No advanced orchestration framework (Airflow, Dagster) until after the three lanes are operational.
+Jobs are triggered manually via `lorchestra run <job_id>` or via simple cron. No advanced orchestration framework (Airflow, Dagster) until after the three lanes are operational.
 
 ### 8.5 Minimal Schema Evolution
 
@@ -590,37 +597,30 @@ Event schemas are versioned but not dynamically evolved. Schema changes require 
 
 ## 10. Next Actions
 
-To achieve the three "feels real" milestones:
+**Completed (2025-12):**
+- ✓ Refactored to JSON job specs with typed processors
+- ✓ Implemented event_client with two-table pattern
+- ✓ Set up BQ tables (event_log, raw_objects, canonical_objects)
+- ✓ Email pipeline: ingest → validate → canonize working
 
-1. **Refactor existing tools into packages with job entrypoints**
-   - ingester: Expose `extract_email()`, `extract_forms()` as callable functions
-   - canonizer: Expose `canonicalize_email()`, `canonicalize_questionnaires()`
-   - final-form: Implement `score_phq9()`, `score_gad7()`
-   - reporter: Implement `generate_weekly_report()`
+**Remaining:**
+1. **Build inbox_view projection**
+   - Create BQ view or materialized table from canonical_objects
+   - Add sales-relevant fields (sender domain, thread grouping)
 
-2. **Implement event_client in lorc**
-   - Create `lorc/stack_clients/event_client.py`
-   - Implement `write_event()` for BQ and JSONL
-   - Add simple query helpers for reading from BQ
+2. **Complete measurement pipeline**
+   - Add Google Forms validation schema
+   - Create canonize transform for questionnaire responses
+   - Integrate final-form library for PHQ-9/GAD-7 scoring
 
-3. **Set up BQ tables**
-   - Create `event_log` and `raw_objects` tables (two-table pattern)
-   - Configure partitioning and clustering
-   - Set up JSONL backup directories
-
-4. **Build minimal projections**
-   - Implement `inbox_view` for sales pipeline
-   - Implement `measurement_timeseries` for measurement pipeline
-   - Write simple BQ SQL or Python jobs to populate projections
-
-5. **Wire up lorc job execution**
-   - Implement job discovery and registration in lorc
-   - Add `lorc run {job_name}` command
-   - Test end-to-end flows for all three lanes
+3. **Implement reporter package**
+   - Query canonical_objects for report data
+   - Generate PDF/HTML reports
+   - Email delivery integration
 
 ---
 
-## 10. Review and Evolution
+## 11. Review and Evolution
 
 This document describes the target architecture for the next 2–3 months. It will be reviewed monthly and updated as:
 
@@ -629,6 +629,6 @@ This document describes the target architecture for the next 2–3 months. It wi
 - Components graduate from in-scope to operational
 - Out-of-scope features are reconsidered (only after core lanes are stable)
 
-**Current Status:** Active (2025-11)
-**Next Review:** 2025-12-15
+**Current Status:** Active (2025-12)
+**Next Review:** 2026-01-15
 **Owner:** Primary system architect
