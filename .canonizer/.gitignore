@@ -1,0 +1,6 @@
+# Downloaded registry files (fetch via canonizer import)
+registry/
+
+# Cache files
+*.pyc
+__pycache__/

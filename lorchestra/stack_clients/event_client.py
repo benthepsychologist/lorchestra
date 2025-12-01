@@ -482,6 +482,7 @@ def _upsert_batch(
                 "payload": obj,
                 "first_seen": now,
                 "last_seen": now,
+                "correlation_id": correlation_id,  # Track which ingest run created this
             }
             if schema_ref:
                 row["schema_ref"] = schema_ref
@@ -498,6 +499,7 @@ def _upsert_batch(
             bigquery.SchemaField("payload", "JSON", mode="REQUIRED"),
             bigquery.SchemaField("first_seen", "TIMESTAMP", mode="REQUIRED"),
             bigquery.SchemaField("last_seen", "TIMESTAMP", mode="REQUIRED"),
+            bigquery.SchemaField("correlation_id", "STRING", mode="NULLABLE"),
         ]
 
         job_config = bigquery.LoadJobConfig(
@@ -514,6 +516,7 @@ def _upsert_batch(
 
         # MERGE from temp table to raw_objects
         # Note: payload is updated on match - raw_objects is a state projection, not append-only
+        # correlation_id tracks which ingest run created/updated the record
         merge_query = f"""
             MERGE `{raw_objects_ref}` AS target
             USING `{temp_table_ref}` AS source
@@ -522,10 +525,11 @@ def _upsert_batch(
                 UPDATE SET
                     payload = source.payload,
                     schema_ref = source.schema_ref,
-                    last_seen = source.last_seen
+                    last_seen = source.last_seen,
+                    correlation_id = source.correlation_id
             WHEN NOT MATCHED THEN
-                INSERT (idem_key, source_system, connection_name, object_type, schema_ref, external_id, payload, first_seen, last_seen)
-                VALUES (idem_key, source_system, connection_name, object_type, schema_ref, external_id, payload, first_seen, last_seen)
+                INSERT (idem_key, source_system, connection_name, object_type, schema_ref, external_id, payload, first_seen, last_seen, correlation_id)
+                VALUES (idem_key, source_system, connection_name, object_type, schema_ref, external_id, payload, first_seen, last_seen, correlation_id)
         """
 
         merge_job = bq_client.query(merge_query)

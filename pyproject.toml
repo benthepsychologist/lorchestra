@@ -11,7 +11,8 @@ dependencies = [
     "rich>=13.0",
     "python-dotenv>=1.0",
     "google-cloud-bigquery>=3.0",
-    "ingestor @ file:///workspace/ingestor",
+    "injest @ file:///workspace/injest",
+    "authctl @ file:///workspace/authctl",
 ]
 
 [project.optional-dependencies]
@@ -44,6 +45,12 @@ stripe_ingest_customers = "lorchestra.jobs.ingest_stripe:job_ingest_stripe_custo
 stripe_ingest_invoices = "lorchestra.jobs.ingest_stripe:job_ingest_stripe_invoices"
 stripe_ingest_payment_intents = "lorchestra.jobs.ingest_stripe:job_ingest_stripe_payment_intents"
 stripe_ingest_refunds = "lorchestra.jobs.ingest_stripe:job_ingest_stripe_refunds"
+# Validation jobs
+validate_gmail_source = "lorchestra.jobs.validate_gmail:job_validate_gmail_source"
+validate_exchange_source = "lorchestra.jobs.validate_exchange:job_validate_exchange_source"
+# Canonization jobs
+canonize_gmail_jmap = "lorchestra.jobs.canonize_gmail:job_canonize_gmail_jmap"
+canonize_exchange_jmap = "lorchestra.jobs.canonize_exchange:job_canonize_exchange_jmap"
 
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
