@@ -1,188 +1,296 @@
-"""Tests for lorc run-job and lorc jobs commands."""
-from click.testing import CliRunner
-from unittest.mock import patch, MagicMock
+"""Tests for lorchestra run and jobs commands."""
+import json
 import os
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from click.testing import CliRunner
 
 
-def test_run_job_command():
-    """Test lorchestra run-job command."""
+def test_run_job_command(tmp_path):
+    """Test lorchestra run command."""
     from lorchestra.cli import main
 
     runner = CliRunner()
 
-    # Set env vars required by log_event
+    # Create a temp specs directory with a test job spec
+    specs_dir = tmp_path / "specs"
+    specs_dir.mkdir()
+    (specs_dir / "test_job.json").write_text(json.dumps({
+        "job_id": "test_job",
+        "job_type": "ingest",
+        "source": {"stream": "test.messages", "identity": "test:acct1"},
+        "sink": {"source_system": "test", "connection_name": "test-acct1", "object_type": "message"},
+    }))
+
+    # Mock the job_runner
     env = {"EVENTS_BQ_DATASET": "test_dataset"}
 
-    # Mock BQ client
-    mock_bq_client = MagicMock()
-    mock_bq_client.insert_rows_json.return_value = []  # No errors
-
     with patch.dict(os.environ, env):
-        with patch('google.cloud.bigquery.Client', return_value=mock_bq_client):
-            with patch('lorchestra.jobs.execute_job') as mock_exec:
-                with patch('lorchestra.jobs.discover_jobs') as mock_discover:
-                    # Mock discovering a job
-                    mock_discover.return_value = {"pkg": {"job": lambda: None}}
-
-                    result = runner.invoke(main, ['run-job', 'job', '--account', 'test'])
+        with patch('lorchestra.cli.SPECS_DIR', specs_dir):
+            with patch('lorchestra.job_runner.run_job') as mock_run:
+                with patch('google.cloud.bigquery.Client'):
+                    with patch('lorchestra.stack_clients.event_client.ensure_test_tables_exist'):
+                        result = runner.invoke(main, ['run', 'test_job'])
 
     assert result.exit_code == 0, f"Expected exit_code 0 but got {result.exit_code}: {result.output}"
     assert "completed" in result.output
-    mock_exec.assert_called_once()
+    mock_run.assert_called_once()
 
 
-def test_run_job_with_all_options():
-    """Test lorchestra run-job with all options."""
+def test_run_job_with_dry_run(tmp_path):
+    """Test lorchestra run with --dry-run option."""
     from lorchestra.cli import main
 
     runner = CliRunner()
 
-    # Set env vars required by log_event
+    # Create a temp specs directory with a test job spec
+    specs_dir = tmp_path / "specs"
+    specs_dir.mkdir()
+    (specs_dir / "test_job.json").write_text(json.dumps({
+        "job_id": "test_job",
+        "job_type": "ingest",
+        "source": {"stream": "test.messages", "identity": "test:acct1"},
+        "sink": {"source_system": "test", "connection_name": "test-acct1", "object_type": "message"},
+    }))
+
     env = {"EVENTS_BQ_DATASET": "test_dataset"}
 
-    # Mock BQ client
-    mock_bq_client = MagicMock()
-    mock_bq_client.insert_rows_json.return_value = []  # No errors
-
     with patch.dict(os.environ, env):
-        with patch('google.cloud.bigquery.Client', return_value=mock_bq_client):
-            with patch('lorchestra.jobs.execute_job') as mock_exec:
-                with patch('lorchestra.jobs.discover_jobs') as mock_discover:
-                    # Mock discovering a job
-                    mock_discover.return_value = {"ingester": {"extract_gmail": lambda: None}}
+        with patch('lorchestra.cli.SPECS_DIR', specs_dir):
+            with patch('lorchestra.job_runner.run_job') as mock_run:
+                with patch('google.cloud.bigquery.Client'):
+                    result = runner.invoke(main, ['run', 'test_job', '--dry-run'])
 
-                    result = runner.invoke(main, [
-                        'run-job', 'extract_gmail',
-                        '--account', 'acct1',
-                        '--since', '7d',
-                        '--until', '2025-11-18'
-                    ])
-
-    assert result.exit_code == 0, f"Expected exit_code 0 but got {result.exit_code}: {result.output}"
-    mock_exec.assert_called_once()
-
-    # Verify only known options were passed
-    call_kwargs = mock_exec.call_args[1]
-    assert 'account' in call_kwargs
-    assert 'since' in call_kwargs
-    assert 'until' in call_kwargs
+    assert result.exit_code == 0
+    assert "DRY RUN MODE" in result.output
+    mock_run.assert_called_once()
+    # Verify dry_run was passed
+    call_kwargs = mock_run.call_args[1]
+    assert call_kwargs.get('dry_run') is True
 
 
-def test_run_job_failure():
-    """Test lorchestra run-job command with failure."""
+def test_run_job_with_test_table(tmp_path):
+    """Test lorchestra run with --test-table option."""
     from lorchestra.cli import main
 
     runner = CliRunner()
 
-    # Set env vars required by log_event
+    # Create a temp specs directory with a test job spec
+    specs_dir = tmp_path / "specs"
+    specs_dir.mkdir()
+    (specs_dir / "test_job.json").write_text(json.dumps({
+        "job_id": "test_job",
+        "job_type": "ingest",
+        "source": {"stream": "test.messages", "identity": "test:acct1"},
+        "sink": {"source_system": "test", "connection_name": "test-acct1", "object_type": "message"},
+    }))
+
     env = {"EVENTS_BQ_DATASET": "test_dataset"}
 
-    # Mock BQ client
-    mock_bq_client = MagicMock()
-    mock_bq_client.insert_rows_json.return_value = []  # No errors
+    with patch.dict(os.environ, env):
+        with patch('lorchestra.cli.SPECS_DIR', specs_dir):
+            with patch('lorchestra.job_runner.run_job') as mock_run:
+                with patch('google.cloud.bigquery.Client'):
+                    with patch('lorchestra.stack_clients.event_client.ensure_test_tables_exist'):
+                        result = runner.invoke(main, ['run', 'test_job', '--test-table'])
+
+    assert result.exit_code == 0
+    assert "TEST TABLE MODE" in result.output
+    mock_run.assert_called_once()
+    # Verify test_table was passed
+    call_kwargs = mock_run.call_args[1]
+    assert call_kwargs.get('test_table') is True
+
+
+def test_run_job_failure(tmp_path):
+    """Test lorchestra run command with failure."""
+    from lorchestra.cli import main
+
+    runner = CliRunner()
+
+    # Create a temp specs directory with a test job spec
+    specs_dir = tmp_path / "specs"
+    specs_dir.mkdir()
+    (specs_dir / "test_job.json").write_text(json.dumps({
+        "job_id": "test_job",
+        "job_type": "ingest",
+        "source": {"stream": "test.messages", "identity": "test:acct1"},
+        "sink": {"source_system": "test", "connection_name": "test-acct1", "object_type": "message"},
+    }))
+
+    env = {"EVENTS_BQ_DATASET": "test_dataset"}
 
     with patch.dict(os.environ, env):
-        with patch('google.cloud.bigquery.Client', return_value=mock_bq_client):
-            with patch('lorchestra.jobs.execute_job') as mock_exec:
-                with patch('lorchestra.jobs.discover_jobs') as mock_discover:
-                    # Mock discovering a job
-                    mock_discover.return_value = {"pkg": {"job": lambda: None}}
-                    mock_exec.side_effect = RuntimeError("Job failed")
-
-                    result = runner.invoke(main, ['run-job', 'job'])
+        with patch('lorchestra.cli.SPECS_DIR', specs_dir):
+            with patch('lorchestra.job_runner.run_job') as mock_run:
+                mock_run.side_effect = RuntimeError("Job failed")
+                with patch('google.cloud.bigquery.Client'):
+                    result = runner.invoke(main, ['run', 'test_job'])
 
     assert result.exit_code == 1
     assert "failed" in result.output
 
 
-def test_jobs_list_command():
+def test_run_job_unknown_job(tmp_path):
+    """Test lorchestra run with unknown job."""
+    from lorchestra.cli import main
+
+    runner = CliRunner()
+
+    # Create an empty specs directory
+    specs_dir = tmp_path / "specs"
+    specs_dir.mkdir()
+
+    with patch('lorchestra.cli.SPECS_DIR', specs_dir):
+        result = runner.invoke(main, ['run', 'nonexistent_job'])
+
+    assert result.exit_code == 1
+    assert "Unknown job" in result.output
+
+
+def test_jobs_list_command(tmp_path):
     """Test lorchestra jobs list command."""
     from lorchestra.cli import main
 
     runner = CliRunner()
 
-    with patch('lorchestra.jobs.discover_jobs') as mock_discover:
-        mock_discover.return_value = {
-            "ingester": {"extract_gmail": lambda: None, "extract_exchange": lambda: None},
-            "canonizer": {"canonicalize_email": lambda: None}
-        }
+    # Create a temp specs directory with test job specs
+    specs_dir = tmp_path / "specs"
+    specs_dir.mkdir()
+    (specs_dir / "ingest_gmail.json").write_text(json.dumps({
+        "job_id": "ingest_gmail",
+        "job_type": "ingest",
+    }))
+    (specs_dir / "ingest_exchange.json").write_text(json.dumps({
+        "job_id": "ingest_exchange",
+        "job_type": "ingest",
+    }))
+    (specs_dir / "canonize_email.json").write_text(json.dumps({
+        "job_id": "canonize_email",
+        "job_type": "canonize",
+    }))
 
+    with patch('lorchestra.cli.SPECS_DIR', specs_dir):
         result = runner.invoke(main, ['jobs', 'list'])
 
     assert result.exit_code == 0
-    assert "ingester:" in result.output
-    assert "extract_gmail" in result.output
-    assert "extract_exchange" in result.output
-    assert "canonizer:" in result.output
-    assert "canonicalize_email" in result.output
+    assert "ingest:" in result.output
+    assert "ingest_gmail" in result.output
+    assert "ingest_exchange" in result.output
+    assert "canonize:" in result.output
+    assert "canonize_email" in result.output
 
 
-def test_jobs_list_with_package_filter():
-    """Test lorchestra jobs list with package filter."""
+def test_jobs_list_with_type_filter(tmp_path):
+    """Test lorchestra jobs list with --type filter."""
     from lorchestra.cli import main
 
     runner = CliRunner()
 
-    with patch('lorchestra.jobs.discover_jobs') as mock_discover:
-        mock_discover.return_value = {
-            "ingester": {"extract_gmail": lambda: None},
-            "canonizer": {"canonicalize_email": lambda: None}
-        }
+    # Create a temp specs directory with test job specs
+    specs_dir = tmp_path / "specs"
+    specs_dir.mkdir()
+    (specs_dir / "ingest_gmail.json").write_text(json.dumps({
+        "job_id": "ingest_gmail",
+        "job_type": "ingest",
+    }))
+    (specs_dir / "canonize_email.json").write_text(json.dumps({
+        "job_id": "canonize_email",
+        "job_type": "canonize",
+    }))
 
-        result = runner.invoke(main, ['jobs', 'list', 'ingester'])
+    with patch('lorchestra.cli.SPECS_DIR', specs_dir):
+        result = runner.invoke(main, ['jobs', 'list', '--type', 'ingest'])
 
     assert result.exit_code == 0
-    assert "Jobs in ingester:" in result.output
-    assert "extract_gmail" in result.output
-    assert "canonizer" not in result.output
+    assert "ingest:" in result.output
+    assert "ingest_gmail" in result.output
+    assert "canonize" not in result.output
 
 
-def test_jobs_list_unknown_package():
-    """Test lorchestra jobs list with unknown package."""
+def test_jobs_list_unknown_type(tmp_path):
+    """Test lorchestra jobs list with unknown type."""
     from lorchestra.cli import main
 
     runner = CliRunner()
 
-    with patch('lorchestra.jobs.discover_jobs') as mock_discover:
-        mock_discover.return_value = {}
+    # Create a temp specs directory with test job specs
+    specs_dir = tmp_path / "specs"
+    specs_dir.mkdir()
+    (specs_dir / "ingest_gmail.json").write_text(json.dumps({
+        "job_id": "ingest_gmail",
+        "job_type": "ingest",
+    }))
 
-        result = runner.invoke(main, ['jobs', 'list', 'nonexistent'])
+    with patch('lorchestra.cli.SPECS_DIR', specs_dir):
+        result = runner.invoke(main, ['jobs', 'list', '--type', 'nonexistent'])
 
-    assert result.exit_code == 1
-    assert "Unknown package: nonexistent" in result.output
+    assert result.exit_code == 0  # Not an error, just no jobs found
+    assert "No jobs of type" in result.output
 
 
-def test_jobs_show_command():
+def test_jobs_show_command(tmp_path):
     """Test lorchestra jobs show command."""
     from lorchestra.cli import main
 
     runner = CliRunner()
 
-    def mock_job():
-        """Test job docstring."""
-        pass
+    # Create a temp specs directory with a test job spec
+    specs_dir = tmp_path / "specs"
+    specs_dir.mkdir()
+    (specs_dir / "test_job.json").write_text(json.dumps({
+        "job_id": "test_job",
+        "job_type": "ingest",
+        "source": {"stream": "test.messages"},
+    }))
 
-    with patch('lorchestra.jobs.get_job') as mock_get:
-        mock_get.return_value = mock_job
-
-        result = runner.invoke(main, ['jobs', 'show', 'pkg', 'test_job'])
+    with patch('lorchestra.cli.SPECS_DIR', specs_dir):
+        result = runner.invoke(main, ['jobs', 'show', 'test_job'])
 
     assert result.exit_code == 0
-    assert "pkg/test_job" in result.output
-    assert "Location:" in result.output
-    assert "Signature:" in result.output
-    assert "Test job docstring" in result.output
+    assert "Job: test_job" in result.output
+    assert "Type: ingest" in result.output
+    assert '"job_type": "ingest"' in result.output
 
 
-def test_jobs_show_unknown_job():
+def test_jobs_show_unknown_job(tmp_path):
     """Test lorchestra jobs show with unknown job."""
     from lorchestra.cli import main
 
     runner = CliRunner()
 
-    with patch('lorchestra.jobs.get_job') as mock_get:
-        mock_get.side_effect = ValueError("Unknown job: pkg/nonexistent")
+    # Create an empty specs directory
+    specs_dir = tmp_path / "specs"
+    specs_dir.mkdir()
 
-        result = runner.invoke(main, ['jobs', 'show', 'pkg', 'nonexistent'])
+    with patch('lorchestra.cli.SPECS_DIR', specs_dir):
+        result = runner.invoke(main, ['jobs', 'show', 'nonexistent'])
+
+    assert result.exit_code == 1
+    assert "Unknown job" in result.output
+
+
+def test_mutually_exclusive_options(tmp_path):
+    """Test that --dry-run and --test-table are mutually exclusive."""
+    from lorchestra.cli import main
+
+    runner = CliRunner()
+
+    # Create a temp specs directory with a test job spec
+    specs_dir = tmp_path / "specs"
+    specs_dir.mkdir()
+    (specs_dir / "test_job.json").write_text(json.dumps({
+        "job_id": "test_job",
+        "job_type": "ingest",
+    }))
+
+    env = {"EVENTS_BQ_DATASET": "test_dataset"}
+
+    with patch.dict(os.environ, env):
+        with patch('lorchestra.cli.SPECS_DIR', specs_dir):
+            with patch('google.cloud.bigquery.Client'):
+                result = runner.invoke(main, ['run', 'test_job', '--dry-run', '--test-table'])
 
     assert result.exit_code != 0
+    assert "mutually exclusive" in result.output

@@ -1,13 +1,28 @@
 """
 CLI interface for lorchestra job orchestrator.
 
-Provides commands to discover, inspect, and run jobs from installed packages.
+Provides commands to discover, inspect, and run jobs.
+
+Jobs are defined as JSON specs in jobs/specs/*.json and dispatched
+via the JobRunner to typed processors (ingest, canonize, final_form).
 """
 
 
 import click
+from pathlib import Path
 
 from lorchestra import __version__
+
+
+# Job specs directory
+SPECS_DIR = Path(__file__).parent / "jobs" / "specs"
+
+
+def _get_available_specs() -> list[str]:
+    """Get list of available job spec IDs."""
+    if not SPECS_DIR.exists():
+        return []
+    return sorted([f.stem for f in SPECS_DIR.glob("*.json")])
 
 
 @click.group()
@@ -16,29 +31,20 @@ def main():
     """
     lorchestra - Lightweight job orchestrator.
 
-    Discovers and runs jobs from installed packages via entrypoints.
+    Run jobs defined as JSON specs via typed processors.
     """
     pass
 
 
 def _run_job_impl(job: str, dry_run: bool = False, test_table: bool = False, **kwargs):
-    """Shared implementation for run/run-job commands."""
+    """Run a job by ID using the JobRunner."""
     from google.cloud import bigquery
-    from lorchestra.jobs import execute_job, discover_jobs
-    from lorchestra.stack_clients.event_client import (
-        log_event,
-        set_run_mode,
-        ensure_test_tables_exist,
-    )
-    from datetime import datetime, timezone
-    import time
+    from lorchestra.job_runner import run_job
+    from lorchestra.stack_clients.event_client import ensure_test_tables_exist
 
     # Validate mutually exclusive flags
     if dry_run and test_table:
         raise click.UsageError("--dry-run and --test-table are mutually exclusive")
-
-    # Set run mode BEFORE any BQ operations
-    set_run_mode(dry_run=dry_run, test_table=test_table)
 
     # Print mode banner
     if dry_run:
@@ -51,150 +57,74 @@ def _run_job_impl(job: str, dry_run: bool = False, test_table: bool = False, **k
         click.echo("Writing to: test_event_log, test_raw_objects")
         click.echo("=" * 50)
 
-    # Parse job argument - support PACKAGE/JOB or just JOB
-    if "/" in job:
-        package, job_name = job.split("/", 1)
-    else:
-        # Auto-discover package
-        all_jobs = discover_jobs()
-        matching_packages = [pkg for pkg, jobs in all_jobs.items() if job in jobs]
+    # Check if job spec exists
+    available_specs = _get_available_specs()
 
-        if not matching_packages:
-            click.echo(f"✗ Unknown job: {job}", err=True)
-            click.echo("\nAvailable jobs:", err=True)
-            for pkg in sorted(all_jobs.keys()):
-                for job_name in sorted(all_jobs[pkg].keys()):
-                    click.echo(f"  {job_name}", err=True)
-            raise SystemExit(1)
+    # Handle job_<name> -> <name> aliasing for backwards compat
+    job_id = job
+    if job_id.startswith("job_"):
+        job_id = job_id[4:]  # Remove "job_" prefix
 
-        if len(matching_packages) > 1:
-            click.echo(f"✗ Ambiguous job name '{job}' found in multiple packages:", err=True)
-            for pkg in matching_packages:
-                click.echo(f"  {pkg}/{job}", err=True)
-            click.echo("\nPlease specify: lorchestra run PACKAGE/JOB", err=True)
-            raise SystemExit(1)
+    if job_id not in available_specs:
+        click.echo(f"✗ Unknown job: {job}", err=True)
+        click.echo("\nAvailable jobs:", err=True)
+        for spec_id in available_specs:
+            click.echo(f"  {spec_id}", err=True)
+        raise SystemExit(1)
 
-        package = matching_packages[0]
-        job_name = job
-
-    # Create BQ client once
+    # Create BQ client
     bq_client = bigquery.Client()
 
     # Ensure test tables exist (only for test-table mode)
     if test_table:
         ensure_test_tables_exist(bq_client)
 
-    # Generate run_id for job execution tracking
-    run_id = f"{job_name}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
-
-    # IMPORTANT: Only pass known, explicit options to jobs
-    # Don't pass the entire kwargs blob - keeps job interface stable
-    known_options = ["account", "since", "until"]
-    job_kwargs = {k: v for k, v in kwargs.items() if k in known_options and v is not None}
-
-    # Log job.started event (no target_object_type for system events)
-    log_event(
-        event_type="job.started",
-        source_system="lorchestra",
-        correlation_id=run_id,
-        status="ok",
-        payload={
-            "job_name": job_name,
-            "package_name": package,
-            "parameters": job_kwargs,
-        },
-        bq_client=bq_client,
-    )
-
-    # Execute
-    start_time = time.time()
+    # Run job via JobRunner
     try:
-        execute_job(package, job_name, bq_client, **job_kwargs)
-        duration_seconds = time.time() - start_time
-
-        # Log job.completed event (no target_object_type for system events)
-        log_event(
-            event_type="job.completed",
-            source_system="lorchestra",
-            correlation_id=run_id,
-            status="ok",
-            payload={
-                "job_name": job_name,
-                "package_name": package,
-                "duration_seconds": round(duration_seconds, 2),
-            },
+        run_job(
+            job_id,
+            dry_run=dry_run,
+            test_table=test_table,
+            specs_dir=SPECS_DIR,
             bq_client=bq_client,
         )
 
-        # Summary message based on mode
+        # Success message
         if dry_run:
-            click.echo(f"\n[DRY-RUN] {job_name} completed in {duration_seconds:.2f}s (no writes)")
+            click.echo(f"\n[DRY-RUN] {job_id} completed (no writes)")
         elif test_table:
-            click.echo(f"\n[TEST] {job_name} completed in {duration_seconds:.2f}s (wrote to test tables)")
+            click.echo(f"\n[TEST] {job_id} completed (wrote to test tables)")
         else:
-            click.echo(f"✓ {package}/{job_name} completed in {duration_seconds:.2f}s")
+            click.echo(f"✓ {job_id} completed")
 
     except Exception as e:
-        duration_seconds = time.time() - start_time
-
-        # Log job.failed event (no target_object_type for system events)
-        log_event(
-            event_type="job.failed",
-            source_system="lorchestra",
-            correlation_id=run_id,
-            status="failed",
-            error_message=str(e),
-            payload={
-                "job_name": job_name,
-                "package_name": package,
-                "error_type": type(e).__name__,
-                "duration_seconds": round(duration_seconds, 2),
-            },
-            bq_client=bq_client,
-        )
-
-        click.echo(f"✗ {package}/{job_name} failed: {e}", err=True)
+        click.echo(f"✗ {job_id} failed: {e}", err=True)
         raise SystemExit(1)
 
 
 @main.command("run")
 @click.argument("job")
-@click.option("--account", help="Account identifier")
-@click.option("--since", help="Start time (ISO or relative)")
-@click.option("--until", help="End time (ISO)")
-@click.option("--dry-run", is_flag=True, help="Extract records without writing to BigQuery")
-@click.option("--test-table", is_flag=True, help="Write to test_event_log/test_raw_objects instead of prod")
-def run(job: str, dry_run: bool, test_table: bool, **kwargs):
+@click.option("--dry-run", is_flag=True, help="Execute without writing to BigQuery")
+@click.option("--test-table", is_flag=True, help="Write to test tables instead of prod")
+def run(job: str, dry_run: bool, test_table: bool):
     """
-    Run a job by name.
+    Run a job by ID.
+
+    JOB is the job spec ID (filename without .json extension).
 
     Examples:
-        lorchestra run gmail_ingest_acct1 --since "2025-11-23"
-        lorchestra run gmail_ingest_acct2
-        lorchestra run gmail_ingest_acct1 --dry-run
-        lorchestra run gmail_ingest_acct1 --test-table
-    """
-    _run_job_impl(job, dry_run=dry_run, test_table=test_table, **kwargs)
 
+        lorchestra run ingest_gmail_acct1
 
-@main.command("run-job")
-@click.argument("job")
-@click.option("--account", help="Account identifier")
-@click.option("--since", help="Start time (ISO or relative)")
-@click.option("--until", help="End time (ISO)")
-@click.option("--dry-run", is_flag=True, help="Extract records without writing to BigQuery")
-@click.option("--test-table", is_flag=True, help="Write to test_event_log/test_raw_objects instead of prod")
-def run_job(job: str, dry_run: bool, test_table: bool, **kwargs):
-    """
-    Run a job by name (alias for 'run').
+        lorchestra run validate_gmail_source
 
-    Examples:
-        lorchestra run-job gmail_ingest_acct1 --since "2025-11-23"
-        lorchestra run-job gmail_ingest_acct2
-        lorchestra run-job gmail_ingest_acct1 --dry-run
-        lorchestra run-job gmail_ingest_acct1 --test-table
+        lorchestra run canonize_gmail_jmap
+
+        lorchestra run ingest_gmail_acct1 --dry-run
+
+        lorchestra run ingest_gmail_acct1 --test-table
     """
-    _run_job_impl(job, dry_run=dry_run, test_table=test_table, **kwargs)
+    _run_job_impl(job, dry_run=dry_run, test_table=test_table)
 
 
 @main.group("jobs")
@@ -204,41 +134,65 @@ def jobs_group():
 
 
 @jobs_group.command("list")
-@click.argument("package", required=False)
-def list_jobs(package: str = None):
+@click.option("--type", "job_type", help="Filter by job type (ingest, canonize, final_form)")
+def list_jobs(job_type: str = None):
     """List available jobs."""
-    from lorchestra.jobs import discover_jobs
+    import json
 
-    all_jobs = discover_jobs()
+    specs = _get_available_specs()
 
-    if package:
-        if package not in all_jobs:
-            click.echo(f"Unknown package: {package}", err=True)
-            raise SystemExit(1)
-        click.echo(f"Jobs in {package}:")
-        for job_name in sorted(all_jobs[package].keys()):
-            click.echo(f"  {job_name}")
-    else:
-        for pkg in sorted(all_jobs.keys()):
-            click.echo(f"{pkg}:")
-            for job_name in sorted(all_jobs[pkg].keys()):
-                click.echo(f"  {job_name}")
+    if not specs:
+        click.echo("No job specs found.")
+        return
+
+    # Group by job_type
+    by_type: dict[str, list[str]] = {}
+    for spec_id in specs:
+        spec_path = SPECS_DIR / f"{spec_id}.json"
+        with open(spec_path) as f:
+            spec = json.load(f)
+        jt = spec.get("job_type", "unknown")
+        if jt not in by_type:
+            by_type[jt] = []
+        by_type[jt].append(spec_id)
+
+    # Filter if requested
+    if job_type:
+        if job_type not in by_type:
+            click.echo(f"No jobs of type '{job_type}'. Available types: {', '.join(by_type.keys())}")
+            return
+        by_type = {job_type: by_type[job_type]}
+
+    # Print grouped list
+    for jt in sorted(by_type.keys()):
+        click.echo(f"{jt}:")
+        for spec_id in sorted(by_type[jt]):
+            click.echo(f"  {spec_id}")
 
 
 @jobs_group.command("show")
-@click.argument("package")
 @click.argument("job")
-def show_job(package: str, job: str):
-    """Show job details."""
-    from lorchestra.jobs import get_job
-    import inspect
+def show_job(job: str):
+    """Show job spec details."""
+    import json
 
-    job_func = get_job(package, job)
-    click.echo(f"{package}/{job}")
-    click.echo(f"Location: {inspect.getfile(job_func)}")
-    click.echo(f"Signature: {inspect.signature(job_func)}")
-    if job_func.__doc__:
-        click.echo(f"\n{job_func.__doc__}")
+    job_id = job
+    if job_id.startswith("job_"):
+        job_id = job_id[4:]
+
+    spec_path = SPECS_DIR / f"{job_id}.json"
+    if not spec_path.exists():
+        click.echo(f"✗ Unknown job: {job}", err=True)
+        raise SystemExit(1)
+
+    with open(spec_path) as f:
+        spec = json.load(f)
+
+    click.echo(f"Job: {job_id}")
+    click.echo(f"Type: {spec.get('job_type', 'unknown')}")
+    click.echo(f"Spec: {spec_path}")
+    click.echo()
+    click.echo(json.dumps(spec, indent=2))
 
 
 if __name__ == "__main__":

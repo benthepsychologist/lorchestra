@@ -1,0 +1,324 @@
+aip_id: AIP-lorchestra-2025-12-01-001
+context:
+  background: "**Current state (the kludge):** We have 10 separate Python files under `lorchestra/jobs/`:\n\
+    \n```\ningest_gmail.py      (306 lines, 3 account functions)\ningest_exchange.py   (346 lines, 4 account\
+    \ functions)\ningest_dataverse.py  (290 lines, 3 entity functions)\ningest_google_forms.py (322 lines,\
+    \ 4 form functions)\ningest_stripe.py     (320 lines, 4 object functions)\nvalidate_gmail.py    (315\
+    \ lines)\nvalidate_exchange.py (315 lines)\ncanonize_gmail.py    (249 lines)\ncanonize_exchange.py\
+    \ (249 lines)\n```\n\nEach file duplicates:\n- BigQuery client setup\n- Event emission patterns (log_event,\
+    \ upsert_objects)\n- Error handling and telemetry\n- Date parsing and state management\n\nThis creates\
+    \ **~2,800 lines of boilerplate** that's hard to maintain and test.\n\n**Target state:**\n\n```\n\
+    lorchestra/\n├── job_runner.py              # Single entry point (~100 lines)\n├── processors/\n│\
+    \   ├── __init__.py\n│   ├── base.py                # Processor protocol\n│   ├── ingest.py      \
+    \        # IngestProcessor (~150 lines)\n│   ├── canonize.py            # CanonizeProcessor (~150\
+    \ lines)\n│   └── final_form.py          # FinalFormProcessor (~150 lines)\n├── jobs/\n│   ├── specs/\
+    \                 # JSON job definitions\n│   │   ├── gmail_ingest_acct1.json\n│   │   ├── gmail_ingest_acct2.json\n\
+    │   │   ├── stripe_ingest_customers.json\n│   │   ├── canonize_gmail_jmap.json\n│   │   └── ... (21\
+    \ total)\n│   └── __init__.py            # Job discovery from JSON\n└── stack_clients/\n    ├── event_client.py\
+    \        # (existing)\n    └── storage_client.py      # (new, for GCS/local FS)\n```"
+  constraints:
+  - No edits to `injest` library internals (it stays pure)
+  - No edits to `canonizer` library internals (it stays pure)
+  - 'CLI interface unchanged: `lorchestra run gmail_ingest_acct1` must work'
+  - No changes to BigQuery schema (event_log, raw_objects, canonical_objects)
+created: '2025-12-01T18:43:06.569615+00:00'
+meta:
+  created_at: '2025-12-01T18:43:06.569615+00:00'
+  created_by: benthepsychologist
+objective:
+  acceptance_criteria:
+  - Single `job_runner.py` dispatches all jobs by `job_type`
+  - 'Three processor classes: `IngestProcessor`, `CanonizeProcessor`, `FinalFormProcessor`'
+  - All jobs defined as JSON specs in `jobs/specs/*.json`, not Python files
+  - Libraries (`injest`, `canonizer`, `final-form`) are pure transforms—no IO, no events
+  - 'Validation jobs are `canonize` jobs with `mode: "validate_only"` (no fourth processor)'
+  - Existing 21 jobs work via JSON specs
+  - 'CLI resolution: `lorchestra run <job_id>` → `jobs/specs/<job_id>.json`'
+  - CI green (lint + unit tests)
+  - '80% test coverage on new processor code (behavior-focused: happy path, source errors, transform errors,
+    event emission)'
+  goal: Replace per-job Python files with a single generic runner + JSON job specs + typed processors
+orchestrator_contract:
+  artifacts_dir: .aip_artifacts/AIP-lorchestra-2025-12-01-001
+  logging: jsonl
+  state_machine:
+    events:
+    - run_step
+    - await_gate
+    - approve
+    - reject
+    - retry
+    - escalate
+    - complete
+    states:
+    - pending
+    - running
+    - awaiting_human
+    - failed
+    - succeeded
+    - rolled_back
+plan:
+- description: Design Job Spec Schema
+  gate_ref: 'G0: Design Approval'
+  kind: code
+  outputs:
+  - artifacts/design/job-spec-schema.json
+  - artifacts/design/job-spec-examples.md
+  prompt: 'Design the JSON schema for job specs. Cover all three job types (ingest, canonize, final_form)
+    with examples for:
+
+    - Gmail ingest (existing)
+
+    - Stripe ingest (existing)
+
+    - Gmail canonization (existing)
+
+    - PHQ-9 final-form (future)
+
+    Include:
+
+    - Required vs optional fields
+
+    - How to specify date ranges, limits, filters
+
+    - How to reference transforms/schemas
+
+    - Event configuration'
+  role: coding_agent
+  step_id: step-001
+- description: Implement Processor Protocol
+  gate_ref: 'G1: Code Review'
+  kind: code
+  outputs:
+  - lorchestra/processors/__init__.py
+  - lorchestra/processors/base.py
+  - tests/test_processors.py
+  prompt: 'Create the processor base class and protocol:
+
+    1. Define `Processor` protocol in `processors/base.py`
+
+    2. Define `StorageClient` interface (read/write JSON objects)
+
+    3. Define processor registry for dispatch by job_type
+
+    Keep it minimal—just the interface, no implementation yet.'
+  role: coding_agent
+  step_id: step-002
+- description: Implement IngestProcessor
+  gate_ref: 'G1: Code Review'
+  kind: code
+  outputs:
+  - lorchestra/processors/ingest.py
+  - tests/test_ingest_processor.py
+  prompt: 'Implement `IngestProcessor` that:
+
+    1. Reads stream config from job_spec (stream name, identity, date range)
+
+    2. Calls `injest.get_stream()` to pull data (injest does NO IO)
+
+    3. Writes records to raw_objects via `storage_client.upsert_objects()`
+
+    4. Emits `ingest.completed` event via `event_client.log_event()`
+
+    Migrate the common logic from `ingest_gmail.py`:
+
+    - `_get_last_sync_timestamp()` → processor method
+
+    - `_parse_date_to_datetime()` → processor method
+
+    - Batch upsert pattern → processor method'
+  role: coding_agent
+  step_id: step-003
+- description: Implement CanonizeProcessor
+  gate_ref: 'G1: Code Review'
+  kind: code
+  outputs:
+  - lorchestra/processors/canonize.py
+  - tests/test_canonize_processor.py
+  prompt: 'Implement `CanonizeProcessor` that supports two modes:
+
+    **Mode: `validate_only`** (for validation jobs)
+
+    1. Reads source config from job_spec (source_system, object_type, schema_in)
+
+    2. Queries raw_objects for records not yet validated
+
+    3. Calls `canonizer.validate()` to check schema conformance (canonizer does NO IO)
+
+    4. Updates `validation_status` field on raw_objects via `storage_client`
+
+    5. Emits `validate.completed` event
+
+    **Mode: `full`** (default, for canonization jobs)
+
+    1. Reads source config from job_spec (source_system, object_type, transform_ref)
+
+    2. Queries raw_objects for validated records (`validation_status = ''pass''`) not yet canonized
+
+    3. Calls `canonizer.validate()` on input, then `canonizer.transform()` (canonizer does NO IO)
+
+    4. Optionally validates output against `schema_out`
+
+    5. Writes canonical records via `storage_client`
+
+    6. Emits `canonize.completed` event
+
+    Migrate logic from `canonize_gmail.py` and `validate_gmail.py`:
+
+    - Query pattern for unprocessed records
+
+    - Batch insert to canonical_objects
+
+    - Transform caching
+
+    - Validation stamp updates'
+  role: coding_agent
+  step_id: step-004
+- description: Implement FinalFormProcessor
+  gate_ref: 'G1: Code Review'
+  kind: code
+  outputs:
+  - lorchestra/processors/final_form.py
+  - tests/test_final_form_processor.py
+  prompt: 'Implement `FinalFormProcessor` that:
+
+    1. Reads source config from job_spec (canonical_schema, instrument_id, binding_id)
+
+    2. Queries canonical_objects for records matching the instrument
+
+    3. Calls `final_form.process()` to produce measurement_event + observations
+
+    4. Writes finalized objects via `storage_client` and/or `bq_client`
+
+    5. Emits `finalization.completed` event
+
+    This is a new processor—design for PHQ-9, GAD-7, and similar clinical instruments.'
+  role: coding_agent
+  step_id: step-005
+- description: Implement Job Runner
+  gate_ref: 'G1: Code Review'
+  kind: code
+  outputs:
+  - lorchestra/job_runner.py
+  - tests/test_job_runner.py
+  prompt: "Implement `job_runner.py` that:\n1. Loads job spec from `jobs/specs/{job_id}.json`\n2. Instantiates\
+    \ shared clients:\n   - `event_client` (existing)\n   - `storage_client` (new)\n   - `bq_client` (existing\
+    \ pattern)\n3. Dispatches to processor by `job_spec[\"job_type\"]`\n4. Wraps execution with:\n   -\
+    \ `job.started` event\n   - `job.completed` or `job.failed` event\n   - Duration tracking\n   - Error\
+    \ handling"
+  role: coding_agent
+  step_id: step-006
+- description: Create JSON Job Specs
+  gate_ref: 'G1: Code Review'
+  kind: code
+  outputs:
+  - lorchestra/jobs/specs/*.json
+  prompt: 'Create JSON job specs for all 21 existing jobs:
+
+    **Ingest jobs (18):**
+
+    - `gmail_ingest_acct1.json`, `gmail_ingest_acct2.json`, `gmail_ingest_acct3.json`
+
+    - `exchange_ingest_ben_mensio.json`, `exchange_ingest_booking_mensio.json`, `exchange_ingest_info_mensio.json`,
+    `exchange_ingest_ben_efs.json`
+
+    - `dataverse_ingest_contacts.json`, `dataverse_ingest_sessions.json`, `dataverse_ingest_reports.json`
+
+    - `google_forms_ingest_ipip120.json`, `google_forms_ingest_intake_01.json`, `google_forms_ingest_intake_02.json`,
+    `google_forms_ingest_followup.json`
+
+    - `stripe_ingest_customers.json`, `stripe_ingest_invoices.json`, `stripe_ingest_payment_intents.json`,
+    `stripe_ingest_refunds.json`
+
+    **Canonize jobs with `mode: "validate_only"` (2):**
+
+    - `validate_gmail_source.json` → `job_type: "canonize"`, `transform.mode: "validate_only"`
+
+    - `validate_exchange_source.json` → `job_type: "canonize"`, `transform.mode: "validate_only"`
+
+    **Canonize jobs with `mode: "full"` (2):**
+
+    - `canonize_gmail_jmap.json`
+
+    - `canonize_exchange_jmap.json`'
+  role: coding_agent
+  step_id: step-007
+- description: Update CLI for JSON Dispatch
+  gate_ref: 'G1: Code Review'
+  kind: code
+  outputs:
+  - lorchestra/cli.py
+  - pyproject.toml
+  - tests/test_cli.py
+  prompt: 'Update `cli.py` to:
+
+    1. Discover jobs from `jobs/specs/*.json` instead of entrypoints
+
+    2. Call `job_runner.run(job_id, **kwargs)` instead of `execute_job()`
+
+    3. CLI unchanged: `lorchestra run gmail_ingest_acct1` works
+
+    4. Add `lorchestra jobs validate` command to check specs against schema
+
+    Remove the entrypoints from `pyproject.toml` after migration.'
+  role: coding_agent
+  step_id: step-008
+- description: Delete Legacy Job Files
+  gate_ref: 'G2: Pre-Release'
+  kind: code
+  outputs:
+  - artifacts/migration/deleted-files.md
+  prompt: "After confirming all tests pass with the new architecture:\n1. Delete the old job files:\n\
+    \   - `lorchestra/jobs/ingest_gmail.py`\n   - `lorchestra/jobs/ingest_exchange.py`\n   - `lorchestra/jobs/ingest_dataverse.py`\n\
+    \   - `lorchestra/jobs/ingest_google_forms.py`\n   - `lorchestra/jobs/ingest_stripe.py`\n   - `lorchestra/jobs/validate_gmail.py`\n\
+    \   - `lorchestra/jobs/validate_exchange.py`\n   - `lorchestra/jobs/canonize_gmail.py`\n   - `lorchestra/jobs/canonize_exchange.py`\n\
+    2. Update `lorchestra/jobs/__init__.py` for new discovery pattern\n3. Run full test suite to confirm\
+    \ nothing breaks"
+  role: coding_agent
+  step_id: step-009
+- description: Integration Testing
+  gate_ref: 'G3: Pre-Release'
+  kind: code
+  outputs:
+  - artifacts/test/integration-results.md
+  prompt: 'Run end-to-end tests:
+
+    1. `lorchestra run gmail_ingest_acct1 --dry-run` works
+
+    2. `lorchestra run canonize_gmail_jmap --dry-run` works
+
+    3. All 21 jobs can be loaded and validated
+
+    4. Event emission patterns match old behavior'
+  role: coding_agent
+  step_id: step-010
+- description: Documentation & Cleanup
+  gate_ref: 'G4: Post-Implementation'
+  kind: code
+  outputs:
+  - docs/jobs.md
+  - docs/job-spec-reference.md
+  - ARCHITECTURE.md
+  - artifacts/governance/decision-log.md
+  prompt: 'Update documentation:
+
+    1. Update `docs/jobs.md` for new JSON-based job creation
+
+    2. Update `ARCHITECTURE.md` with processor pattern
+
+    3. Add `docs/job-spec-reference.md` with schema documentation
+
+    4. Update `README.md` usage examples'
+  role: coding_agent
+  step_id: step-011
+project_slug: lorchestra
+repo:
+  default_branch: main
+  url: git@github.com:benthepsychologist/lorchestra.git
+  working_branch: feat/thin-runner-refactor
+spec_version: 1.0.0
+tier: B
+title: Thin Runner Refactor
+updated: '2025-12-01T18:43:06.569615+00:00'
+version: '0.1'
+

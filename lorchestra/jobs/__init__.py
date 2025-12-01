@@ -1,14 +1,11 @@
 """
 lorchestra jobs package
 
-Job discovery, execution, and implementations.
+Jobs are defined as JSON specs in jobs/specs/*.json and executed via the JobRunner.
+The job_runner dispatches to typed processors (IngestProcessor, CanonizeProcessor, FinalFormProcessor).
 
-Job implementations follow the three-layer architecture:
-1. Call ingestor.extract_to_jsonl() to get raw data from Meltano
-2. Read JSONL records
-3. Emit events via event_client to BigQuery
-
-Jobs in this package are the ONLY place where event_client.emit() is called.
+Legacy job discovery (discover_jobs/get_job/execute_job) is deprecated.
+Use job_runner.run_job() instead.
 """
 
 from importlib.metadata import entry_points
@@ -19,9 +16,14 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+# Legacy API - kept for backward compatibility with tests
+# New code should use job_runner.run_job() instead
+
 def discover_jobs() -> Dict[str, Dict[str, Callable]]:
     """
     Discover all jobs from lorchestra.jobs entrypoints.
+
+    DEPRECATED: Use job_runner.run_job() with JSON specs instead.
 
     Returns:
         {
@@ -31,15 +33,10 @@ def discover_jobs() -> Dict[str, Dict[str, Callable]]:
     """
     jobs = {}
 
-    # Use .select() for Python 3.10+ compatibility
     eps = entry_points()
     for ep in eps.select(group="lorchestra.jobs"):
-        # ep.name: "extract_gmail"
-        # ep.value: "ingester.jobs.email:extract_gmail"
-
-        # Extract package name from module path (convention)
         module_path, _, _ = ep.value.partition(":")
-        package_name = module_path.split(".")[0]  # "ingester.jobs.email" → "ingester"
+        package_name = module_path.split(".")[0]
 
         job_func = ep.load()
 
@@ -51,7 +48,10 @@ def discover_jobs() -> Dict[str, Dict[str, Callable]]:
 
 
 def get_job(package: str, job_name: str) -> Callable:
-    """Get a specific job function."""
+    """Get a specific job function.
+
+    DEPRECATED: Use job_runner.run_job() with JSON specs instead.
+    """
     all_jobs = discover_jobs()
     if package not in all_jobs:
         raise ValueError(f"Unknown package: {package}")
@@ -66,7 +66,10 @@ def execute_job(
     bq_client: bigquery.Client,
     **kwargs
 ) -> None:
-    """Execute a job with error handling."""
+    """Execute a job with error handling.
+
+    DEPRECATED: Use job_runner.run_job() with JSON specs instead.
+    """
     job_func = get_job(package, job_name)
 
     logger.info(f"Starting job: {package}/{job_name}")

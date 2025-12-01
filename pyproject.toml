@@ -26,32 +26,6 @@ dev = [
 [project.scripts]
 lorchestra = "lorchestra.cli:main"
 
-[project.entry-points."lorchestra.jobs"]
-gmail_ingest_acct1 = "lorchestra.jobs.ingest_gmail:job_ingest_gmail_acct1"
-gmail_ingest_acct2 = "lorchestra.jobs.ingest_gmail:job_ingest_gmail_acct2"
-gmail_ingest_acct3 = "lorchestra.jobs.ingest_gmail:job_ingest_gmail_acct3"
-exchange_ingest_ben_mensio = "lorchestra.jobs.ingest_exchange:job_ingest_exchange_ben_mensio"
-exchange_ingest_booking_mensio = "lorchestra.jobs.ingest_exchange:job_ingest_exchange_booking_mensio"
-exchange_ingest_info_mensio = "lorchestra.jobs.ingest_exchange:job_ingest_exchange_info_mensio"
-exchange_ingest_ben_efs = "lorchestra.jobs.ingest_exchange:job_ingest_exchange_ben_efs"
-dataverse_ingest_contacts = "lorchestra.jobs.ingest_dataverse:job_ingest_dataverse_contacts"
-dataverse_ingest_sessions = "lorchestra.jobs.ingest_dataverse:job_ingest_dataverse_sessions"
-dataverse_ingest_reports = "lorchestra.jobs.ingest_dataverse:job_ingest_dataverse_reports"
-google_forms_ingest_ipip120 = "lorchestra.jobs.ingest_google_forms:job_ingest_google_forms_ipip120"
-google_forms_ingest_intake_01 = "lorchestra.jobs.ingest_google_forms:job_ingest_google_forms_intake_01"
-google_forms_ingest_intake_02 = "lorchestra.jobs.ingest_google_forms:job_ingest_google_forms_intake_02"
-google_forms_ingest_followup = "lorchestra.jobs.ingest_google_forms:job_ingest_google_forms_followup"
-stripe_ingest_customers = "lorchestra.jobs.ingest_stripe:job_ingest_stripe_customers"
-stripe_ingest_invoices = "lorchestra.jobs.ingest_stripe:job_ingest_stripe_invoices"
-stripe_ingest_payment_intents = "lorchestra.jobs.ingest_stripe:job_ingest_stripe_payment_intents"
-stripe_ingest_refunds = "lorchestra.jobs.ingest_stripe:job_ingest_stripe_refunds"
-# Validation jobs
-validate_gmail_source = "lorchestra.jobs.validate_gmail:job_validate_gmail_source"
-validate_exchange_source = "lorchestra.jobs.validate_exchange:job_validate_exchange_source"
-# Canonization jobs
-canonize_gmail_jmap = "lorchestra.jobs.canonize_gmail:job_canonize_gmail_jmap"
-canonize_exchange_jmap = "lorchestra.jobs.canonize_exchange:job_canonize_exchange_jmap"
-
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"

@@ -59,11 +59,18 @@ lorchestra (lorc) is the single cross-cutting orchestrator. It:
 
 lorchestra does NOT become a monorepo. Domain logic remains in separate packages.
 
-### 2.4 Python Packages with Job Entrypoints
+### 2.4 JSON Job Specs with Typed Processors
 
-All domain tools (ingester, canonizer, final-form, reporter) are Python packages with callable job entrypoints. They are NOT CLI wrappers or bash-invoked binaries.
+Jobs are defined as JSON spec files in `lorchestra/jobs/specs/*.json`. Each spec declares:
+- `job_id`: Unique identifier (matches filename)
+- `job_type`: One of `ingest`, `canonize`, or `final_form`
+- Type-specific configuration (source, sink, transform options)
 
-Jobs are invoked programmatically by lorc via Python imports and function calls.
+Jobs are executed by the JobRunner which:
+1. Loads the JSON spec
+2. Dispatches to the appropriate typed processor
+3. The processor calls pure-function libraries (injest, canonizer, final-form)
+4. All IO happens in the processor layer (not in libraries)
 
 ### 2.5 Minimal, Frozen Surface Area
 
@@ -86,11 +93,29 @@ These remain out of scope until the three target lanes are operational.
 **Role:** Orchestration CLI and runtime environment
 
 **Responsibilities:**
-- Provides the `lorc` command-line interface for running jobs
-- Discovers and executes jobs from registered domain packages
-- Hosts initial client libraries (event_client, schema helpers)
+- Provides the `lorchestra` command-line interface for running jobs
+- Loads JSON job specs from `jobs/specs/*.json`
+- Dispatches jobs to typed processors (IngestProcessor, CanonizeProcessor, FinalFormProcessor)
+- Hosts client libraries (event_client, storage_client)
 - Manages pipeline state and logging
 - Coordinates cross-domain workflows
+
+**Job Runner Architecture (as of 2025-12):**
+```
+lorchestra run <job_id>
+    │
+    ├── Loads job spec from jobs/specs/{job_id}.json
+    │
+    ├── Creates BigQueryStorageClient and BigQueryEventClient
+    │
+    └── Dispatches to processor by job_type:
+        ├── ingest  → IngestProcessor (calls injest library)
+        ├── canonize → CanonizeProcessor (calls canonizer library)
+        └── final_form → FinalFormProcessor (calls final-form library)
+```
+
+**Key Design Principle:** Libraries (`injest`, `canonizer`, `final-form`) are pure transforms with no IO.
+All IO (BigQuery reads/writes) and event emission happens in the processor layer.
 
 **Does NOT:**
 - Implement domain logic (extraction, canonization, transformation)
@@ -467,7 +492,103 @@ Event schemas are versioned but not dynamically evolved. Schema changes require 
 
 ---
 
-## 9. Next Actions
+## 9. Job Spec Format Reference
+
+### 9.1 Ingest Job Spec
+
+```json
+{
+  "job_id": "ingest_gmail_acct1",
+  "job_type": "ingest",
+  "source": {
+    "stream": "gmail.messages",
+    "identity": "gmail:acct1"
+  },
+  "sink": {
+    "source_system": "gmail",
+    "connection_name": "gmail-acct1",
+    "object_type": "email"
+  },
+  "options": {
+    "since": "-7d",
+    "auto_since": true
+  }
+}
+```
+
+**Fields:**
+- `source.stream`: injest stream name (e.g., `gmail.messages`, `exchange.messages`)
+- `source.identity`: authctl identity for credentials
+- `sink.source_system`: Provider family (gmail, exchange, etc.)
+- `sink.connection_name`: Account identifier for raw_objects
+- `sink.object_type`: Domain object type (email, contact, etc.)
+- `options.since`: Time window (e.g., `-1d`, `-7d`, `2025-01-01`)
+- `options.auto_since`: If true, use last_seen from raw_objects
+
+### 9.2 Canonize Job Spec (Validate Only)
+
+```json
+{
+  "job_id": "validate_gmail_source",
+  "job_type": "canonize",
+  "source": {
+    "source_system": "gmail",
+    "object_type": "email"
+  },
+  "transform": {
+    "mode": "validate_only",
+    "schema_in": "iglu:com.google/gmail_email/jsonschema/1-0-0"
+  }
+}
+```
+
+### 9.3 Canonize Job Spec (Full Transform)
+
+```json
+{
+  "job_id": "canonize_gmail_jmap",
+  "job_type": "canonize",
+  "source": {
+    "source_system": "gmail",
+    "object_type": "email",
+    "filter": {
+      "validation_status": "pass"
+    }
+  },
+  "transform": {
+    "mode": "full",
+    "schema_in": "iglu:com.google/gmail_email/jsonschema/1-0-0",
+    "schema_out": "iglu:org.canonical/email_jmap_lite/jsonschema/1-0-0",
+    "transform_ref": "email/gmail_to_jmap_lite@1.0.0"
+  }
+}
+```
+
+**Fields:**
+- `source.filter`: Optional filter on raw_objects (e.g., validation_status)
+- `transform.mode`: `validate_only` or `full`
+- `transform.schema_in`: Input schema for validation
+- `transform.schema_out`: Output canonical schema (full mode only)
+- `transform.ref`: JSONata transform reference (full mode only)
+
+### 9.4 Available Jobs (as of 2025-12)
+
+**Ingest Jobs:**
+- `ingest_gmail_acct1`, `ingest_gmail_acct2`, `ingest_gmail_acct3`
+- `ingest_exchange_ben_mensio`, `ingest_exchange_booking_mensio`, `ingest_exchange_info_mensio`, `ingest_exchange_ben_efs`
+- `ingest_stripe_customers`, `ingest_stripe_invoices`, `ingest_stripe_payment_intents`, `ingest_stripe_refunds`
+- `ingest_google_forms_ipip120`, `ingest_google_forms_intake_01`, `ingest_google_forms_intake_02`, `ingest_google_forms_followup`
+- `ingest_dataverse_contacts`
+
+**Validation Jobs:**
+- `validate_gmail_source`, `validate_exchange_source`
+
+**Canonization Jobs:**
+- `canonize_gmail_jmap`, `canonize_exchange_jmap`
+
+---
+
+## 10. Next Actions
 
 To achieve the three "feels real" milestones:
 
