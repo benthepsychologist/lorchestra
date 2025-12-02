@@ -2,8 +2,7 @@
   "job_id": "ingest_stripe_payment_intents",
   "job_type": "ingest",
   "source": {
-    "stream": "stripe.payment_intents",
-    "identity": "stripe:default"
+    "stream": "stripe_payment_intents"
   },
   "sink": {
     "source_system": "stripe",

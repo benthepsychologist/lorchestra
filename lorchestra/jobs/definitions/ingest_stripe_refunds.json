@@ -2,8 +2,7 @@
   "job_id": "ingest_stripe_refunds",
   "job_type": "ingest",
   "source": {
-    "stream": "stripe.refunds",
-    "identity": "stripe:default"
+    "stream": "stripe_refunds"
   },
   "sink": {
     "source_system": "stripe",

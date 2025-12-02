@@ -2,8 +2,7 @@
   "job_id": "ingest_exchange_booking_mensio",
   "job_type": "ingest",
   "source": {
-    "stream": "exchange.messages",
-    "identity": "exchange:booking_mensio"
+    "stream": "exchange_booking_mensio"
   },
   "sink": {
     "source_system": "exchange",

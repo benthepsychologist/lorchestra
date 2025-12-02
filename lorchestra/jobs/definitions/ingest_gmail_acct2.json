@@ -2,8 +2,7 @@
   "job_id": "ingest_gmail_acct2",
   "job_type": "ingest",
   "source": {
-    "stream": "gmail.messages",
-    "identity": "gmail:acct2"
+    "stream": "gmail_acct2"
   },
   "sink": {
     "source_system": "gmail",

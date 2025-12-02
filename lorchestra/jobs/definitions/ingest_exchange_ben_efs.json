@@ -2,8 +2,7 @@
   "job_id": "ingest_exchange_ben_efs",
   "job_type": "ingest",
   "source": {
-    "stream": "exchange.messages",
-    "identity": "exchange:ben_efs"
+    "stream": "exchange_ben_efs"
   },
   "sink": {
     "source_system": "exchange",

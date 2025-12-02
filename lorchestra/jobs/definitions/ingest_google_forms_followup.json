@@ -2,8 +2,7 @@
   "job_id": "ingest_google_forms_followup",
   "job_type": "ingest",
   "source": {
-    "stream": "google_forms.responses",
-    "identity": "google_forms:followup"
+    "stream": "google_forms_followup"
   },
   "sink": {
     "source_system": "google_forms",

@@ -2,8 +2,7 @@
   "job_id": "test_ingest_exchange_1day",
   "job_type": "ingest",
   "source": {
-    "stream": "exchange.messages",
-    "identity": "exchange:ben-mensio"
+    "stream": "exchange_ben_mensio"
   },
   "sink": {
     "source_system": "exchange",

@@ -2,8 +2,7 @@
   "job_id": "ingest_google_forms_intake_02",
   "job_type": "ingest",
   "source": {
-    "stream": "google_forms.responses",
-    "identity": "google_forms:intake_02"
+    "stream": "google_forms_intake_02"
   },
   "sink": {
     "source_system": "google_forms",

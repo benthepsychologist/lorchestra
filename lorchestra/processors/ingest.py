@@ -109,7 +109,7 @@ def _get_idem_key_fn(
         source_system: Provider family
         connection_name: Account identifier
         object_type: Domain object type
-        stream: Stream identifier (e.g., "gmail.messages")
+        stream: Stream identifier (e.g., "gmail_acct1" or legacy "gmail.messages")
 
     Returns:
         Function that computes idem_key from object payload
@@ -123,20 +123,21 @@ def _get_idem_key_fn(
     )
 
     # Map stream prefixes to idem_key functions
-    if stream.startswith("gmail."):
+    # Supports both new format (gmail_acct1) and legacy format (gmail.messages)
+    if stream.startswith("gmail.") or stream.startswith("gmail_"):
         return gmail_idem_key(source_system, connection_name)
-    elif stream.startswith("exchange."):
+    elif stream.startswith("exchange.") or stream.startswith("exchange_"):
         return exchange_idem_key(source_system, connection_name)
-    elif stream.startswith("google_forms."):
+    elif stream.startswith("google_forms.") or stream.startswith("google_forms_"):
         return google_forms_idem_key(source_system, connection_name)
-    elif stream.startswith("stripe."):
+    elif stream.startswith("stripe.") or stream.startswith("stripe_"):
         return stripe_idem_key(source_system, connection_name, object_type)
-    elif stream.startswith("dataverse."):
+    elif stream.startswith("dataverse.") or stream.startswith("dataverse_"):
         # Dataverse needs the ID field name - derive from object_type
         id_field_map = {
             "contact": "contactid",
             "session": "cre92_clientsessionid",
-            "report": "cre92_progressreportid",
+            "report": "cre92_clientreportid",
         }
         id_field = id_field_map.get(object_type, f"{object_type}id")
         return dataverse_idem_key(source_system, connection_name, object_type, id_field)
@@ -185,7 +186,8 @@ class IngestProcessor:
         events_config = job_spec.get("events", {})
 
         stream_name = source["stream"]
-        identity = source["identity"]
+        # identity is now optional - new format has all config in STREAMS registry
+        identity = source.get("identity")
         source_system = sink["source_system"]
         connection_name = sink["connection_name"]
         object_type = sink["object_type"]
@@ -220,7 +222,10 @@ class IngestProcessor:
         until_dt = _parse_date_to_datetime(until) if until else None
 
         logger.info(f"Starting ingest: {job_id}")
-        logger.info(f"  stream: {stream_name}, identity: {identity}")
+        if identity:
+            logger.info(f"  stream: {stream_name}, identity: {identity} (legacy format)")
+        else:
+            logger.info(f"  stream: {stream_name} (new registry format)")
         logger.info(f"  sink: {source_system}/{connection_name}/{object_type}")
         if since_dt:
             logger.info(f"  since: {since_dt.isoformat()}")
@@ -233,7 +238,15 @@ class IngestProcessor:
 
         try:
             # Get stream from injest (handles auth + API calls)
-            stream = get_stream(stream_name, identity=identity)
+            # New format: just stream name - all config from STREAMS registry
+            # Legacy format: stream name + identity (for backward compatibility)
+            if identity:
+                # Legacy: use get_stream_legacy for old-style stream.type + identity
+                from injest import get_stream_legacy
+                stream = get_stream_legacy(stream_name, identity=identity)
+            else:
+                # New: just stream name, config from registry
+                stream = get_stream(stream_name)
 
             # Get idem_key function
             idem_key_fn = _get_idem_key_fn(source_system, connection_name, object_type, stream_name)

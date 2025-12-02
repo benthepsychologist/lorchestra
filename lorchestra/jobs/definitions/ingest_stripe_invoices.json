@@ -2,8 +2,7 @@
   "job_id": "ingest_stripe_invoices",
   "job_type": "ingest",
   "source": {
-    "stream": "stripe.invoices",
-    "identity": "stripe:default"
+    "stream": "stripe_invoices"
   },
   "sink": {
     "source_system": "stripe",

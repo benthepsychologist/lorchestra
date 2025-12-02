@@ -2,8 +2,7 @@
   "job_id": "ingest_dataverse_reports",
   "job_type": "ingest",
   "source": {
-    "stream": "dataverse.cre92_clientreports",
-    "identity": "dataverse:clinic"
+    "stream": "dataverse_reports"
   },
   "sink": {
     "source_system": "dataverse",

@@ -2,8 +2,7 @@
   "job_id": "ingest_dataverse_contacts",
   "job_type": "ingest",
   "source": {
-    "stream": "dataverse.contacts",
-    "identity": "dataverse:clinic"
+    "stream": "dataverse_contacts"
   },
   "sink": {
     "source_system": "dataverse",
