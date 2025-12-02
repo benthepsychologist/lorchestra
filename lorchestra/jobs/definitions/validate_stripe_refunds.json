@@ -1,0 +1,12 @@
+{
+  "job_id": "validate_stripe_refunds",
+  "job_type": "canonize",
+  "source": {
+    "source_system": "stripe",
+    "object_type": "refund"
+  },
+  "transform": {
+    "mode": "validate_only",
+    "schema_in": "iglu:com.stripe/refund/jsonschema/1-0-0"
+  }
+}

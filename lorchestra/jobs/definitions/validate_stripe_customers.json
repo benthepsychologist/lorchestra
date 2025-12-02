@@ -1,0 +1,12 @@
+{
+  "job_id": "validate_stripe_customers",
+  "job_type": "canonize",
+  "source": {
+    "source_system": "stripe",
+    "object_type": "customer"
+  },
+  "transform": {
+    "mode": "validate_only",
+    "schema_in": "iglu:com.stripe/customer/jsonschema/1-0-0"
+  }
+}

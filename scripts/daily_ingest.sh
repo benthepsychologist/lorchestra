@@ -1,7 +1,9 @@
 #!/bin/bash
-# Daily ingestion for all accounts
+# Daily ingestion and verification for all accounts
 #
 # Each job auto-detects its last sync from BigQuery and only fetches new data.
+# After ingestion, verification jobs validate raw records against source schemas.
+#
 # Run with: ./scripts/daily_ingest.sh
 #
 # For cron (example - daily at 6am):
@@ -21,6 +23,10 @@ source .venv/bin/activate
 set -a && source .env && set +a
 
 echo "=== Daily Ingestion: $(date -Iseconds) ==="
+
+# ============================================================
+# PHASE 1: INGESTION
+# ============================================================
 
 # Gmail accounts
 echo "--- Gmail ---"
@@ -53,6 +59,38 @@ run_job ingest_google_forms_intake_01
 run_job ingest_google_forms_intake_02
 run_job ingest_google_forms_followup
 run_job ingest_google_forms_ipip120
+
+# ============================================================
+# PHASE 2: VERIFICATION (validate & stamp raw records)
+# ============================================================
+
+echo ""
+echo "=== Verification: $(date -Iseconds) ==="
+
+# Validate Gmail
+echo "--- Validate Gmail ---"
+run_job validate_gmail_source
+
+# Validate Exchange
+echo "--- Validate Exchange ---"
+run_job validate_exchange_source
+
+# Validate Google Forms
+echo "--- Validate Google Forms ---"
+run_job validate_google_forms_source
+
+# Validate Dataverse
+echo "--- Validate Dataverse ---"
+run_job validate_dataverse_contacts
+run_job validate_dataverse_sessions
+run_job validate_dataverse_reports
+
+# Validate Stripe
+echo "--- Validate Stripe ---"
+run_job validate_stripe_customers
+run_job validate_stripe_invoices
+run_job validate_stripe_payment_intents
+run_job validate_stripe_refunds
 
 echo "=== Complete: $(date -Iseconds) ==="
 

@@ -1,0 +1,282 @@
+aip_id: AIP-lorchestra-2025-12-02-001
+context:
+  background: 'Daily ingestion is working. We ingest raw data from 5 sources:
+
+    - **Gmail** (3 accounts) - validation/canonization jobs exist
+
+    - **Exchange** (4 mailboxes) - validation/canonization jobs exist
+
+    - **Google Forms** (4 forms) - transform exists in canonizer, needs jobs here
+
+    - **Dataverse** (contacts, sessions, reports) - needs canonizer work first, then jobs here
+
+    - **Stripe** (customers, invoices, payment_intents, refunds) - needs canonizer work first, then jobs
+    here'
+  constraints:
+  - This spec only covers lorchestra job definitions and scripts
+  - Schema/transform work is done in canonizer repo via its own spec
+created: '2025-12-02T11:41:20.349949+00:00'
+meta:
+  created_at: '2025-12-02T11:41:20.349949+00:00'
+  created_by: benthepsychologist
+objective:
+  acceptance_criteria:
+  - All ingest sources have corresponding validate+stamp jobs
+  - daily_ingest.sh runs verification stamping after ingestion
+  - Google Forms validation and canonization jobs working
+  - Dataverse validation and canonization jobs working (requires canonizer spec complete)
+  - Stripe validation and canonization jobs working (requires canonizer spec complete)
+  - daily_canonize.sh script created
+  - Tests pass for all new jobs
+  - CI green (lint + unit)
+  goal: Add verification stamping and canonization jobs for all ingested data sources
+orchestrator_contract:
+  artifacts_dir: .aip_artifacts/AIP-lorchestra-2025-12-02-001
+  logging: jsonl
+  state_machine:
+    events:
+    - run_step
+    - await_gate
+    - approve
+    - reject
+    - retry
+    - escalate
+    - complete
+    states:
+    - pending
+    - running
+    - awaiting_human
+    - failed
+    - succeeded
+    - rolled_back
+plan:
+- description: Verify Email Stamping Jobs Work
+  gate_ref: 'G0: Plan Approval'
+  kind: code
+  outputs:
+  - artifacts/phase1/email-validation-verified.md
+  prompt: 'Verify existing validate jobs work correctly:
+
+    - `validate_gmail_source.json`
+
+    - `validate_exchange_source.json`
+
+    Test that they stamp raw records with validation_status using CanonizeProcessor.'
+  role: coding_agent
+  step_id: step-001
+- description: Create Google Forms Validate Job
+  kind: code
+  outputs:
+  - lorchestra/jobs/definitions/validate_google_forms_source.json
+  prompt: 'Create `validate_google_forms_source.json` job definition.
+
+    Source schema: `iglu:com.google/forms_response/jsonschema/1-0-0`
+
+    Mode: validate_only'
+  role: coding_agent
+  step_id: step-002
+- description: Add Verification to Daily Ingest
+  kind: code
+  outputs:
+  - scripts/daily_ingest.sh
+  prompt: 'Modify `scripts/daily_ingest.sh` to run verification stamping after ingestion.
+
+    Add a verification section that runs validate jobs for sources that have them:
+
+    - validate_gmail_source
+
+    - validate_exchange_source
+
+    - validate_google_forms_source
+
+    Structure the script with clear sections for ingest vs verify.'
+  role: coding_agent
+  step_id: step-003
+- description: Create Google Forms Canonize Job
+  kind: code
+  outputs:
+  - lorchestra/jobs/definitions/canonize_google_forms.json
+  prompt: 'Create `canonize_google_forms.json` job definition.
+
+    Transform: `forms/google_forms_to_canonical@1.0.0` (exists in canonizer)
+
+    The job should:
+
+    - Source from google_forms / form_response with validation_status: pass
+
+    - Transform using existing forms transform
+
+    - Output to canonical form_response schema'
+  role: coding_agent
+  step_id: step-004
+- description: Test Google Forms Pipeline
+  kind: code
+  outputs:
+  - artifacts/phase2/google-forms-pipeline-test.md
+  prompt: 'Test the full pipeline: ingest → validate → canonize for Google Forms.
+
+    Verify records flow through correctly.'
+  role: coding_agent
+  step_id: step-005
+- description: Create Dataverse Validate Jobs
+  kind: code
+  outputs:
+  - lorchestra/jobs/definitions/validate_dataverse_contacts.json
+  - lorchestra/jobs/definitions/validate_dataverse_sessions.json
+  - lorchestra/jobs/definitions/validate_dataverse_reports.json
+  prompt: 'Create validation jobs for Dataverse entities:
+
+    - `validate_dataverse_contacts.json`
+
+    - `validate_dataverse_sessions.json`
+
+    - `validate_dataverse_reports.json`
+
+    Use source schemas from canonizer:
+
+    - `iglu:com.microsoft/dataverse_contact/jsonschema/1-0-0`
+
+    - `iglu:com.microsoft/dataverse_session/jsonschema/1-0-0`
+
+    - `iglu:com.microsoft/dataverse_report/jsonschema/1-0-0`'
+  role: coding_agent
+  step_id: step-006
+- description: Create Dataverse Canonize Jobs
+  kind: code
+  outputs:
+  - lorchestra/jobs/definitions/canonize_dataverse_contacts.json
+  - lorchestra/jobs/definitions/canonize_dataverse_sessions.json
+  - lorchestra/jobs/definitions/canonize_dataverse_reports.json
+  prompt: 'Create canonization jobs for Dataverse entities:
+
+    - `canonize_dataverse_contacts.json`
+
+    - `canonize_dataverse_sessions.json`
+
+    - `canonize_dataverse_reports.json`
+
+    Use transforms from canonizer:
+
+    - `contact/dataverse_to_canonical@1.0.0`
+
+    - `clinical_session/dataverse_to_canonical@1.0.0`
+
+    - `report/dataverse_to_canonical@1.0.0`'
+  role: coding_agent
+  step_id: step-007
+- description: Update Daily Ingest for Dataverse
+  kind: code
+  outputs:
+  - scripts/daily_ingest.sh
+  prompt: Add Dataverse verification to daily_ingest.sh verification section.
+  role: coding_agent
+  step_id: step-008
+- description: Create Stripe Validate Jobs
+  kind: code
+  outputs:
+  - lorchestra/jobs/definitions/validate_stripe_customers.json
+  - lorchestra/jobs/definitions/validate_stripe_invoices.json
+  - lorchestra/jobs/definitions/validate_stripe_payment_intents.json
+  - lorchestra/jobs/definitions/validate_stripe_refunds.json
+  prompt: 'Create validation jobs:
+
+    - `validate_stripe_customers.json`
+
+    - `validate_stripe_invoices.json`
+
+    - `validate_stripe_payment_intents.json`
+
+    - `validate_stripe_refunds.json`
+
+    Use source schemas from canonizer.'
+  role: coding_agent
+  step_id: step-009
+- description: Create Stripe Canonize Jobs
+  kind: code
+  outputs:
+  - lorchestra/jobs/definitions/canonize_stripe_customers.json
+  - lorchestra/jobs/definitions/canonize_stripe_invoices.json
+  - lorchestra/jobs/definitions/canonize_stripe_payment_intents.json
+  - lorchestra/jobs/definitions/canonize_stripe_refunds.json
+  prompt: 'Create canonization jobs:
+
+    - `canonize_stripe_customers.json`
+
+    - `canonize_stripe_invoices.json`
+
+    - `canonize_stripe_payment_intents.json`
+
+    - `canonize_stripe_refunds.json`
+
+    Use transforms from canonizer.'
+  role: coding_agent
+  step_id: step-010
+- description: Update Daily Ingest for Stripe
+  kind: code
+  outputs:
+  - scripts/daily_ingest.sh
+  prompt: Add Stripe verification to daily_ingest.sh verification section.
+  role: coding_agent
+  step_id: step-011
+- description: Create Daily Canonize Script
+  kind: code
+  outputs:
+  - scripts/daily_canonize.sh
+  prompt: 'Create `scripts/daily_canonize.sh` that runs all canonization jobs:
+
+    - canonize_gmail_jmap
+
+    - canonize_exchange_jmap
+
+    - canonize_google_forms
+
+    - canonize_dataverse_contacts
+
+    - canonize_dataverse_sessions
+
+    - canonize_dataverse_reports
+
+    - canonize_stripe_customers
+
+    - canonize_stripe_invoices
+
+    - canonize_stripe_payment_intents
+
+    - canonize_stripe_refunds
+
+    Mirror the structure of daily_ingest.sh with failure tracking.'
+  role: coding_agent
+  step_id: step-012
+- description: End-to-End Testing
+  gate_ref: 'G1: Code Readiness'
+  kind: code
+  outputs:
+  - artifacts/phase5/e2e-test-results.md
+  prompt: 'Test the complete pipeline for all sources:
+
+    1. Run daily_ingest.sh (ingest + verify)
+
+    2. Run daily_canonize.sh
+
+    3. Verify canonical output in BigQuery'
+  role: coding_agent
+  step_id: step-013
+- description: Final Validation
+  gate_ref: 'G2: Pre-Release'
+  kind: code
+  outputs:
+  - artifacts/phase5/test-pass-confirmation.md
+  prompt: Run full test suite and linting.
+  role: coding_agent
+  step_id: step-014
+project_slug: lorchestra
+repo:
+  default_branch: main
+  url: git@github.com:benthepsychologist/lorchestra.git
+  working_branch: feat/canonization-pipeline
+spec_version: 1.0.0
+tier: C
+title: Canonization Pipeline
+updated: '2025-12-02T11:41:20.349949+00:00'
+version: '0.1'
+

@@ -1,0 +1,12 @@
+{
+  "job_id": "validate_dataverse_sessions",
+  "job_type": "canonize",
+  "source": {
+    "source_system": "dataverse",
+    "object_type": "session"
+  },
+  "transform": {
+    "mode": "validate_only",
+    "schema_in": "iglu:com.microsoft/dataverse_session/jsonschema/1-0-0"
+  }
+}
