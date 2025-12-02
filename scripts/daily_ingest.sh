@@ -47,6 +47,13 @@ run_job ingest_stripe_invoices
 run_job ingest_stripe_payment_intents
 run_job ingest_stripe_refunds
 
+# Google Forms
+echo "--- Google Forms ---"
+run_job ingest_google_forms_intake_01
+run_job ingest_google_forms_intake_02
+run_job ingest_google_forms_followup
+run_job ingest_google_forms_ipip120
+
 echo "=== Complete: $(date -Iseconds) ==="
 
 # Report failures
