@@ -115,6 +115,36 @@ def substitute_placeholders(
     return sql
 
 
+# Known tables that can be auto-qualified
+KNOWN_TABLES = [
+    'event_log',
+    'raw_objects',
+    'canonical_objects',
+]
+
+
+def auto_qualify_tables(sql: str, project: str, dataset: str) -> str:
+    """Auto-qualify bare table names with project.dataset prefix.
+
+    Replaces bare references like ``FROM event_log`` with
+    ``FROM `project.dataset.event_log```.
+
+    Only qualifies known tables to avoid false positives.
+    """
+    for table in KNOWN_TABLES:
+        # Match: FROM/JOIN table_name (not already qualified)
+        # Negative lookbehind for `.` or backtick to avoid re-qualifying
+        pattern = rf'(?<![`.])(\bFROM\s+)({table})(\s|$|,)'
+        replacement = rf'\1`{project}.{dataset}.{table}`\3'
+        sql = re.sub(pattern, replacement, sql, flags=re.IGNORECASE)
+
+        pattern = rf'(?<![`.])(\bJOIN\s+)({table})(\s|$)'
+        replacement = rf'\1`{project}.{dataset}.{table}`\3'
+        sql = re.sub(pattern, replacement, sql, flags=re.IGNORECASE)
+
+    return sql
+
+
 def run_sql_query(
     sql: str,
     extra_placeholders: dict[str, str] | None = None,
@@ -132,6 +162,11 @@ def run_sql_query(
 
     # Substitute placeholders (fails loudly if env vars missing)
     sql = substitute_placeholders(sql, extra_placeholders)
+
+    # Auto-qualify known table names (event_log, raw_objects, etc.)
+    project = os.environ['GCP_PROJECT']
+    dataset = os.environ['EVENTS_BQ_DATASET']
+    sql = auto_qualify_tables(sql, project, dataset)
 
     # Validate read-only
     validate_readonly_sql(sql)
