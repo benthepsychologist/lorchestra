@@ -152,9 +152,12 @@ class TestBigQueryStorageClient:
         assert result == 0
         assert not mock_bq_client.query.called
 
-    def test_insert_canonical_builds_correct_rows(self, storage_client, mock_bq_client):
-        """insert_canonical builds correct row structure."""
-        mock_bq_client.insert_rows_json.return_value = []  # No errors
+    def test_upsert_canonical_builds_merge_query(self, storage_client, mock_bq_client):
+        """upsert_canonical builds MERGE query with correct structure."""
+        # Mock query result
+        mock_result = MagicMock()
+        mock_result.num_dml_affected_rows = 1
+        mock_bq_client.query.return_value.result.return_value = mock_result
 
         objects = [
             {
@@ -166,23 +169,22 @@ class TestBigQueryStorageClient:
             }
         ]
 
-        result = storage_client.insert_canonical(objects, "corr-123")
+        result = storage_client.upsert_canonical(objects, "corr-123")
 
-        assert result == 1
-        assert mock_bq_client.insert_rows_json.called
+        assert result["inserted"] == 1
+        assert mock_bq_client.query.called
 
-        # Check row structure
-        rows = mock_bq_client.insert_rows_json.call_args[0][1]
-        assert len(rows) == 1
-        assert rows[0]["idem_key"] == "key1"
-        assert rows[0]["canonical_schema"] == "iglu:test/schema/1-0-0"
-        assert rows[0]["correlation_id"] == "corr-123"
+        # Check query contains MERGE
+        query = mock_bq_client.query.call_args[0][0]
+        assert "MERGE" in query
+        assert "key1" in query
+        assert "iglu:test/schema/1-0-0" in query
 
-    def test_insert_canonical_empty_returns_zero(self, storage_client, mock_bq_client):
-        """insert_canonical with empty list returns 0."""
-        result = storage_client.insert_canonical([], "corr-123")
-        assert result == 0
-        assert not mock_bq_client.insert_rows_json.called
+    def test_upsert_canonical_empty_returns_zero(self, storage_client, mock_bq_client):
+        """upsert_canonical with empty list returns zeros."""
+        result = storage_client.upsert_canonical([], "corr-123")
+        assert result == {"inserted": 0, "updated": 0}
+        assert not mock_bq_client.query.called
 
 
 class TestBigQueryEventClient:

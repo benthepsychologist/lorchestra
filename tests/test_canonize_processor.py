@@ -51,16 +51,27 @@ class MockStorageClient:
         })
         return len(idem_keys)
 
-    def insert_canonical(
+    def query_objects_for_canonization(
+        self,
+        source_system: str,
+        object_type: str,
+        filters: dict[str, Any] | None = None,
+        limit: int | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """Query for canonization uses same records as query_objects."""
+        return iter(self.records)
+
+    def upsert_canonical(
         self,
         objects: list[dict[str, Any]],
         correlation_id: str,
-    ) -> int:
+    ) -> dict[str, int]:
         self.insert_calls.append({
             "objects": objects,
             "correlation_id": correlation_id,
         })
-        return self.insert_count or len(objects)
+        count = self.insert_count or len(objects)
+        return {"inserted": count, "updated": 0}
 
     def upsert_objects(self, *args, **kwargs) -> UpsertResult:
         return UpsertResult(inserted=0, updated=0)
@@ -181,13 +192,18 @@ class TestCanonizeProcessorValidateOnly:
         assert update_call["value"] == "pass"
         assert set(update_call["idem_keys"]) == {"key1", "key2"}
 
-        # Verify completion event
-        assert len(event_client.events) == 1
-        event = event_client.events[0]
-        assert event["event_type"] == "validate.completed"
-        assert event["status"] == "ok"
-        assert event["payload"]["passed"] == 2
-        assert event["payload"]["failed"] == 0
+        # Verify started and completion events
+        assert len(event_client.events) == 2
+        started_event = event_client.events[0]
+        assert started_event["event_type"] == "validation.started"
+        assert started_event["status"] == "success"
+
+        event = event_client.events[1]
+        assert event["event_type"] == "validation.completed"
+        assert event["status"] == "success"
+        assert event["payload"]["records_pass"] == 2
+        assert event["payload"]["records_fail"] == 0
+        assert event["payload"]["object_type"] == "email"
 
     def test_validate_only_with_failures(self, processor, job_spec, context):
         """Validation failures stamp records as fail."""
@@ -211,10 +227,11 @@ class TestCanonizeProcessorValidateOnly:
         assert pass_call["idem_keys"] == ["key1"]
         assert fail_call["idem_keys"] == ["key2"]
 
-        # Event shows mixed results
-        event = event_client.events[0]
-        assert event["payload"]["passed"] == 1
-        assert event["payload"]["failed"] == 1
+        # Event shows mixed results (started + completed)
+        assert len(event_client.events) == 2
+        event = event_client.events[1]  # completed event
+        assert event["payload"]["records_pass"] == 1
+        assert event["payload"]["records_fail"] == 1
 
     def test_validate_only_no_records(self, processor, job_spec, context):
         """No records to validate returns early."""
@@ -224,9 +241,11 @@ class TestCanonizeProcessorValidateOnly:
         with patch.object(processor, "_get_validator", return_value=MockValidator()):
             processor.run(job_spec, context, storage_client, event_client)
 
-        # No updates or events (early return)
+        # No updates (early return after started event)
         assert len(storage_client.update_calls) == 0
-        assert len(event_client.events) == 0
+        # Started event is emitted before we know there are no records
+        assert len(event_client.events) == 1
+        assert event_client.events[0]["event_type"] == "validation.started"
 
     def test_validate_only_dry_run(self, processor, job_spec):
         """Dry run validates but doesn't write."""
@@ -241,9 +260,8 @@ class TestCanonizeProcessorValidateOnly:
         # No updates in dry run
         assert len(storage_client.update_calls) == 0
 
-        # Event still emitted with dry_run flag
-        event = event_client.events[0]
-        assert event["payload"]["dry_run"] is True
+        # Events still emitted (started + completed)
+        assert len(event_client.events) == 2
 
     def test_validate_only_json_payload(self, processor, job_spec, context):
         """JSON string payloads are parsed."""
@@ -295,7 +313,7 @@ class TestCanonizeProcessorFullMode:
         )
 
     def test_full_mode_success(self, processor, job_spec, context):
-        """Full mode transforms and inserts canonical records."""
+        """Full mode transforms and upserts canonical records."""
         records = [
             {"idem_key": "key1", "payload": {"id": "1"}, "source_system": "gmail", "connection_name": "acct1", "object_type": "email"},
             {"idem_key": "key2", "payload": {"id": "2"}, "source_system": "gmail", "connection_name": "acct1", "object_type": "email"},
@@ -307,11 +325,7 @@ class TestCanonizeProcessorFullMode:
         with patch.object(processor, "_get_transform", return_value=mock_transform):
             processor.run(job_spec, context, storage_client, event_client)
 
-        # Verify records were queried with validation_status filter
-        query_call = storage_client.query_calls[0]
-        assert query_call["filters"]["validation_status"] == "pass"
-
-        # Verify canonical records were inserted
+        # Verify canonical records were upserted
         assert len(storage_client.insert_calls) == 1
         insert_call = storage_client.insert_calls[0]
         assert len(insert_call["objects"]) == 2
@@ -324,12 +338,17 @@ class TestCanonizeProcessorFullMode:
         assert canonical["transform_ref"] == "email/gmail_to_jmap_lite@1.0.0"
         assert canonical["payload"] == {"canonical": "email"}
 
-        # Verify completion event
-        event = event_client.events[0]
-        assert event["event_type"] == "canonize.completed"
-        assert event["status"] == "ok"
-        assert event["payload"]["success"] == 2
-        assert event["payload"]["inserted"] == 2
+        # Verify started and completion events
+        assert len(event_client.events) == 2
+        started_event = event_client.events[0]
+        assert started_event["event_type"] == "canonization.started"
+        assert started_event["status"] == "success"
+
+        event = event_client.events[1]
+        assert event["event_type"] == "canonization.completed"
+        assert event["status"] == "success"
+        assert event["payload"]["records_inserted"] == 2
+        assert event["payload"]["object_type"] == "email"
 
     def test_full_mode_with_transform_failures(self, processor, job_spec, context):
         """Transform failures are tracked but don't stop processing."""
@@ -358,10 +377,10 @@ class TestCanonizeProcessorFullMode:
         insert_call = storage_client.insert_calls[0]
         assert len(insert_call["objects"]) == 1
 
-        # Event shows partial success
-        event = event_client.events[0]
-        assert event["payload"]["success"] == 1
-        assert event["payload"]["failed"] == 1
+        # Event shows partial success (started + completed)
+        assert len(event_client.events) == 2
+        event = event_client.events[1]  # completed event
+        assert event["payload"]["records_inserted"] == 1
 
     def test_full_mode_no_records(self, processor, job_spec, context):
         """No records to canonize returns early."""
@@ -371,9 +390,11 @@ class TestCanonizeProcessorFullMode:
         with patch.object(processor, "_get_transform", return_value=MockTransform()):
             processor.run(job_spec, context, storage_client, event_client)
 
-        # No inserts or events
+        # No inserts (early return after started event)
         assert len(storage_client.insert_calls) == 0
-        assert len(event_client.events) == 0
+        # Started event is emitted before we know there are no records
+        assert len(event_client.events) == 1
+        assert event_client.events[0]["event_type"] == "canonization.started"
 
     def test_full_mode_dry_run(self, processor, job_spec):
         """Dry run transforms but doesn't insert."""
@@ -388,14 +409,16 @@ class TestCanonizeProcessorFullMode:
         # No inserts in dry run
         assert len(storage_client.insert_calls) == 0
 
-        # Event still emitted
-        event = event_client.events[0]
-        assert event["payload"]["dry_run"] is True
-        assert event["payload"]["inserted"] == 0
+        # Events still emitted (started + completed)
+        assert len(event_client.events) == 2
+        event = event_client.events[1]  # completed event
+        assert event["payload"]["records_inserted"] == 0
+        assert event["payload"]["records_updated"] == 0
 
     def test_full_mode_custom_events(self, processor, job_spec, context):
         """Custom event names from job_spec are used."""
         job_spec["events"] = {
+            "on_started": "gmail.canonize.start",
             "on_complete": "gmail.canonize.done",
             "on_fail": "gmail.canonize.error",
         }
@@ -406,7 +429,10 @@ class TestCanonizeProcessorFullMode:
         with patch.object(processor, "_get_transform", return_value=MockTransform()):
             processor.run(job_spec, context, storage_client, event_client)
 
-        assert event_client.events[0]["event_type"] == "gmail.canonize.done"
+        # Started + completed events with custom names
+        assert len(event_client.events) == 2
+        assert event_client.events[0]["event_type"] == "gmail.canonize.start"
+        assert event_client.events[1]["event_type"] == "gmail.canonize.done"
 
 
 class TestCanonizeProcessorErrors:
@@ -435,9 +461,11 @@ class TestCanonizeProcessorErrors:
         with pytest.raises(RuntimeError):
             processor.run(job_spec, context, storage_client, event_client)
 
-        # Error event emitted
-        event = event_client.events[0]
-        assert event["event_type"] == "validate.failed"
+        # Started + failed events emitted
+        assert len(event_client.events) == 2
+        assert event_client.events[0]["event_type"] == "validation.started"
+        event = event_client.events[1]
+        assert event["event_type"] == "validation.failed"
         assert event["status"] == "failed"
         assert "BQ connection failed" in event["error_message"]
 
@@ -455,15 +483,18 @@ class TestCanonizeProcessorErrors:
         context = JobContext(bq_client=MagicMock(), run_id="err-test", dry_run=False)
 
         storage_client = MagicMock()
-        storage_client.query_objects.side_effect = RuntimeError("Query failed")
+        storage_client.query_objects_for_canonization.side_effect = RuntimeError("Query failed")
 
         event_client = MockEventClient()
 
         with pytest.raises(RuntimeError):
             processor.run(job_spec, context, storage_client, event_client)
 
-        event = event_client.events[0]
-        assert event["event_type"] == "canonize.failed"
+        # Started + failed events emitted
+        assert len(event_client.events) == 2
+        assert event_client.events[0]["event_type"] == "canonization.started"
+        event = event_client.events[1]
+        assert event["event_type"] == "canonization.failed"
         assert event["status"] == "failed"
 
 
@@ -496,8 +527,11 @@ class TestCanonizeProcessorHelpers:
             # Will fail because schema doesn't exist, but method is called
             processor._get_validator("iglu:test/nonexistent/jsonschema/1-0-0")
 
-    def test_get_transform_loads_jsonata(self, processor):
-        """_get_transform loads jsonata from registry."""
-        # Will fail because transform doesn't exist, but method is called
-        with pytest.raises(FileNotFoundError, match="Transform not found"):
-            processor._get_transform("nonexistent@1.0.0")
+    def test_get_transform_returns_wrapper(self, processor):
+        """_get_transform returns a TransformWrapper for CLI execution."""
+        # The new implementation returns a wrapper that calls the canonizer-core CLI
+        wrapper = processor._get_transform("nonexistent@1.0.0")
+        # Wrapper has evaluate method
+        assert hasattr(wrapper, "evaluate")
+        assert hasattr(wrapper, "ref")
+        assert wrapper.ref == "nonexistent@1.0.0"

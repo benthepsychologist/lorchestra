@@ -72,8 +72,11 @@ class TestStorageClientProtocol:
             def update_field(self, idem_keys, field, value):
                 return len(idem_keys)
 
-            def insert_canonical(self, objects, correlation_id):
-                return len(objects)
+            def query_objects_for_canonization(self, source_system, object_type, filters=None, limit=None):
+                yield {"idem_key": "test", "payload": {}}
+
+            def upsert_canonical(self, objects, correlation_id):
+                return {"inserted": len(objects), "updated": 0}
 
             def query_canonical(self, canonical_schema=None, filters=None, limit=None):
                 yield {"idem_key": "test", "payload": {}}

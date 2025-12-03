@@ -102,6 +102,72 @@ class BigQueryStorageClient:
         for row in result:
             yield dict(row)
 
+    def query_objects_for_canonization(
+        self,
+        source_system: str,
+        object_type: str,
+        filters: dict[str, Any] | None = None,
+        limit: int | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """Query validated raw_objects that need canonization.
+
+        Returns records where:
+        - validation_status = 'pass'
+        - AND either:
+          - Not yet in canonical_objects (never canonized), OR
+          - raw_objects.last_seen > canonical_objects.canonicalized_at (raw updated since)
+
+        Args:
+            source_system: Source system to filter by
+            object_type: Object type to filter by
+            filters: Additional filters (field=value)
+            limit: Max records to return
+        """
+        raw_table = self._table_name("raw_objects")
+        canonical_table = self._table_name("canonical_objects")
+        filters = filters or {}
+
+        # Build WHERE clause conditions
+        conditions = [
+            "r.source_system = @source_system",
+            "r.object_type = @object_type",
+            "r.validation_status = 'pass'",
+            "(c.idem_key IS NULL OR r.last_seen > c.canonicalized_at)",
+        ]
+        params = [
+            bigquery.ScalarQueryParameter("source_system", "STRING", source_system),
+            bigquery.ScalarQueryParameter("object_type", "STRING", object_type),
+        ]
+
+        # Add additional filters (skip validation_status since we hardcode it)
+        for i, (key, value) in enumerate(filters.items()):
+            if key == "validation_status":
+                continue  # Already handled above
+            param_name = f"filter_{i}"
+            if value is None:
+                conditions.append(f"r.{key} IS NULL")
+            else:
+                conditions.append(f"r.{key} = @{param_name}")
+                params.append(bigquery.ScalarQueryParameter(param_name, "STRING", str(value)))
+
+        where_clause = " AND ".join(conditions)
+        limit_clause = f"LIMIT {limit}" if limit else ""
+
+        query = f"""
+            SELECT r.idem_key, r.source_system, r.connection_name, r.object_type,
+                   r.payload, r.correlation_id, r.validation_status, r.last_seen
+            FROM `{self.dataset}.{raw_table}` r
+            LEFT JOIN `{self.dataset}.{canonical_table}` c ON r.idem_key = c.idem_key
+            WHERE {where_clause}
+            {limit_clause}
+        """
+
+        job_config = bigquery.QueryJobConfig(query_parameters=params)
+        result = self.bq_client.query(query, job_config=job_config).result()
+
+        for row in result:
+            yield dict(row)
+
     def upsert_objects(
         self,
         objects: Iterator[dict[str, Any]],
@@ -153,42 +219,94 @@ class BigQueryStorageClient:
         result = self.bq_client.query(query, job_config=job_config).result()
         return result.num_dml_affected_rows or 0
 
-    def insert_canonical(
+    def upsert_canonical(
         self,
         objects: list[dict[str, Any]],
         correlation_id: str,
-    ) -> int:
-        """Insert canonical objects."""
+        batch_size: int = 500,
+    ) -> dict[str, int]:
+        """Upsert canonical objects using MERGE.
+
+        Uses MERGE to insert new records or update existing ones based on idem_key.
+        This ensures no duplicates and allows re-canonization when raw data changes.
+
+        Args:
+            objects: List of canonical objects to upsert
+            correlation_id: Correlation ID for the batch
+            batch_size: Number of records per MERGE batch
+
+        Returns:
+            Dict with 'inserted' and 'updated' counts
+        """
         if not objects:
-            return 0
+            return {"inserted": 0, "updated": 0}
 
         table = self._table_name("canonical_objects")
-
-        # Prepare rows for insert
-        rows = []
-        for obj in objects:
-            row = {
-                "idem_key": obj["idem_key"],
-                "source_system": obj.get("source_system"),
-                "connection_name": obj.get("connection_name"),
-                "object_type": obj.get("object_type"),
-                "canonical_schema": obj.get("canonical_schema"),
-                "canonical_format": obj.get("canonical_format"),
-                "transform_ref": obj.get("transform_ref"),
-                "validation_stamp": obj.get("validation_stamp"),
-                "correlation_id": obj.get("correlation_id") or correlation_id,
-                "payload": json.dumps(obj["payload"]) if isinstance(obj["payload"], dict) else obj["payload"],
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            }
-            rows.append(row)
-
         table_ref = f"{self.dataset}.{table}"
-        errors = self.bq_client.insert_rows_json(table_ref, rows)
 
-        if errors:
-            raise RuntimeError(f"canonical_objects insert failed: {errors}")
+        total_inserted = 0
+        total_updated = 0
 
-        return len(rows)
+        # Process in batches
+        for i in range(0, len(objects), batch_size):
+            batch = objects[i:i + batch_size]
+
+            # Build source data as a query with UNION ALL
+            source_rows = []
+            for obj in batch:
+                payload = json.dumps(obj["payload"]) if isinstance(obj["payload"], dict) else obj["payload"]
+                # Escape single quotes in payload
+                payload_escaped = payload.replace("'", "\\'") if payload else ""
+
+                source_rows.append(f"""
+                    SELECT
+                        '{obj["idem_key"]}' as idem_key,
+                        '{obj.get("source_system", "")}' as source_system,
+                        {f"'{obj.get('connection_name')}'" if obj.get('connection_name') else 'NULL'} as connection_name,
+                        '{obj.get("object_type", "")}' as object_type,
+                        '{obj.get("canonical_schema", "")}' as canonical_schema,
+                        '{obj.get("canonical_format", "")}' as canonical_format,
+                        '{obj.get("transform_ref", "")}' as transform_ref,
+                        '{obj.get("correlation_id") or correlation_id}' as correlation_id,
+                        PARSE_JSON('{payload_escaped}') as payload,
+                        CURRENT_TIMESTAMP() as canonicalized_at,
+                        CURRENT_TIMESTAMP() as created_at
+                """)
+
+            source_query = " UNION ALL ".join(source_rows)
+
+            merge_query = f"""
+                MERGE `{table_ref}` T
+                USING ({source_query}) S
+                ON T.idem_key = S.idem_key
+                WHEN MATCHED THEN
+                    UPDATE SET
+                        source_system = S.source_system,
+                        connection_name = S.connection_name,
+                        object_type = S.object_type,
+                        canonical_schema = S.canonical_schema,
+                        canonical_format = S.canonical_format,
+                        transform_ref = S.transform_ref,
+                        correlation_id = S.correlation_id,
+                        payload = S.payload,
+                        canonicalized_at = S.canonicalized_at
+                WHEN NOT MATCHED THEN
+                    INSERT (idem_key, source_system, connection_name, object_type,
+                            canonical_schema, canonical_format, transform_ref,
+                            correlation_id, payload, canonicalized_at, created_at)
+                    VALUES (S.idem_key, S.source_system, S.connection_name, S.object_type,
+                            S.canonical_schema, S.canonical_format, S.transform_ref,
+                            S.correlation_id, S.payload, S.canonicalized_at, S.created_at)
+            """
+
+            result = self.bq_client.query(merge_query).result()
+
+            # BigQuery MERGE returns num_dml_affected_rows for total affected
+            # We can't distinguish inserts from updates in the result, so we estimate
+            affected = result.num_dml_affected_rows or 0
+            total_inserted += affected  # Approximate - includes updates
+
+        return {"inserted": total_inserted, "updated": total_updated}
 
     def query_canonical(
         self,
@@ -438,7 +556,7 @@ def run_job(
         event_type="job.started",
         source_system="lorchestra",
         correlation_id=run_id,
-        status="ok",
+        status="success",
         payload={
             "job_id": job_id,
             "job_type": job_type,
@@ -462,7 +580,7 @@ def run_job(
             event_type="job.completed",
             source_system="lorchestra",
             correlation_id=run_id,
-            status="ok",
+            status="success",
             payload={
                 "job_id": job_id,
                 "job_type": job_type,

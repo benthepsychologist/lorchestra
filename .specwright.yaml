@@ -9,4 +9,4 @@ user:
   default_tier: C
 current:
   spec: .specwright/specs/canonization-pipeline.md
-  aip: /workspace/lorchestra/.specwright/aips/canonization-pipeline.yaml
+  aip: .specwright/aips/lorchestra-stats-query.yaml

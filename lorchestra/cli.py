@@ -8,6 +8,8 @@ via the JobRunner to typed processors (ingest, canonize, final_form).
 """
 
 
+import sys
+
 import click
 from pathlib import Path
 
@@ -16,6 +18,9 @@ from lorchestra import __version__
 
 # Job definitions directory
 DEFINITIONS_DIR = Path(__file__).parent / "jobs" / "definitions"
+
+# Queries directory for named SQL queries
+QUERIES_DIR = Path(__file__).parent / "queries"
 
 
 def _get_available_jobs() -> list[str]:
@@ -193,6 +198,199 @@ def show_job(job: str):
     click.echo(f"Definition: {def_path}")
     click.echo()
     click.echo(json.dumps(job_def, indent=2))
+
+
+# =============================================================================
+# Stats Commands - Built-in operational reports
+# =============================================================================
+
+@main.group("stats")
+def stats_group():
+    """Built-in operational statistics reports."""
+    pass
+
+
+@stats_group.command("canonical")
+def stats_canonical():
+    """Show canonical objects by schema and source.
+
+    Displays a count of canonical objects grouped by canonical_schema
+    and source_system.
+
+    Example:
+
+        lorchestra stats canonical
+    """
+    from lorchestra.sql_runner import run_sql_query
+
+    sql = """
+SELECT
+  canonical_schema,
+  source_system,
+  COUNT(*) AS count
+FROM `${PROJECT}.${DATASET}.canonical_objects`
+GROUP BY canonical_schema, source_system
+ORDER BY count DESC
+"""
+    run_sql_query(sql)
+
+
+@stats_group.command("raw")
+def stats_raw():
+    """Show raw objects by source, type, and validation status.
+
+    Displays a count of raw objects grouped by source_system,
+    object_type, and validation_status.
+
+    Example:
+
+        lorchestra stats raw
+    """
+    from lorchestra.sql_runner import run_sql_query
+
+    sql = """
+SELECT
+  source_system,
+  object_type,
+  validation_status,
+  COUNT(*) AS count
+FROM `${PROJECT}.${DATASET}.raw_objects`
+GROUP BY source_system, object_type, validation_status
+ORDER BY source_system, object_type, validation_status
+"""
+    run_sql_query(sql)
+
+
+@stats_group.command("jobs")
+@click.option(
+    "--days",
+    default=7,
+    show_default=True,
+    type=int,
+    help="Lookback window in days for job statistics.",
+)
+def stats_jobs(days: int):
+    """Show job events from the event log.
+
+    Displays job events grouped by event_type, source_system, and status
+    for the specified lookback period.
+
+    Examples:
+
+        lorchestra stats jobs
+
+        lorchestra stats jobs --days 30
+    """
+    from lorchestra.sql_runner import run_sql_query
+
+    sql = """
+SELECT
+  event_type,
+  source_system,
+  status,
+  COUNT(*) AS count,
+  MIN(created_at) AS first_seen,
+  MAX(created_at) AS last_seen
+FROM `${PROJECT}.${DATASET}.event_log`
+WHERE created_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL ${DAYS} DAY)
+GROUP BY event_type, source_system, status
+ORDER BY last_seen DESC
+"""
+    run_sql_query(sql, extra_placeholders={"DAYS": str(days)})
+
+
+# =============================================================================
+# Query Command - Named queries from SQL files
+# =============================================================================
+
+def _get_available_queries() -> list[str]:
+    """Get list of available query names."""
+    if not QUERIES_DIR.exists():
+        return []
+    return sorted([f.stem for f in QUERIES_DIR.glob("*.sql")])
+
+
+@main.command("query")
+@click.argument("name")
+def query_named(name: str):
+    """Run a named SQL query from the queries directory.
+
+    NAME is the query name (filename without .sql extension).
+    Queries are loaded from lorchestra/queries/<name>.sql.
+
+    The query must be read-only (SELECT or WITH only).
+    Placeholders ${PROJECT} and ${DATASET} are substituted from
+    environment variables.
+
+    Examples:
+
+        lorchestra query canonical-summary
+
+        lorchestra query raw-validation
+
+    Available queries can be listed with:
+
+        ls lorchestra/queries/
+    """
+    from lorchestra.sql_runner import run_sql_query
+
+    query_path = QUERIES_DIR / f"{name}.sql"
+
+    if not query_path.exists():
+        available = _get_available_queries()
+        click.echo(f"Query '{name}' not found.", err=True)
+        click.echo(f"Expected: {query_path}", err=True)
+        if available:
+            click.echo("\nAvailable queries:", err=True)
+            for q in available:
+                click.echo(f"  {q}", err=True)
+        raise SystemExit(1)
+
+    sql = query_path.read_text()
+    run_sql_query(sql)
+
+
+# =============================================================================
+# SQL Command - Ad-hoc read-only SQL
+# =============================================================================
+
+@main.command("sql")
+@click.argument("query", required=False)
+def sql_adhoc(query: str | None):
+    """Run ad-hoc read-only SQL.
+
+    SQL can be provided as an argument, via stdin (pipe), or heredoc.
+    The query must be read-only (SELECT or WITH only).
+
+    Placeholders ${PROJECT} and ${DATASET} are substituted from
+    environment variables.
+
+    Examples:
+
+        echo "SELECT COUNT(*) FROM raw_objects" | lorchestra sql
+
+        lorchestra sql < my-query.sql
+    """
+    from lorchestra.sql_runner import run_sql_query
+
+    # Get SQL from argument or stdin
+    if query:
+        sql = query
+    elif not sys.stdin.isatty():
+        # Reading from pipe or redirect
+        sql = sys.stdin.read().strip()
+    else:
+        raise click.UsageError(
+            "No SQL provided. Usage:\n"
+            "  lorchestra sql \"SELECT ...\"\n"
+            "  echo \"SELECT ...\" | lorchestra sql\n"
+            "  lorchestra sql < query.sql"
+        )
+
+    if not sql:
+        raise click.UsageError("Empty SQL query provided")
+
+    run_sql_query(sql)
 
 
 if __name__ == "__main__":

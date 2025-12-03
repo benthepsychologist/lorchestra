@@ -33,7 +33,7 @@ Usage:
         event_type="job.started",
         source_system="lorchestra",
         correlation_id="gmail-20251124120000",
-        status="ok",
+        status="success",
         payload={"job_name": "gmail_ingest"},
         bq_client=client
     )
@@ -137,15 +137,17 @@ def log_event(
 
     Use this for:
     - Job execution events (job.started, job.completed, job.failed)
-    - Ingestion events (ingest.started, ingest.completed, ingest.failed)
-    - Upsert events (upsert.completed) - auto-emitted by upsert_objects()
+    - Ingestion events (ingestion.started, ingestion.completed, ingestion.failed)
+    - Validation events (validation.started, validation.completed, validation.failed)
+    - Canonization events (canonization.started, canonization.completed, canonization.failed)
+    - Upsert events (upsert.completed) - auto-emitted by upsert_objects() (internal)
 
     Args:
-        event_type: Type of event (e.g., "job.started", "ingest.completed", "upsert.completed")
+        event_type: Type of event (e.g., "job.started", "ingestion.completed", "upsert.completed")
         source_system: Provider family (e.g., "lorchestra", "gmail", "dataverse")
         correlation_id: Correlation ID for tracing (e.g., run_id)
         bq_client: google.cloud.bigquery.Client instance
-        status: Event status ("ok" | "failed")
+        status: Event status ("success" | "failed") - strict, no synonyms
         connection_name: Account/connection (e.g., "gmail-acct1") - NULL for system events
         target_object_type: Domain object type (e.g., "email", "session") - NULL for job events
         event_schema_ref: Iglu URI for event schema (e.g., "iglu:com.mensio.event/ingest_completed/jsonschema/1-0-0")
@@ -163,7 +165,7 @@ def log_event(
         ...     event_type="job.started",
         ...     source_system="lorchestra",
         ...     correlation_id="gmail-20251124120000",
-        ...     status="ok",
+        ...     status="success",
         ...     payload={"job_name": "gmail_ingest"},
         ...     bq_client=client
         ... )
@@ -175,7 +177,7 @@ def log_event(
         ...     connection_name="gmail-acct1",
         ...     target_object_type="email",
         ...     correlation_id="gmail-20251124120000",
-        ...     status="ok",
+        ...     status="success",
         ...     payload={"records_extracted": 100, "duration_seconds": 10.2},
         ...     bq_client=client
         ... )
@@ -383,7 +385,7 @@ def upsert_objects(
 
     duration_seconds = time.time() - start_time
 
-    # Emit upsert.completed event with telemetry
+    # Emit upsert.completed event with telemetry (internal event for debugging)
     log_event(
         event_type="upsert.completed",
         source_system=source_system,
@@ -391,12 +393,11 @@ def upsert_objects(
         target_object_type=object_type,
         correlation_id=correlation_id,
         trace_id=trace_id,
-        status="ok",
+        status="success",
         payload={
-            "total_records": total_records,
-            "inserted": total_inserted,
-            "updated": total_updated,
-            "batch_count": batch_idx,
+            "target_table": "raw_objects",
+            "records_inserted": total_inserted,
+            "records_updated": total_updated,
             "duration_seconds": round(duration_seconds, 2),
         },
         bq_client=bq_client,
@@ -533,7 +534,7 @@ def _upsert_batch(
         """
 
         merge_job = bq_client.query(merge_query)
-        merge_result = merge_job.result()
+        merge_job.result()  # Wait for completion
 
         # Extract insert/update counts from DML stats
         # Note: BigQuery provides num_dml_affected_rows but not separate insert/update counts

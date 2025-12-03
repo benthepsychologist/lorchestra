@@ -1,0 +1,77 @@
+aip_id: AIP-lorchestra-2025-12-03-001
+context:
+  background: Currently there's no easy way to query lorchestra tables from the CLI. Users must write
+    ad-hoc Python or use BigQuery console. Common operational queries (counts by schema, validation status
+    breakdown, job history) should be one command away.
+  constraints: []
+created: '2025-12-03T14:55:17.615939+00:00'
+meta:
+  created_at: '2025-12-03T14:55:17.615939+00:00'
+  created_by: benthepsychologist
+objective:
+  acceptance_criteria:
+  - '`lorchestra stats canonical` shows canonical objects by schema/source'
+  - '`lorchestra stats raw` shows raw objects by source/type/validation_status'
+  - '`lorchestra stats jobs` shows job events from last N days (default 7)'
+  - '`lorchestra query <name>` loads and executes `queries/<name>.sql`'
+  - '`lorchestra sql` accepts SQL from argument, stdin, or heredoc'
+  - All queries use `${PROJECT}` and `${DATASET}` placeholder substitution
+  - Read-only gate rejects INSERT/UPDATE/DELETE/MERGE/DROP/CREATE/ALTER/TRUNCATE/GRANT/REVOKE/CALL/EXECUTE
+  - Read-only gate rejects multi-statement SQL (only trailing `;` allowed)
+  - Read-only gate requires query to start with SELECT or WITH
+  - '`lorchestra sql` with no arg and empty stdin returns UsageError with help text'
+  - '`lorchestra query <name>` with missing file returns clear error with expected path'
+  - Missing `GCP_PROJECT` or `EVENTS_BQ_DATASET` env vars fail loudly with UsageError
+  - CI green (lint + unit)
+  goal: Add read-only SQL query commands to lorchestra CLI
+orchestrator_contract:
+  artifacts_dir: .aip_artifacts/AIP-lorchestra-2025-12-03-001
+  logging: jsonl
+  state_machine:
+    events:
+    - run_step
+    - await_gate
+    - approve
+    - reject
+    - retry
+    - escalate
+    - complete
+    states:
+    - pending
+    - running
+    - awaiting_human
+    - failed
+    - succeeded
+    - rolled_back
+plan:
+- description: Create sql_runner module with validator and executor
+  kind: code
+  role: coding_agent
+  step_id: step-001
+- description: Add stats command group to CLI
+  kind: code
+  role: coding_agent
+  step_id: step-002
+- description: Add query command to CLI
+  kind: code
+  role: coding_agent
+  step_id: step-003
+- description: Add sql command to CLI
+  kind: code
+  role: coding_agent
+  step_id: step-004
+- description: Write tests
+  kind: code
+  role: coding_agent
+  step_id: step-005
+project_slug: lorchestra
+repo:
+  default_branch: main
+  url: git@github.com:benthepsychologist/lorchestra.git
+  working_branch: feat/lorchestra-stats-query
+spec_version: 1.0.0
+tier: C
+title: lorchestra-stats-query
+updated: '2025-12-03T14:55:17.615939+00:00'
+version: '0.1'
+

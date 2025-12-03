@@ -80,38 +80,119 @@ extract_calendar = "my_package.jobs:extract_calendar"
 
 ### Event Emission
 
-Jobs should emit events to BigQuery for tracking:
+Jobs emit events to BigQuery for tracking and observability. The `event_log` table is the single source of truth for pipeline status.
+
+#### Event Type Naming
+
+Use full words for event types following this pattern:
+- `{stage}.started` - Emitted before work begins
+- `{stage}.completed` - Emitted after successful completion
+- `{stage}.failed` - Emitted on failure
+
+Standard stages: `ingestion`, `validation`, `canonization`, `finalization`
+
+#### Status Values
+
+Status is strictly `success` or `failed` (no synonyms like `ok`, `done`, `error`).
+
+#### Standard Payload Fields
+
+All `*.completed` events should include:
+- `job_id` - The job identifier
+- `object_type` - The data type being processed (e.g., "email", "message")
+- `duration_seconds` - Time for this stage (not total job time)
+
+**Ingestion events:**
+```json
+{
+  "job_id": "ingest_gmail_acct1",
+  "object_type": "email",
+  "records_extracted": 123,
+  "records_inserted": 100,
+  "records_updated": 23,
+  "window_since": "2025-01-15T00:00:00Z",
+  "window_until": "2025-01-16T00:00:00Z",
+  "duration_seconds": 4.21
+}
+```
+
+**Validation events:**
+```json
+{
+  "job_id": "validate_gmail_source",
+  "object_type": "email",
+  "records_checked": 500,
+  "records_pass": 495,
+  "records_fail": 5,
+  "schema_ref": "iglu:raw/email_gmail/jsonschema/1-0-0",
+  "duration_seconds": 2.33
+}
+```
+
+**Canonization events:**
+```json
+{
+  "job_id": "canonize_gmail_jmap",
+  "object_type": "email",
+  "records_processed": 495,
+  "records_inserted": 400,
+  "records_updated": 95,
+  "schema_ref": "iglu:org.canonical/email_jmap_lite/jsonschema/1-0-0",
+  "duration_seconds": 5.67
+}
+```
+
+#### Example Event Emission
 
 ```python
-from lorchestra.stack_clients.event_client import emit
+from lorchestra.stack_clients.event_client import log_event
 
 def my_job(bq_client, **kwargs):
-    # Start event
-    emit(
-        bq_client=bq_client,
-        event_type="job.started",
-        source="my_package/my_job",
-        data={"account": kwargs.get("account")}
+    # Started event (before work begins)
+    log_event(
+        event_type="ingestion.started",
+        source_system="my_source",
+        target_object_type="email",
+        correlation_id=run_id,
+        status="success",
+        payload={"job_id": job_id},
     )
 
     try:
         # Job logic
         result = do_work()
 
-        # Success event
-        emit(
-            bq_client=bq_client,
-            event_type="job.completed",
-            source="my_package/my_job",
-            data={"records_processed": result.count}
+        # Completed event
+        log_event(
+            event_type="ingestion.completed",
+            source_system="my_source",
+            target_object_type="email",
+            correlation_id=run_id,
+            status="success",
+            payload={
+                "job_id": job_id,
+                "object_type": "email",
+                "records_extracted": result.extracted,
+                "records_inserted": result.inserted,
+                "records_updated": result.updated,
+                "duration_seconds": duration,
+            },
         )
     except Exception as e:
-        # Error event
-        emit(
-            bq_client=bq_client,
-            event_type="job.failed",
-            source="my_package/my_job",
-            data={"error": str(e)}
+        # Failed event
+        log_event(
+            event_type="ingestion.failed",
+            source_system="my_source",
+            target_object_type="email",
+            correlation_id=run_id,
+            status="failed",
+            error_message=str(e),
+            payload={
+                "job_id": job_id,
+                "object_type": "email",
+                "error_type": type(e).__name__,
+                "duration_seconds": duration,
+            },
         )
         raise
 ```
@@ -165,6 +246,58 @@ Signature: (bq_client, account=None, since=None, until=None)
 
 Extract emails from Gmail.
 ```
+
+### Pipeline Stats
+
+Get quick statistics from the event log:
+
+```bash
+# Show event counts by type
+lorchestra stats
+
+# Filter by event type pattern
+lorchestra stats --type "ingestion.*"
+
+# Limit results
+lorchestra stats --limit 20
+```
+
+### Pipeline Queries
+
+Run pre-defined SQL queries for pipeline observability:
+
+```bash
+# List available queries
+lorchestra query --list
+
+# Run a named query
+lorchestra query pipeline-status
+lorchestra query streams-health
+
+# Output as JSON
+lorchestra query pipeline-status --format json
+```
+
+Available queries:
+- `pipeline-status` - Last activity per stream (30-day window)
+- `streams-health` - Hours since last success per stream
+
+### Ad-hoc SQL
+
+Run read-only SQL queries against BigQuery:
+
+```bash
+# Interactive SQL
+lorchestra sql "SELECT event_type, COUNT(*) FROM event_log GROUP BY 1"
+
+# Output as JSON
+lorchestra sql "SELECT * FROM event_log LIMIT 10" --format json
+
+# From a file
+lorchestra sql --file my-query.sql
+```
+
+Note: Only read-only queries (SELECT) are allowed. DML statements are rejected.
 
 ## Best Practices
 
@@ -267,41 +400,68 @@ extract_source = "my_ingester.jobs:extract_source"
 **jobs.py:**
 ```python
 import logging
-from lorchestra.stack_clients.event_client import emit
+import time
+from lorchestra.stack_clients.event_client import log_event
 
 logger = logging.getLogger(__name__)
 
 def extract_source(bq_client, account=None, since=None, until=None):
     """Extract data from source."""
+    job_id = f"extract_source_{account}"
+    run_id = f"run-{time.time()}"
+
     logger.info(f"Starting extraction for account={account}")
 
-    emit(
-        bq_client=bq_client,
-        event_type="extraction.started",
-        source="my_ingester/extract_source",
-        data={"account": account, "since": since, "until": until}
+    # Started event (before work begins)
+    log_event(
+        event_type="ingestion.started",
+        source_system="my_source",
+        target_object_type="record",
+        correlation_id=run_id,
+        status="success",
+        payload={"job_id": job_id},
     )
 
+    start_time = time.time()
     try:
         # Extraction logic
         records = fetch_records(account, since, until)
-        save_records(records)
+        result = save_records(records)
 
-        emit(
-            bq_client=bq_client,
-            event_type="extraction.completed",
-            source="my_ingester/extract_source",
-            data={"records_count": len(records)}
+        duration = time.time() - start_time
+        log_event(
+            event_type="ingestion.completed",
+            source_system="my_source",
+            target_object_type="record",
+            correlation_id=run_id,
+            status="success",
+            payload={
+                "job_id": job_id,
+                "object_type": "record",
+                "records_extracted": len(records),
+                "records_inserted": result.inserted,
+                "records_updated": result.updated,
+                "duration_seconds": round(duration, 2),
+            },
         )
 
         logger.info(f"Extracted {len(records)} records")
 
     except Exception as e:
-        emit(
-            bq_client=bq_client,
-            event_type="extraction.failed",
-            source="my_ingester/extract_source",
-            data={"error": str(e)}
+        duration = time.time() - start_time
+        log_event(
+            event_type="ingestion.failed",
+            source_system="my_source",
+            target_object_type="record",
+            correlation_id=run_id,
+            status="failed",
+            error_message=str(e),
+            payload={
+                "job_id": job_id,
+                "object_type": "record",
+                "error_type": type(e).__name__,
+                "duration_seconds": round(duration, 2),
+            },
         )
         logger.error(f"Extraction failed: {e}", exc_info=True)
         raise

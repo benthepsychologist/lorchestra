@@ -102,19 +102,43 @@ class StorageClient(Protocol):
         """
         ...
 
-    def insert_canonical(
+    def query_objects_for_canonization(
+        self,
+        source_system: str,
+        object_type: str,
+        filters: dict[str, Any] | None = None,
+        limit: int | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """Query validated raw_objects that need canonization.
+
+        Returns records where validation_status='pass' AND either:
+        - Not yet in canonical_objects (never canonized), OR
+        - raw_objects.last_seen > canonical_objects.canonicalized_at (raw updated since)
+
+        Args:
+            source_system: Filter by source_system column
+            object_type: Filter by object_type column
+            filters: Additional column filters
+            limit: Max records to return
+
+        Yields:
+            Dict with idem_key, payload, and metadata columns
+        """
+        ...
+
+    def upsert_canonical(
         self,
         objects: list[dict[str, Any]],
         correlation_id: str,
-    ) -> int:
-        """Insert canonical objects.
+    ) -> dict[str, int]:
+        """Upsert canonical objects (insert new, update existing).
 
         Args:
-            objects: List of canonical objects to insert
+            objects: List of canonical objects to upsert
             correlation_id: Correlation ID for tracing
 
         Returns:
-            Number of rows inserted
+            Dict with 'inserted' and 'updated' counts
         """
         ...
 

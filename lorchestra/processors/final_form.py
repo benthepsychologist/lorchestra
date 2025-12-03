@@ -190,7 +190,7 @@ class FinalFormProcessor:
                 source_system=instrument_id,
                 target_object_type="measurement",
                 correlation_id=context.run_id,
-                status="ok",
+                status="success",
                 payload={
                     "job_id": job_id,
                     "instrument_id": instrument_id,

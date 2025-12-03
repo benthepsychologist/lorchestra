@@ -4,7 +4,7 @@ This processor handles all ingest jobs by:
 1. Reading stream config from job_spec
 2. Calling injest.get_stream() to pull data (injest does NO IO)
 3. Writing records to raw_objects via storage_client
-4. Emitting ingest.completed/failed events
+4. Emitting ingestion.started/completed/failed events
 
 The injest library is a pure transform engine - it returns records,
 this processor handles all IO and event emission.
@@ -198,9 +198,10 @@ class IngestProcessor:
         until = options.get("until")
         limit = options.get("limit")
 
-        # Event names (with defaults)
-        on_complete = events_config.get("on_complete", "ingest.completed")
-        on_fail = events_config.get("on_fail", "ingest.failed")
+        # Event names (with defaults - use full words)
+        on_started = events_config.get("on_started", "ingestion.started")
+        on_complete = events_config.get("on_complete", "ingestion.completed")
+        on_fail = events_config.get("on_fail", "ingestion.failed")
 
         # Configure injest
         configure_injest()
@@ -233,6 +234,17 @@ class IngestProcessor:
             logger.info(f"  until: {until_dt.isoformat()}")
         if context.dry_run:
             logger.info("  DRY RUN - no writes will occur")
+
+        # Emit started event
+        event_client.log_event(
+            event_type=on_started,
+            source_system=source_system,
+            connection_name=connection_name,
+            target_object_type=object_type,
+            correlation_id=context.run_id,
+            status="success",
+            payload={"job_id": job_id},
+        )
 
         start_time = time.time()
 
@@ -288,16 +300,16 @@ class IngestProcessor:
                 connection_name=connection_name,
                 target_object_type=object_type,
                 correlation_id=context.run_id,
-                status="ok",
+                status="success",
                 payload={
                     "job_id": job_id,
+                    "object_type": object_type,
                     "records_extracted": record_count,
-                    "inserted": result.inserted,
-                    "updated": result.updated,
+                    "records_inserted": result.inserted,
+                    "records_updated": result.updated,
+                    "window_since": since_dt.isoformat() if since_dt else None,
+                    "window_until": until_dt.isoformat() if until_dt else None,
                     "duration_seconds": round(duration_seconds, 2),
-                    "since": since_dt.isoformat() if since_dt else None,
-                    "until": until_dt.isoformat() if until_dt else None,
-                    "dry_run": context.dry_run,
                 },
             )
 
@@ -322,6 +334,7 @@ class IngestProcessor:
                 error_message=str(e),
                 payload={
                     "job_id": job_id,
+                    "object_type": object_type,
                     "error_type": type(e).__name__,
                     "duration_seconds": round(duration_seconds, 2),
                 },

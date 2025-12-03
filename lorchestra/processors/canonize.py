@@ -18,7 +18,6 @@ this processor handles all IO and event emission.
 import json
 import logging
 import time
-from datetime import datetime, timezone
 from typing import Any
 
 from lorchestra.processors.base import (
@@ -114,14 +113,25 @@ class CanonizeProcessor:
         """Run validation-only mode: validate raw objects and stamp validation_status."""
         schema_in = transform_config.get("schema_in")
         limit = options.get("limit")
-        on_complete = events_config.get("on_complete", "validate.completed")
-        on_fail = events_config.get("on_fail", "validate.failed")
+        on_started = events_config.get("on_started", "validation.started")
+        on_complete = events_config.get("on_complete", "validation.completed")
+        on_fail = events_config.get("on_fail", "validation.failed")
 
         logger.info(f"Starting validation job: {job_id}")
         logger.info(f"  source: {source_system}/{object_type}")
         logger.info(f"  schema_in: {schema_in}")
         if context.dry_run:
             logger.info("  DRY RUN - no writes will occur")
+
+        # Emit started event
+        event_client.log_event(
+            event_type=on_started,
+            source_system=source_system,
+            target_object_type=object_type,
+            correlation_id=context.run_id,
+            status="success",
+            payload={"job_id": job_id},
+        )
 
         start_time = time.time()
 
@@ -180,16 +190,15 @@ class CanonizeProcessor:
                 source_system=source_system,
                 target_object_type=object_type,
                 correlation_id=context.run_id,
-                status="ok",
+                status="success",
                 payload={
                     "job_id": job_id,
-                    "mode": "validate_only",
-                    "records_validated": len(records),
-                    "passed": len(passed_keys),
-                    "failed": len(failed_keys),
-                    "schema_in": schema_in,
+                    "object_type": object_type,
+                    "records_checked": len(records),
+                    "records_pass": len(passed_keys),
+                    "records_fail": len(failed_keys),
+                    "schema_ref": schema_in,
                     "duration_seconds": round(duration_seconds, 2),
-                    "dry_run": context.dry_run,
                 },
             )
 
@@ -211,7 +220,7 @@ class CanonizeProcessor:
                 error_message=str(e),
                 payload={
                     "job_id": job_id,
-                    "mode": "validate_only",
+                    "object_type": object_type,
                     "error_type": type(e).__name__,
                     "duration_seconds": round(duration_seconds, 2),
                 },
@@ -237,8 +246,9 @@ class CanonizeProcessor:
         schema_out = transform_config.get("schema_out")
         transform_ref = transform_config.get("transform_ref")
         limit = options.get("limit")
-        on_complete = events_config.get("on_complete", "canonize.completed")
-        on_fail = events_config.get("on_fail", "canonize.failed")
+        on_started = events_config.get("on_started", "canonization.started")
+        on_complete = events_config.get("on_complete", "canonization.completed")
+        on_fail = events_config.get("on_fail", "canonization.failed")
 
         logger.info(f"Starting canonization job: {job_id}")
         logger.info(f"  source: {source_system}/{object_type}")
@@ -247,18 +257,25 @@ class CanonizeProcessor:
         if context.dry_run:
             logger.info("  DRY RUN - no writes will occur")
 
+        # Emit started event
+        event_client.log_event(
+            event_type=on_started,
+            source_system=source_system,
+            target_object_type=object_type,
+            correlation_id=context.run_id,
+            status="success",
+            payload={"job_id": job_id},
+        )
+
         start_time = time.time()
 
         try:
-            # Default filter: only validated records
-            default_filter = {"validation_status": "pass"}
-            combined_filter = {**default_filter, **source_filter}
-
-            # Query validated records not yet canonized
-            records = list(storage_client.query_objects(
+            # Query validated records that need canonization
+            # (never canonized OR raw updated since last canonization)
+            records = list(storage_client.query_objects_for_canonization(
                 source_system=source_system,
                 object_type=object_type,
-                filters=combined_filter,
+                filters=source_filter,
                 limit=limit,
             ))
 
@@ -274,7 +291,6 @@ class CanonizeProcessor:
             # Transform each record
             success_records = []
             failed_records = []
-            canonization_stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
             for i, record in enumerate(records):
                 try:
@@ -299,7 +315,6 @@ class CanonizeProcessor:
                         "canonical_schema": schema_out,
                         "canonical_format": canonical_format,
                         "transform_ref": transform_ref,
-                        "validation_stamp": canonization_stamp,
                         "payload": canonical,
                         "correlation_id": record.get("correlation_id"),
                     }
@@ -318,14 +333,14 @@ class CanonizeProcessor:
 
             logger.info(f"Results: {len(success_records)} success, {len(failed_records)} failed")
 
-            # Insert canonical records
-            total_inserted = 0
+            # Upsert canonical records (insert new, update existing)
+            upsert_result = {"inserted": 0, "updated": 0}
             if success_records and not context.dry_run:
-                total_inserted = storage_client.insert_canonical(
+                upsert_result = storage_client.upsert_canonical(
                     objects=success_records,
                     correlation_id=context.run_id,
                 )
-                logger.info(f"Inserted {total_inserted} canonical records")
+                logger.info(f"Upserted {upsert_result['inserted']} canonical records")
 
             duration_seconds = time.time() - start_time
 
@@ -335,18 +350,15 @@ class CanonizeProcessor:
                 source_system=source_system,
                 target_object_type=object_type,
                 correlation_id=context.run_id,
-                status="ok",
+                status="success",
                 payload={
                     "job_id": job_id,
-                    "mode": "full",
+                    "object_type": object_type,
                     "records_processed": len(records),
-                    "success": len(success_records),
-                    "failed": len(failed_records),
-                    "inserted": total_inserted,
-                    "transform_ref": transform_ref,
-                    "schema_out": schema_out,
+                    "records_inserted": upsert_result["inserted"],
+                    "records_updated": upsert_result["updated"],
+                    "schema_ref": schema_out,
                     "duration_seconds": round(duration_seconds, 2),
-                    "dry_run": context.dry_run,
                 },
             )
 
@@ -368,7 +380,7 @@ class CanonizeProcessor:
                 error_message=str(e),
                 payload={
                     "job_id": job_id,
-                    "mode": "full",
+                    "object_type": object_type,
                     "error_type": type(e).__name__,
                     "duration_seconds": round(duration_seconds, 2),
                 },
@@ -397,39 +409,42 @@ class CanonizeProcessor:
         return SchemaValidator(schema_path)
 
     def _get_transform(self, transform_ref: str):
-        """Get compiled transform for a transform reference.
+        """Get a transform wrapper that uses canonizer-core CLI's run command.
+
+        Uses the Node.js CLI directly to properly support extensions like htmlToMarkdown.
 
         Args:
-            transform_ref: Transform reference (e.g., "gmail_to_jmap_lite@1.0.0")
+            transform_ref: Transform reference (e.g., "email/gmail_to_jmap_lite@1.0.0")
 
         Returns:
-            Compiled transform (Jsonata instance)
+            Transform wrapper with evaluate() method
         """
-        from pathlib import Path
+        import subprocess
 
-        from jsonata import Jsonata
+        registry_path = "/workspace/lorchestra/.canonizer/registry"
+        cli_bin = "/workspace/canonizer/packages/canonizer-core/bin/canonizer-core"
 
-        # Parse transform_ref: "name@version" or "path/name@version"
-        if "@" in transform_ref:
-            name_part, version = transform_ref.rsplit("@", 1)
-        else:
-            name_part = transform_ref
-            version = "1.0.0"
+        class TransformWrapper:
+            """Wrapper that calls canonizer-core CLI run command."""
 
-        # Handle path-style refs like "email/gmail_to_jmap_lite@1.0.0"
-        if "/" in name_part:
-            transform_path = name_part
-        else:
-            transform_path = name_part
+            def __init__(self, ref: str):
+                self.ref = ref
 
-        registry_root = Path("/workspace/lorchestra/.canonizer/registry")
-        jsonata_path = registry_root / f"transforms/{transform_path}/{version}/spec.jsonata"
+            def evaluate(self, payload: dict) -> dict:
+                """Execute transform via canonizer-core CLI (supports extensions)."""
+                result = subprocess.run(
+                    [cli_bin, "run", "--transform", self.ref,
+                     "--registry", registry_path, "--no-validate"],
+                    input=json.dumps(payload),
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if result.returncode != 0:
+                    raise RuntimeError(f"Transform failed: {result.stderr.strip()}")
+                return json.loads(result.stdout)
 
-        if not jsonata_path.exists():
-            raise FileNotFoundError(f"Transform not found: {jsonata_path}")
-
-        jsonata_expr = jsonata_path.read_text()
-        return Jsonata(jsonata_expr)
+        return TransformWrapper(transform_ref)
 
 
 # Register with global registry

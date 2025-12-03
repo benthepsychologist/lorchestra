@@ -218,14 +218,19 @@ class TestIngestProcessor:
         assert call["object_type"] == "email"
         assert len(call["objects"]) == 2
 
-        # Verify completion event
-        assert len(event_client.events) == 1
-        event = event_client.events[0]
-        assert event["event_type"] == "ingest.completed"
-        assert event["status"] == "ok"
+        # Verify started and completion events
+        assert len(event_client.events) == 2
+        started_event = event_client.events[0]
+        assert started_event["event_type"] == "ingestion.started"
+        assert started_event["status"] == "success"
+
+        event = event_client.events[1]
+        assert event["event_type"] == "ingestion.completed"
+        assert event["status"] == "success"
         assert event["payload"]["records_extracted"] == 2
-        assert event["payload"]["inserted"] == 5
-        assert event["payload"]["updated"] == 2
+        assert event["payload"]["records_inserted"] == 5
+        assert event["payload"]["records_updated"] == 2
+        assert event["payload"]["object_type"] == "email"
 
     def test_dry_run_mode(self, processor, job_spec, storage_client, event_client):
         """Dry run mode extracts but doesn't write."""
@@ -244,16 +249,16 @@ class TestIngestProcessor:
         # No upsert calls in dry run
         assert len(storage_client.upsert_calls) == 0
 
-        # Event still emitted
-        assert len(event_client.events) == 1
-        event = event_client.events[0]
-        assert event["payload"]["dry_run"] is True
-        assert event["payload"]["inserted"] == 0
-        assert event["payload"]["updated"] == 0
+        # Events still emitted (started + completed)
+        assert len(event_client.events) == 2
+        event = event_client.events[1]  # completed event
+        assert event["payload"]["records_inserted"] == 0
+        assert event["payload"]["records_updated"] == 0
 
     def test_custom_event_names(self, processor, job_spec, context, storage_client, event_client):
         """Custom event names from job_spec are used."""
         job_spec["events"] = {
+            "on_started": "gmail.sync.start",
             "on_complete": "gmail.sync.done",
             "on_fail": "gmail.sync.error",
         }
@@ -268,7 +273,10 @@ class TestIngestProcessor:
         }):
             processor.run(job_spec, context, storage_client, event_client)
 
-        assert event_client.events[0]["event_type"] == "gmail.sync.done"
+        # Started + completed events with custom names
+        assert len(event_client.events) == 2
+        assert event_client.events[0]["event_type"] == "gmail.sync.start"
+        assert event_client.events[1]["event_type"] == "gmail.sync.done"
 
     def test_failure_emits_error_event(self, processor, job_spec, context, storage_client, event_client):
         """Failures emit error event with details."""
@@ -282,13 +290,15 @@ class TestIngestProcessor:
             with pytest.raises(RuntimeError):
                 processor.run(job_spec, context, storage_client, event_client)
 
-        # Error event emitted
-        assert len(event_client.events) == 1
-        event = event_client.events[0]
-        assert event["event_type"] == "ingest.failed"
+        # Started + failed events emitted
+        assert len(event_client.events) == 2
+        assert event_client.events[0]["event_type"] == "ingestion.started"
+        event = event_client.events[1]
+        assert event["event_type"] == "ingestion.failed"
         assert event["status"] == "failed"
         assert event["error_message"] == "API connection failed"
         assert event["payload"]["error_type"] == "RuntimeError"
+        assert event["payload"]["object_type"] == "email"
 
     def test_limit_option(self, processor, job_spec, context, storage_client, event_client):
         """Limit option caps number of records processed."""
