@@ -108,11 +108,12 @@ class StorageClient(Protocol):
         object_type: str,
         filters: dict[str, Any] | None = None,
         limit: int | None = None,
+        canonical_schema: str | None = None,
     ) -> Iterator[dict[str, Any]]:
         """Query validated raw_objects that need canonization.
 
         Returns records where validation_status='pass' AND either:
-        - Not yet in canonical_objects (never canonized), OR
+        - Not yet in canonical_objects for this schema (never canonized), OR
         - raw_objects.last_seen > canonical_objects.canonicalized_at (raw updated since)
 
         Args:
@@ -120,6 +121,7 @@ class StorageClient(Protocol):
             object_type: Filter by object_type column
             filters: Additional column filters
             limit: Max records to return
+            canonical_schema: Target canonical schema (for 1:N raw->canonical mappings)
 
         Yields:
             Dict with idem_key, payload, and metadata columns

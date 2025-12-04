@@ -57,6 +57,7 @@ class MockStorageClient:
         object_type: str,
         filters: dict[str, Any] | None = None,
         limit: int | None = None,
+        canonical_schema: str | None = None,
     ) -> Iterator[dict[str, Any]]:
         """Query for canonization uses same records as query_objects."""
         return iter(self.records)
@@ -65,6 +66,7 @@ class MockStorageClient:
         self,
         objects: list[dict[str, Any]],
         correlation_id: str,
+        batch_size: int = 500,
     ) -> dict[str, int]:
         self.insert_calls.append({
             "objects": objects,
@@ -332,8 +334,9 @@ class TestCanonizeProcessorFullMode:
         assert insert_call["correlation_id"] == "test-run-456"
 
         # Check canonical record structure
+        # Canonical idem_key format: raw_idem_key#canonical_object_type
         canonical = insert_call["objects"][0]
-        assert canonical["idem_key"] == "key1"
+        assert canonical["idem_key"] == "key1#email_jmap_lite"
         assert canonical["canonical_schema"] == "iglu:org.canonical/email_jmap_lite/jsonschema/1-0-0"
         assert canonical["transform_ref"] == "email/gmail_to_jmap_lite@1.0.0"
         assert canonical["payload"] == {"canonical": "email"}

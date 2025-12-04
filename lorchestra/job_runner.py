@@ -108,13 +108,14 @@ class BigQueryStorageClient:
         object_type: str,
         filters: dict[str, Any] | None = None,
         limit: int | None = None,
+        canonical_schema: str | None = None,
     ) -> Iterator[dict[str, Any]]:
         """Query validated raw_objects that need canonization.
 
         Returns records where:
         - validation_status = 'pass'
         - AND either:
-          - Not yet in canonical_objects (never canonized), OR
+          - Not yet in canonical_objects for this schema (never canonized), OR
           - raw_objects.last_seen > canonical_objects.canonicalized_at (raw updated since)
 
         Args:
@@ -122,6 +123,7 @@ class BigQueryStorageClient:
             object_type: Object type to filter by
             filters: Additional filters (field=value)
             limit: Max records to return
+            canonical_schema: Target canonical schema (important for 1:N raw->canonical mappings)
         """
         raw_table = self._table_name("raw_objects")
         canonical_table = self._table_name("canonical_objects")
@@ -138,6 +140,34 @@ class BigQueryStorageClient:
             bigquery.ScalarQueryParameter("source_system", "STRING", source_system),
             bigquery.ScalarQueryParameter("object_type", "STRING", object_type),
         ]
+
+        # Build the JOIN condition - must include canonical object type to support
+        # 1:N mappings where one raw object produces multiple canonical objects
+        # (e.g., session -> clinical_session AND session -> session_transcript)
+        #
+        # Canonical idem_keys use format: raw_idem_key#canonical_object_type
+        # e.g. "dataverse:session:abc123#clinical_session"
+        #
+        # We also filter by canonical_schema base (without version) so that:
+        # - Minor/patch version bumps don't create duplicate records
+        # - Only major (x-0-0) bumps could theoretically coexist
+        # - Different object types (clinical_session vs session_transcript) are tracked separately
+        if canonical_schema:
+            # Extract canonical object type from schema:
+            # iglu:org.canonical/session_transcript/jsonschema/2-0-0 -> session_transcript
+            schema_parts = canonical_schema.split("/")
+            canonical_object_type = schema_parts[1] if len(schema_parts) > 1 else ""
+
+            # Extract base schema name (without version) for LIKE match:
+            # iglu:org.canonical/session_transcript/jsonschema/2-0-0 -> org.canonical/session_transcript
+            schema_base = canonical_schema.split("/jsonschema/")[0].replace("iglu:", "")
+
+            # Match canonical idem_key = raw_idem_key + '#' + canonical_object_type
+            # This handles the 1:N mapping correctly
+            join_condition = f"c.idem_key = CONCAT(r.idem_key, '#{canonical_object_type}') AND c.canonical_schema LIKE 'iglu:{schema_base}/%'"
+        else:
+            # Fallback: match any canonical record that starts with raw idem_key + '#'
+            join_condition = "c.idem_key LIKE CONCAT(r.idem_key, '#%')"
 
         # Add additional filters (skip validation_status since we hardcode it)
         for i, (key, value) in enumerate(filters.items()):
@@ -157,7 +187,7 @@ class BigQueryStorageClient:
             SELECT r.idem_key, r.source_system, r.connection_name, r.object_type,
                    r.payload, r.correlation_id, r.validation_status, r.last_seen
             FROM `{self.dataset}.{raw_table}` r
-            LEFT JOIN `{self.dataset}.{canonical_table}` c ON r.idem_key = c.idem_key
+            LEFT JOIN `{self.dataset}.{canonical_table}` c ON {join_condition}
             WHERE {where_clause}
             {limit_clause}
         """
@@ -255,8 +285,20 @@ class BigQueryStorageClient:
             source_rows = []
             for obj in batch:
                 payload = json.dumps(obj["payload"]) if isinstance(obj["payload"], dict) else obj["payload"]
-                # Escape single quotes in payload
-                payload_escaped = payload.replace("'", "\\'") if payload else ""
+                # Escape special characters in payload for SQL string literal
+                # - Single quotes need to be escaped for SQL
+                # - Newlines/carriage returns need to be escaped for PARSE_JSON
+                # - Backslashes need to be escaped first to avoid double-escaping
+                if payload:
+                    payload_escaped = (
+                        payload
+                        .replace("\\", "\\\\")  # Escape backslashes first
+                        .replace("'", "\\'")    # Escape single quotes for SQL
+                        .replace("\n", "\\n")   # Escape newlines for PARSE_JSON
+                        .replace("\r", "\\r")   # Escape carriage returns
+                    )
+                else:
+                    payload_escaped = ""
 
                 source_rows.append(f"""
                     SELECT

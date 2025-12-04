@@ -271,12 +271,14 @@ class CanonizeProcessor:
 
         try:
             # Query validated records that need canonization
-            # (never canonized OR raw updated since last canonization)
+            # (never canonized for this schema OR raw updated since last canonization)
+            # Pass schema_out to support 1:N mappings (e.g., session -> clinical_session AND session_transcript)
             records = list(storage_client.query_objects_for_canonization(
                 source_system=source_system,
                 object_type=object_type,
                 filters=source_filter,
                 limit=limit,
+                canonical_schema=schema_out,
             ))
 
             logger.info(f"Found {len(records)} records to canonize")
@@ -292,6 +294,7 @@ class CanonizeProcessor:
             success_records = []
             failed_records = []
 
+            skipped_count = 0
             for i, record in enumerate(records):
                 try:
                     payload = record.get("payload", {})
@@ -301,14 +304,26 @@ class CanonizeProcessor:
                     # Transform
                     canonical = transform.evaluate(payload)
 
-                    # Extract canonical_format from schema name
-                    # e.g. iglu:org.canonical/email_jmap_lite/jsonschema/1-0-0 -> jmap_lite
-                    schema_name = schema_out.split("/")[1]  # email_jmap_lite
-                    format_parts = schema_name.split("_")
+                    # Skip records where transform returns null (e.g., session without transcript)
+                    if canonical is None:
+                        skipped_count += 1
+                        continue
+
+                    # Extract canonical object type from schema name
+                    # e.g. iglu:org.canonical/session_transcript/jsonschema/2-0-0 -> session_transcript
+                    canonical_object_type = schema_out.split("/")[1]
+
+                    # Build canonical idem_key: raw_idem_key#canonical_object_type
+                    # This allows one raw object to produce multiple canonical objects
+                    # e.g. session -> clinical_session AND session_transcript
+                    canonical_idem_key = f"{record['idem_key']}#{canonical_object_type}"
+
+                    # Extract canonical_format (legacy field)
+                    format_parts = canonical_object_type.split("_")
                     canonical_format = "_".join(format_parts[1:]) if len(format_parts) > 1 else format_parts[0]
 
                     canonical_record = {
-                        "idem_key": record["idem_key"],
+                        "idem_key": canonical_idem_key,
                         "source_system": record.get("source_system", source_system),
                         "connection_name": record.get("connection_name"),
                         "object_type": record.get("object_type", object_type),
@@ -331,14 +346,18 @@ class CanonizeProcessor:
                 if (i + 1) % 500 == 0:
                     logger.info(f"Canonized {i + 1}/{len(records)}...")
 
-            logger.info(f"Results: {len(success_records)} success, {len(failed_records)} failed")
+            logger.info(f"Results: {len(success_records)} success, {len(failed_records)} failed, {skipped_count} skipped (null transform)")
 
             # Upsert canonical records (insert new, update existing)
             upsert_result = {"inserted": 0, "updated": 0}
             if success_records and not context.dry_run:
+                # Use smaller batch size for large payloads (like transcripts)
+                # Default 500 can exceed BQ query size limits with large content
+                # Transcripts can be 20KB+ each, so we need very small batches
                 upsert_result = storage_client.upsert_canonical(
                     objects=success_records,
                     correlation_id=context.run_id,
+                    batch_size=10,
                 )
                 logger.info(f"Upserted {upsert_result['inserted']} canonical records")
 
@@ -420,6 +439,8 @@ class CanonizeProcessor:
             Transform wrapper with evaluate() method
         """
         import subprocess
+        import tempfile
+        import os
 
         registry_path = "/workspace/lorchestra/.canonizer/registry"
         cli_bin = "/workspace/canonizer/packages/canonizer-core/bin/canonizer-core"
@@ -431,18 +452,39 @@ class CanonizeProcessor:
                 self.ref = ref
 
             def evaluate(self, payload: dict) -> dict:
-                """Execute transform via canonizer-core CLI (supports extensions)."""
-                result = subprocess.run(
-                    [cli_bin, "run", "--transform", self.ref,
-                     "--registry", registry_path, "--no-validate"],
-                    input=json.dumps(payload),
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-                if result.returncode != 0:
-                    raise RuntimeError(f"Transform failed: {result.stderr.strip()}")
-                return json.loads(result.stdout)
+                """Execute transform via canonizer-core CLI (supports extensions).
+
+                Uses temp files instead of pipes to avoid stdout truncation at 65535 bytes.
+                Large transcripts can exceed pipe buffer limits.
+                """
+                # Write input to temp file (avoids stdin pipe limits)
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+                    json.dump(payload, f)
+                    input_file = f.name
+
+                # Create temp file for output (avoids stdout pipe limits)
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+                    output_file = f.name
+
+                try:
+                    # Run CLI with file redirection to avoid 65KB pipe buffer truncation
+                    result = subprocess.run(
+                        f"cat {input_file} | {cli_bin} run --transform {self.ref} "
+                        f"--registry {registry_path} --no-validate > {output_file}",
+                        shell=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    if result.returncode != 0:
+                        raise RuntimeError(f"Transform failed: {result.stderr.strip()}")
+
+                    with open(output_file, 'r') as f:
+                        return json.load(f)
+                finally:
+                    # Clean up temp files
+                    os.unlink(input_file)
+                    os.unlink(output_file)
 
         return TransformWrapper(transform_ref)
 
