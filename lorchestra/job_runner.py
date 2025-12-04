@@ -308,13 +308,24 @@ class BigQueryStorageClient:
 
         return {"inserted": total_inserted, "updated": total_updated}
 
+    # Columns that exist on canonical_objects table (vs payload fields)
+    CANONICAL_TABLE_COLUMNS = {
+        "idem_key", "source_system", "connection_name", "object_type",
+        "canonical_schema", "canonical_format", "transform_ref",
+        "correlation_id", "canonicalized_at", "created_at",
+    }
+
     def query_canonical(
         self,
         canonical_schema: str | None = None,
         filters: dict[str, Any] | None = None,
         limit: int | None = None,
     ) -> Iterator[dict[str, Any]]:
-        """Query canonical objects."""
+        """Query canonical objects.
+
+        Filters can reference either table columns or payload fields.
+        Payload fields are accessed via JSON_VALUE(payload, '$.field_name').
+        """
         table = self._table_name("canonical_objects")
         filters = filters or {}
 
@@ -330,11 +341,22 @@ class BigQueryStorageClient:
             if key == "canonical_schema":
                 continue  # Already handled
             param_name = f"filter_{i}"
-            if value is None:
-                conditions.append(f"{key} IS NULL")
+
+            # Determine if this is a table column or a payload field
+            if key in self.CANONICAL_TABLE_COLUMNS:
+                # Direct column reference
+                if value is None:
+                    conditions.append(f"{key} IS NULL")
+                else:
+                    conditions.append(f"{key} = @{param_name}")
+                    params.append(bigquery.ScalarQueryParameter(param_name, "STRING", str(value)))
             else:
-                conditions.append(f"{key} = @{param_name}")
-                params.append(bigquery.ScalarQueryParameter(param_name, "STRING", str(value)))
+                # Payload field - use JSON_VALUE
+                if value is None:
+                    conditions.append(f"JSON_VALUE(payload, '$.{key}') IS NULL")
+                else:
+                    conditions.append(f"JSON_VALUE(payload, '$.{key}') = @{param_name}")
+                    params.append(bigquery.ScalarQueryParameter(param_name, "STRING", str(value)))
 
         where_clause = " AND ".join(conditions) if conditions else "1=1"
         limit_clause = f"LIMIT {limit}" if limit else ""
@@ -343,6 +365,92 @@ class BigQueryStorageClient:
             SELECT idem_key, source_system, connection_name, object_type,
                    canonical_schema, transform_ref, payload, correlation_id
             FROM `{self.dataset}.{table}`
+            WHERE {where_clause}
+            {limit_clause}
+        """
+
+        job_config = bigquery.QueryJobConfig(query_parameters=params)
+        result = self.bq_client.query(query, job_config=job_config).result()
+
+        for row in result:
+            yield dict(row)
+
+    def query_canonical_for_formation(
+        self,
+        canonical_schema: str | None = None,
+        filters: dict[str, Any] | None = None,
+        measurement_table: str = "measurement_events",
+        limit: int | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """Query canonical objects that need formation (incremental).
+
+        Returns records where:
+        - canonical_schema matches (if provided)
+        - additional filters match
+        - AND either:
+          - Not yet in measurement_events (never formed), OR
+          - canonical_objects.canonicalized_at > measurement_events.processed_at (re-canonized since last processing)
+
+        This enables incremental processing - only new or updated canonical
+        records are returned, avoiding re-processing the entire table.
+
+        Args:
+            canonical_schema: Filter by canonical schema
+            filters: Additional filters (column or payload fields)
+            measurement_table: Name of measurement events table
+            limit: Max records to return
+        """
+        canonical_table = self._table_name("canonical_objects")
+        measurement_table = self._table_name(measurement_table)
+        filters = filters or {}
+
+        # Build WHERE clause conditions
+        conditions = []
+        params = []
+
+        if canonical_schema:
+            conditions.append("c.canonical_schema = @canonical_schema")
+            params.append(bigquery.ScalarQueryParameter("canonical_schema", "STRING", canonical_schema))
+
+        for i, (key, value) in enumerate(filters.items()):
+            if key == "canonical_schema":
+                continue  # Already handled
+            param_name = f"filter_{i}"
+
+            # Determine if this is a table column or a payload field
+            if key in self.CANONICAL_TABLE_COLUMNS:
+                # Direct column reference
+                if value is None:
+                    conditions.append(f"c.{key} IS NULL")
+                else:
+                    conditions.append(f"c.{key} = @{param_name}")
+                    params.append(bigquery.ScalarQueryParameter(param_name, "STRING", str(value)))
+            else:
+                # Payload field - use JSON_VALUE
+                if value is None:
+                    conditions.append(f"JSON_VALUE(c.payload, '$.{key}') IS NULL")
+                else:
+                    conditions.append(f"JSON_VALUE(c.payload, '$.{key}') = @{param_name}")
+                    params.append(bigquery.ScalarQueryParameter(param_name, "STRING", str(value)))
+
+        # Incremental condition: never formed OR re-canonized since last formation
+        conditions.append("(m.canonical_idem_key IS NULL OR c.canonicalized_at > m.processed_at)")
+
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+        limit_clause = f"LIMIT {limit}" if limit else ""
+
+        # LEFT JOIN to find canonical records without measurement events or with stale events
+        # Use a subquery to get the MAX(processed_at) per canonical_idem_key to handle
+        # multiple measurement events per canonical record
+        query = f"""
+            SELECT c.idem_key, c.source_system, c.connection_name, c.object_type,
+                   c.canonical_schema, c.transform_ref, c.payload, c.correlation_id
+            FROM `{self.dataset}.{canonical_table}` c
+            LEFT JOIN (
+                SELECT canonical_idem_key, MAX(processed_at) as processed_at
+                FROM `{self.dataset}.{measurement_table}`
+                GROUP BY canonical_idem_key
+            ) m ON c.idem_key = m.canonical_idem_key
             WHERE {where_clause}
             {limit_clause}
         """
@@ -419,6 +527,185 @@ class BigQueryStorageClient:
             raise RuntimeError(f"{table_name} insert failed: {errors}")
 
         return len(rows)
+
+    def upsert_measurements(
+        self,
+        measurements: list[dict[str, Any]],
+        table: str,
+        correlation_id: str,
+        batch_size: int = 500,
+    ) -> int:
+        """Upsert measurement events using MERGE by idem_key.
+
+        Inserts new rows or updates existing rows based on idem_key.
+        This provides idempotent writes for re-processing.
+        """
+        if not measurements:
+            return 0
+
+        table_name = self._table_name(table)
+        table_ref = f"{self.dataset}.{table_name}"
+        total_affected = 0
+
+        # Process in batches
+        for i in range(0, len(measurements), batch_size):
+            batch = measurements[i : i + batch_size]
+
+            # Build source data as a query with UNION ALL
+            source_rows = []
+            for m in batch:
+                # Escape single quotes
+                def esc(v):
+                    return str(v).replace("'", "\\'") if v is not None else ""
+
+                source_rows.append(f"""
+                    SELECT
+                        '{esc(m["idem_key"])}' as idem_key,
+                        '{esc(m.get("canonical_idem_key", ""))}' as canonical_idem_key,
+                        '{esc(m.get("measurement_event_id", ""))}' as measurement_event_id,
+                        '{esc(m.get("measure_id", ""))}' as measure_id,
+                        '{esc(m.get("measure_version", ""))}' as measure_version,
+                        '{esc(m.get("subject_id", ""))}' as subject_id,
+                        '{esc(m.get("timestamp", ""))}' as timestamp,
+                        '{esc(m.get("binding_id", ""))}' as binding_id,
+                        '{esc(m.get("binding_version", ""))}' as binding_version,
+                        '{esc(m.get("form_id", ""))}' as form_id,
+                        '{esc(m.get("form_submission_id", ""))}' as form_submission_id,
+                        TIMESTAMP('{esc(m.get("processed_at", ""))}') as processed_at,
+                        '{esc(m.get("correlation_id") or correlation_id)}' as correlation_id,
+                        CURRENT_TIMESTAMP() as created_at
+                """)
+
+            source_query = " UNION ALL ".join(source_rows)
+
+            merge_query = f"""
+                MERGE `{table_ref}` T
+                USING ({source_query}) S
+                ON T.idem_key = S.idem_key
+                WHEN MATCHED THEN
+                    UPDATE SET
+                        canonical_idem_key = S.canonical_idem_key,
+                        measurement_event_id = S.measurement_event_id,
+                        measure_id = S.measure_id,
+                        measure_version = S.measure_version,
+                        subject_id = S.subject_id,
+                        timestamp = S.timestamp,
+                        binding_id = S.binding_id,
+                        binding_version = S.binding_version,
+                        form_id = S.form_id,
+                        form_submission_id = S.form_submission_id,
+                        processed_at = S.processed_at,
+                        correlation_id = S.correlation_id
+                WHEN NOT MATCHED THEN
+                    INSERT (idem_key, canonical_idem_key, measurement_event_id, measure_id,
+                            measure_version, subject_id, timestamp, binding_id, binding_version,
+                            form_id, form_submission_id, processed_at, correlation_id, created_at)
+                    VALUES (S.idem_key, S.canonical_idem_key, S.measurement_event_id, S.measure_id,
+                            S.measure_version, S.subject_id, S.timestamp, S.binding_id, S.binding_version,
+                            S.form_id, S.form_submission_id, S.processed_at, S.correlation_id, S.created_at)
+            """
+
+            result = self.bq_client.query(merge_query).result()
+            total_affected += result.num_dml_affected_rows or 0
+
+        return total_affected
+
+    def upsert_observations(
+        self,
+        observations: list[dict[str, Any]],
+        table: str,
+        correlation_id: str,
+        batch_size: int = 500,
+    ) -> int:
+        """Upsert observations using MERGE by idem_key.
+
+        Inserts new rows or updates existing rows based on idem_key.
+        This provides idempotent writes for re-processing.
+        """
+        if not observations:
+            return 0
+
+        table_name = self._table_name(table)
+        table_ref = f"{self.dataset}.{table_name}"
+        total_affected = 0
+
+        # Process in batches
+        for i in range(0, len(observations), batch_size):
+            batch = observations[i : i + batch_size]
+
+            # Build source data as a query with UNION ALL
+            source_rows = []
+            for o in batch:
+                # Escape single quotes
+                def esc(v):
+                    return str(v).replace("'", "\\'") if v is not None else ""
+
+                # Handle numeric value - could be int, float, or null
+                value = o.get("value")
+                if value is None:
+                    value_sql = "NULL"
+                elif isinstance(value, (int, float)):
+                    value_sql = str(value)
+                else:
+                    value_sql = f"'{esc(value)}'"
+
+                # Handle position (nullable int)
+                position = o.get("position")
+                position_sql = str(position) if position is not None else "NULL"
+
+                # Handle missing (boolean)
+                missing = o.get("missing", False)
+                missing_sql = "TRUE" if missing else "FALSE"
+
+                source_rows.append(f"""
+                    SELECT
+                        '{esc(o["idem_key"])}' as idem_key,
+                        '{esc(o.get("measurement_idem_key", ""))}' as measurement_idem_key,
+                        '{esc(o.get("observation_id", ""))}' as observation_id,
+                        '{esc(o.get("measure_id", ""))}' as measure_id,
+                        '{esc(o.get("code", ""))}' as code,
+                        '{esc(o.get("kind", ""))}' as kind,
+                        {value_sql} as value,
+                        '{esc(o.get("value_type", ""))}' as value_type,
+                        {f"'{esc(o.get('label'))}'" if o.get('label') else 'NULL'} as label,
+                        {f"'{esc(o.get('raw_answer'))}'" if o.get('raw_answer') else 'NULL'} as raw_answer,
+                        {position_sql} as position,
+                        {missing_sql} as missing,
+                        '{esc(o.get("correlation_id") or correlation_id)}' as correlation_id,
+                        CURRENT_TIMESTAMP() as created_at
+                """)
+
+            source_query = " UNION ALL ".join(source_rows)
+
+            merge_query = f"""
+                MERGE `{table_ref}` T
+                USING ({source_query}) S
+                ON T.idem_key = S.idem_key
+                WHEN MATCHED THEN
+                    UPDATE SET
+                        measurement_idem_key = S.measurement_idem_key,
+                        observation_id = S.observation_id,
+                        measure_id = S.measure_id,
+                        code = S.code,
+                        kind = S.kind,
+                        value = S.value,
+                        value_type = S.value_type,
+                        label = S.label,
+                        raw_answer = S.raw_answer,
+                        position = S.position,
+                        missing = S.missing,
+                        correlation_id = S.correlation_id
+                WHEN NOT MATCHED THEN
+                    INSERT (idem_key, measurement_idem_key, observation_id, measure_id, code, kind,
+                            value, value_type, label, raw_answer, position, missing, correlation_id, created_at)
+                    VALUES (S.idem_key, S.measurement_idem_key, S.observation_id, S.measure_id, S.code, S.kind,
+                            S.value, S.value_type, S.label, S.raw_answer, S.position, S.missing, S.correlation_id, S.created_at)
+            """
+
+            result = self.bq_client.query(merge_query).result()
+            total_affected += result.num_dml_affected_rows or 0
+
+        return total_affected
 
 
 class BigQueryEventClient:

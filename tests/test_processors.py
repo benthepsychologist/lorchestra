@@ -87,6 +87,12 @@ class TestStorageClientProtocol:
             def insert_observations(self, observations, table, correlation_id):
                 return len(observations)
 
+            def upsert_measurements(self, measurements, table, correlation_id):
+                return len(measurements)
+
+            def upsert_observations(self, observations, table, correlation_id):
+                return len(observations)
+
         client = MockStorageClient()
         assert isinstance(client, StorageClient)
 

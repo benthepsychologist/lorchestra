@@ -1,0 +1,89 @@
+aip_id: AIP-lorchestra-2025-12-03-001
+context:
+  background: "**Current State:**\n- `final-form` library exists at `/workspace/final-form` with 207 tests,\
+    \ 80% coverage\n- `final-form` has form bindings for `intake_01` (8 measures) and `followup` (4 measures)\n\
+    - `final-form` has 12 measures in its registry (phq9, gad7, fscrs, etc.)\n- `lorchestra` has a `FinalFormProcessor`\
+    \ stub that raises `NotImplementedError`\n- `lorchestra` does NOT have `final-form` as a dependency\
+    \ yet\n\n**What final-form provides:**\n- `Pipeline` class that loads binding specs and measure specs\
+    \ from registries\n- `Pipeline.process(form_response)` returns `ProcessingResult` with:\n  - `events:\
+    \ list[MeasurementEvent]` - one per measure in the binding\n  - `diagnostics: ProcessingDiagnostics`\
+    \ - errors, warnings, quality metrics\n  - `success: bool`\n- Each `MeasurementEvent` contains:\n\
+    \  - `observations: list[Observation]` - item values (recoded) + scale scores\n  - `source` - form_id,\
+    \ submission_id, binding info\n  - `telemetry` - processing metadata\n\n**What lorchestra provides:**\n\
+    - `StorageClient` protocol with `query_canonical()`, `insert_measurements()`, `insert_observations()`\n\
+    - `EventClient` protocol for logging events to `event_log`\n- Job runner that dispatches to processors\
+    \ by `job_type`"
+  constraints:
+  - final-form is a pure transform library - NO IO inside final-form
+  - All IO (queries, inserts, events) happens in lorchestra
+  - Bindings are static (pre-configured in form-binding-registry)
+  - No edits to final-form library itself
+  - ''
+created: '2025-12-03T21:04:01.728520+00:00'
+meta:
+  created_at: '2025-12-03T21:04:01.728520+00:00'
+  created_by: benthepsychologist
+objective:
+  acceptance_criteria:
+  - '`FinalFormProcessor` calls final-form `Pipeline` API (not stub)'
+  - 'Incremental selection: only process unformed or updated canonical records'
+  - 'Idempotent writes: MERGE by idem_key (upsert semantics)'
+  - Job definitions exist for `intake_01` and `followup` bindings
+  - ProcessingResult → storage format transformation works correctly
+  - Integration test passes with mock data
+  - CI green (lint + unit tests)
+  - Dry-run mode works without writes
+  goal: Integrate final-form library with lorchestra to process canonical form_response objects into measurement_events
+    and observations
+orchestrator_contract:
+  artifacts_dir: .aip_artifacts/AIP-lorchestra-2025-12-03-001
+  logging: jsonl
+  state_machine:
+    events:
+    - run_step
+    - await_gate
+    - approve
+    - reject
+    - retry
+    - escalate
+    - complete
+    states:
+    - pending
+    - running
+    - awaiting_human
+    - failed
+    - succeeded
+    - rolled_back
+plan:
+- description: Add final-form Dependency
+  kind: code
+  role: coding_agent
+  step_id: step-001
+- description: Rewrite FinalFormProcessor
+  kind: code
+  role: coding_agent
+  step_id: step-002
+- description: Create Job Definitions
+  kind: code
+  role: coding_agent
+  step_id: step-003
+- description: Update Tests
+  kind: code
+  role: coding_agent
+  step_id: step-004
+- description: Integration Test
+  kind: code
+  role: coding_agent
+  step_id: step-005
+project_slug: lorchestra
+repo:
+  default_branch: main
+  url: git@github.com:benthepsychologist/lorchestra.git
+  working_branch: feat/final-form-processing
+spec_version: 1.0.0
+tier: C
+title: final-form processing integration
+updated: '2025-12-04T03:00:00+00:00'
+version: '1.0'
+status: completed
+

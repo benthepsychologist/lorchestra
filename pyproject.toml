@@ -13,6 +13,7 @@ dependencies = [
     "google-cloud-bigquery>=3.0",
     "injest @ file:///workspace/injest",
     "authctl @ file:///workspace/authctl",
+    "final-form @ file:///workspace/final-form",
 ]
 
 [project.optional-dependencies]

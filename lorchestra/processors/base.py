@@ -160,6 +160,33 @@ class StorageClient(Protocol):
         """
         ...
 
+    def query_canonical_for_formation(
+        self,
+        canonical_schema: str | None = None,
+        filters: dict[str, Any] | None = None,
+        measurement_table: str = "measurement_events",
+        limit: int | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """Query canonical objects that need formation (incremental).
+
+        Returns records where:
+        - canonical_schema matches (if provided)
+        - additional filters match
+        - AND either:
+          - Not yet in measurement_events (never formed), OR
+          - canonical_objects.canonicalized_at > measurement_events.processed_at
+
+        Args:
+            canonical_schema: Filter by canonical_schema column
+            filters: Additional column filters
+            measurement_table: Name of measurement events table
+            limit: Max records to return
+
+        Yields:
+            Dict with idem_key, payload, and metadata columns
+        """
+        ...
+
     def insert_measurements(
         self,
         measurements: list[dict[str, Any]],
@@ -193,6 +220,48 @@ class StorageClient(Protocol):
 
         Returns:
             Number of rows inserted
+        """
+        ...
+
+    def upsert_measurements(
+        self,
+        measurements: list[dict[str, Any]],
+        table: str,
+        correlation_id: str,
+    ) -> int:
+        """Upsert measurement events using MERGE by idem_key.
+
+        Inserts new rows or updates existing rows based on idem_key.
+        This provides idempotent writes for re-processing.
+
+        Args:
+            measurements: List of measurement events to upsert
+            table: Target table name
+            correlation_id: Correlation ID for tracing
+
+        Returns:
+            Number of rows affected (inserted + updated)
+        """
+        ...
+
+    def upsert_observations(
+        self,
+        observations: list[dict[str, Any]],
+        table: str,
+        correlation_id: str,
+    ) -> int:
+        """Upsert observations using MERGE by idem_key.
+
+        Inserts new rows or updates existing rows based on idem_key.
+        This provides idempotent writes for re-processing.
+
+        Args:
+            observations: List of observations to upsert
+            table: Target table name
+            correlation_id: Correlation ID for tracing
+
+        Returns:
+            Number of rows affected (inserted + updated)
         """
         ...
 

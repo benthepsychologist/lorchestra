@@ -1,0 +1,24 @@
+{
+  "job_id": "form_intake_01",
+  "job_type": "final_form",
+  "description": "Form measurement events from intake_01 responses (PHQ-9, GAD-7, SAFE, Joy, MSI, Trauma Exposure, PTSD Screen, Sleep Disturbances)",
+  "source": {
+    "filter": {
+      "canonical_schema": "iglu:org.canonical/form_response/jsonschema/1-0-0",
+      "connection_name": "google-forms-intake-01"
+    }
+  },
+  "transform": {
+    "binding_id": "intake_01",
+    "binding_version": "1.0.0"
+  },
+  "sink": {
+    "measurement_table": "measurement_events",
+    "observation_table": "observations"
+  },
+  "events": {
+    "on_started": "formation.started",
+    "on_complete": "formation.completed",
+    "on_fail": "formation.failed"
+  }
+}
