@@ -74,6 +74,9 @@ lorchestra jobs show lorchestra gmail_ingest_acct1
 Comprehensive documentation in the `docs/` directory:
 
 - **[docs/jobs.md](docs/jobs.md)** - Job development guide
+- **[docs/projection-pipeline.md](docs/projection-pipeline.md)** - Therapist surface projections
+- **[docs/canonical-transforms.md](docs/canonical-transforms.md)** - Canonical transform reference
+- **[docs/sqlite-schema.md](docs/sqlite-schema.md)** - Local SQLite database schema
 - **[docs/architecture.md](docs/architecture.md)** - System architecture (historical)
 - **[docs/configuration.md](docs/configuration.md)** - Configuration reference (historical)
 

@@ -1,9 +1,29 @@
 """Projection processors for lorchestra.
 
-This module provides processors for:
-- create_projection: Create/update BQ projection views from hardcoded SQL
-- sync_sqlite: Sync BQ projections to local SQLite
-- file_projection: Render SQLite data to markdown files
+This module provides processors for the therapist surface projection pipeline:
+
+1. CreateProjectionProcessor (job_type: create_projection)
+   - Creates/updates BigQuery views from SQL defined in lorchestra/sql/projections.py
+   - Views extract and flatten data from canonical_objects table
+   - Run once initially, then whenever projection SQL changes
+
+2. SyncSqliteProcessor (job_type: sync_sqlite)
+   - Syncs BQ projection view to local SQLite table
+   - Uses full replace strategy (DELETE + INSERT)
+   - Run daily to refresh local data
+
+3. FileProjectionProcessor (job_type: file_projection)
+   - Queries SQLite and renders results to markdown files
+   - Uses path_template for file locations: "{client_folder}/sessions/session-{session_num}/transcript.md"
+   - Uses content_template for file content: "{content}"
+
+Pipeline flow:
+    BigQuery canonical_objects
+        → BQ Views (proj_*)
+        → SQLite tables
+        → Markdown files
+
+See docs/projection-pipeline.md for full documentation.
 """
 
 import os

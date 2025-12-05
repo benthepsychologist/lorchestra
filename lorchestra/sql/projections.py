@@ -1,7 +1,32 @@
-"""Hardcoded SQL projections for therapist surface views.
+"""BigQuery SQL projections for therapist surface views.
 
-All projection SQL lives in this single module for simplicity.
-Naming convention: proj_<domain>_<entity>
+This module contains all projection SQL for the therapist surface pipeline.
+Each projection is a CREATE OR REPLACE VIEW statement that extracts and
+flattens data from the canonical_objects table.
+
+Naming convention: proj_<entity>
+
+Available projections:
+    proj_clients           - Therapy clients with folder naming
+    proj_sessions          - Clinical sessions with session numbers
+    proj_transcripts       - Session transcripts
+    proj_clinical_documents - Session notes, summaries, reports
+    proj_form_responses    - Form responses linked to clients by email
+
+Usage:
+    from lorchestra.sql.projections import get_projection_sql
+
+    sql = get_projection_sql("proj_clients", project="my-project", dataset="events")
+    # Returns: CREATE OR REPLACE VIEW `my-project.events.proj_clients` AS ...
+
+Key design decisions:
+    - Clients filtered to client_type_label = 'Therapy' only
+    - Session numbers come from source data (session_num), not calculated
+    - Content extracted from nested structure: $.content.text
+    - Client references extracted from subject.reference: Contact/<id>
+    - Form responses linked by matching respondent.email to client email
+
+See docs/projection-pipeline.md for full documentation.
 """
 
 # =============================================================================
