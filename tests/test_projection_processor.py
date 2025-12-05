@@ -53,7 +53,7 @@ class TestCreateProjectionProcessor:
         job_spec = {
             "job_id": "test_create_projection",
             "job_type": "create_projection",
-            "projection": {"name": "proj_client_sessions"},
+            "projection": {"name": "proj_clients"},
         }
 
         processor.run(job_spec, mock_context, mock_storage_client, mock_event_client)
@@ -64,7 +64,7 @@ class TestCreateProjectionProcessor:
         assert "CREATE OR REPLACE VIEW" in sql_arg
         assert "test-project" in sql_arg
         assert "test_dataset" in sql_arg
-        assert "proj_client_sessions" in sql_arg
+        assert "proj_clients" in sql_arg
 
     @patch.dict("os.environ", {"GCP_PROJECT": "test-project", "EVENTS_BQ_DATASET": "test_dataset"})
     def test_create_projection_logs_events(
@@ -74,7 +74,7 @@ class TestCreateProjectionProcessor:
         job_spec = {
             "job_id": "test_create_projection",
             "job_type": "create_projection",
-            "projection": {"name": "proj_client_sessions"},
+            "projection": {"name": "proj_clients"},
         }
 
         processor.run(job_spec, mock_context, mock_storage_client, mock_event_client)
@@ -86,7 +86,7 @@ class TestCreateProjectionProcessor:
         started_call = mock_event_client.log_event.call_args_list[0]
         assert started_call.kwargs["event_type"] == "projection.started"
         assert started_call.kwargs["status"] == "success"
-        assert started_call.kwargs["payload"]["projection_name"] == "proj_client_sessions"
+        assert started_call.kwargs["payload"]["projection_name"] == "proj_clients"
 
         # Check completed event
         completed_call = mock_event_client.log_event.call_args_list[1]
@@ -107,7 +107,7 @@ class TestCreateProjectionProcessor:
         job_spec = {
             "job_id": "test_create_projection",
             "job_type": "create_projection",
-            "projection": {"name": "proj_client_sessions"},
+            "projection": {"name": "proj_clients"},
         }
 
         processor.run(job_spec, context, mock_storage_client, mock_event_client)
@@ -128,7 +128,7 @@ class TestCreateProjectionProcessor:
         job_spec = {
             "job_id": "test_create_projection",
             "job_type": "create_projection",
-            "projection": {"name": "proj_client_sessions"},
+            "projection": {"name": "proj_clients"},
         }
 
         with pytest.raises(RuntimeError, match="BQ error"):
@@ -197,7 +197,7 @@ class TestSyncSqliteProcessor:
             job_spec = {
                 "job_id": "test_sync",
                 "job_type": "sync_sqlite",
-                "source": {"projection": "proj_client_sessions"},
+                "source": {"projection": "proj_clients"},
                 "sink": {"sqlite_path": str(sqlite_path), "table": "sessions"},
             }
 
@@ -206,7 +206,7 @@ class TestSyncSqliteProcessor:
             # Verify BQ was queried
             mock_storage_client.query_to_dataframe.assert_called_once()
             sql_arg = mock_storage_client.query_to_dataframe.call_args[0][0]
-            assert "proj_client_sessions" in sql_arg
+            assert "proj_clients" in sql_arg
 
             # Verify SQLite was written
             conn = sqlite3.connect(sqlite_path)
@@ -228,7 +228,7 @@ class TestSyncSqliteProcessor:
             job_spec = {
                 "job_id": "test_sync",
                 "job_type": "sync_sqlite",
-                "source": {"projection": "proj_client_sessions"},
+                "source": {"projection": "proj_clients"},
                 "sink": {"sqlite_path": str(sqlite_path), "table": "sessions"},
             }
 
@@ -262,7 +262,7 @@ class TestSyncSqliteProcessor:
             job_spec = {
                 "job_id": "test_sync",
                 "job_type": "sync_sqlite",
-                "source": {"projection": "proj_client_sessions"},
+                "source": {"projection": "proj_clients"},
                 "sink": {"sqlite_path": str(sqlite_path), "table": "sessions"},
             }
 
@@ -288,7 +288,7 @@ class TestSyncSqliteProcessor:
             job_spec = {
                 "job_id": "test_sync",
                 "job_type": "sync_sqlite",
-                "source": {"projection": "proj_client_sessions"},
+                "source": {"projection": "proj_clients"},
                 "sink": {"sqlite_path": str(sqlite_path), "table": "sessions"},
             }
 
@@ -317,7 +317,7 @@ class TestSyncSqliteProcessor:
             job_spec = {
                 "job_id": "test_sync",
                 "job_type": "sync_sqlite",
-                "source": {"projection": "proj_client_sessions"},
+                "source": {"projection": "proj_clients"},
                 "sink": {"sqlite_path": str(sqlite_path), "table": "sessions"},
             }
 
