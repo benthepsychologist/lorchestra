@@ -1,0 +1,11 @@
+{
+  "job_id": "sync_proj_transcripts",
+  "job_type": "sync_sqlite",
+  "source": {
+    "projection": "proj_transcripts"
+  },
+  "sink": {
+    "sqlite_path": "~/lifeos/local.db",
+    "table": "transcripts"
+  }
+}

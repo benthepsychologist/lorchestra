@@ -1,5 +1,5 @@
 {
-  "job_id": "canonize_dataverse_transcripts",
+  "job_id": "canonize_dataverse_session_summaries",
   "job_type": "canonize",
   "source": {
     "source_system": "dataverse",
@@ -11,9 +11,9 @@
   "transform": {
     "mode": "full",
     "schema_in": "iglu:com.microsoft/dataverse_session/jsonschema/1-0-0",
-    "schema_out": "iglu:org.canonical/session_transcript/jsonschema/2-0-0",
-    "transform_ref": "session_transcript/dataverse_to_canonical@2-0-0",
-    "idem_key_suffix": "session_transcript"
+    "schema_out": "iglu:org.canonical/clinical_document/jsonschema/2-0-0",
+    "transform_ref": "session_summary/dataverse_to_canonical@2-0-0",
+    "idem_key_suffix": "session_summary"
   },
   "options": {
     "limit": 1000

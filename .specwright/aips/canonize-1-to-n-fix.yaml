@@ -1,0 +1,108 @@
+aip_id: AIP-lorchestra-2025-12-04-001
+context:
+  background: 'The canonization system assumes 1:1 mapping between raw and canonical objects. This is
+    incorrect - one session raw object should produce:
+
+    - `clinical_session` - session metadata
+
+    - `session_transcript` - transcript content (if present)
+
+    - Future: `clinical_document` (note), `clinical_document` (summary)
+
+
+    Currently all these share the same idem_key, causing later canonizations to overwrite earlier ones.
+    When running canonize_dataverse_transcripts after canonize_dataverse_sessions, the 132 session_transcripts
+    overwrote 132 clinical_sessions.
+
+
+    Additionally, the 2-0-0 transforms are not in the lock.json file, causing "Failed to load transform"
+    errors.'
+  constraints:
+  - Must not break existing 1:1 canonizations (contacts, reports)
+  - Must support re-canonization when raw data updates
+  - Transcript processing needs limit to prevent timeouts
+created: '2025-12-04T19:04:37.947096+00:00'
+meta:
+  created_at: '2025-12-04T19:04:37.947096+00:00'
+  created_by: benthepsychologist
+objective:
+  acceptance_criteria:
+  - CI green (lint + unit)
+  - 2-0-0 transforms are loadable via `can registry sync`
+  - Canonical idem_keys use format `raw_idem_key#canonical_object_type`
+  - Re-canonization correctly produces separate objects per transform
+  goal: Fix canonization to support one raw object producing multiple canonical objects
+orchestrator_contract:
+  artifacts_dir: .aip_artifacts/AIP-lorchestra-2025-12-04-001
+  logging: jsonl
+  state_machine:
+    events:
+    - run_step
+    - await_gate
+    - approve
+    - reject
+    - retry
+    - escalate
+    - complete
+    states:
+    - pending
+    - running
+    - awaiting_human
+    - failed
+    - succeeded
+    - rolled_back
+plan:
+- description: Update lock.json with 2-0-0 entries
+  kind: code
+  role: coding_agent
+  step_id: step-001
+- description: Run can registry sync
+  kind: code
+  role: coding_agent
+  step_id: step-002
+- description: Update query_objects_for_canonization JOIN
+  kind: code
+  role: coding_agent
+  step_id: step-003
+- description: Add limit to transcripts job
+  kind: code
+  role: coding_agent
+  step_id: step-004
+- description: Delete old canonical objects and re-run
+  kind: code
+  role: coding_agent
+  step_id: step-005
+- description: Verify counts
+  kind: code
+  role: coding_agent
+  step_id: step-006
+project_slug: lorchestra
+repo:
+  default_branch: main
+  url: git@github.com:benthepsychologist/lorchestra.git
+  working_branch: feat/canonize-1-to-n-fix
+spec_version: 1.0.0
+tier: C
+title: Fix 1:N Raw→Canonical Object Mapping
+updated: '2025-12-05T22:15:00.000000+00:00'
+version: '1.0'
+status: succeeded
+completed_at: '2025-12-05T22:15:00.000000+00:00'
+results:
+  summary: |
+    Successfully implemented 1:N raw→canonical object mapping. One session raw object
+    now produces multiple canonical objects with distinct idem_keys using format
+    raw_idem_key#suffix (e.g., session_note, session_summary, session_transcript).
+  metrics:
+    clinical_session: 811
+    session_transcript: 811
+    session_note: 811
+    session_summary: 811
+    clinical_report: 34
+    contact: 626
+  additional_work:
+    - Added session_note transform (session → clinical_document)
+    - Added session_summary transform (session → clinical_document)
+    - Added idem_key_suffix config option for explicit suffix control
+    - Fixed stdout truncation bug for large transcript transforms (>65KB)
+

@@ -245,6 +245,9 @@ class CanonizeProcessor:
         """Run full mode: validate → transform → write canonical objects."""
         schema_out = transform_config.get("schema_out")
         transform_ref = transform_config.get("transform_ref")
+        # Optional: explicit suffix for idem_key when multiple transforms target same schema
+        # e.g. session_note, session_summary both target clinical_document schema
+        idem_key_suffix = transform_config.get("idem_key_suffix")
         limit = options.get("limit")
         on_started = events_config.get("on_started", "canonization.started")
         on_complete = events_config.get("on_complete", "canonization.completed")
@@ -272,13 +275,14 @@ class CanonizeProcessor:
         try:
             # Query validated records that need canonization
             # (never canonized for this schema OR raw updated since last canonization)
-            # Pass schema_out to support 1:N mappings (e.g., session -> clinical_session AND session_transcript)
+            # Pass idem_key_suffix for stable 1:N mapping that survives schema changes
             records = list(storage_client.query_objects_for_canonization(
                 source_system=source_system,
                 object_type=object_type,
                 filters=source_filter,
                 limit=limit,
                 canonical_schema=schema_out,
+                idem_key_suffix=idem_key_suffix,
             ))
 
             logger.info(f"Found {len(records)} records to canonize")
@@ -309,9 +313,14 @@ class CanonizeProcessor:
                         skipped_count += 1
                         continue
 
-                    # Extract canonical object type from schema name
-                    # e.g. iglu:org.canonical/session_transcript/jsonschema/2-0-0 -> session_transcript
-                    canonical_object_type = schema_out.split("/")[1]
+                    # Determine the idem_key suffix for 1:N mapping
+                    # Use explicit idem_key_suffix if provided (for multiple transforms to same schema)
+                    # Otherwise extract from schema name (e.g. session_transcript from schema path)
+                    if idem_key_suffix:
+                        canonical_object_type = idem_key_suffix
+                    else:
+                        # e.g. iglu:org.canonical/session_transcript/jsonschema/2-0-0 -> session_transcript
+                        canonical_object_type = schema_out.split("/")[1]
 
                     # Build canonical idem_key: raw_idem_key#canonical_object_type
                     # This allows one raw object to produce multiple canonical objects

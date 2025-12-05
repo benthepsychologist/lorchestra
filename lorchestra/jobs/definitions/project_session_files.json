@@ -1,0 +1,13 @@
+{
+  "job_id": "project_session_files",
+  "job_type": "file_projection",
+  "source": {
+    "sqlite_path": "~/lifeos/local.db",
+    "query": "SELECT * FROM proj_client_sessions ORDER BY client_id, started_at"
+  },
+  "sink": {
+    "base_path": "~/lifeos/local_views",
+    "path_template": "{client_id}/sessions/{started_at}_{session_id}.md",
+    "content_template": "# {started_at} — Session {session_id}\n\n## Summary\n\n{session_summary_md}\n\n## Transcript\n\n{transcript_md}"
+  }
+}

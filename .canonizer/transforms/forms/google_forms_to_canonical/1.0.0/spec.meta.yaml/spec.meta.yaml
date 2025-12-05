@@ -1,0 +1,29 @@
+id: forms/google_forms_to_canonical
+version: 1.0.0
+engine: jsonata
+runtime: node
+
+from_schema: iglu:com.google/forms_response/jsonschema/1-0-0
+to_schema: iglu:org.canonical/form_response/jsonschema/1-0-0
+
+spec_path: spec.jsonata
+
+checksum:
+  jsonata_sha256: "265c20befcce7895e83b00c72faf78cb912c2b4a256b6993d722bc65d8278204"
+
+provenance:
+  author: "Ben Machina <ben@therapyai.com>"
+  created_utc: "2025-11-17T12:00:00+00:00"
+
+status: stable
+
+description: >
+  Transform Google Forms API v1 FormResponse to canonical form_response format.
+  Normalizes platform-specific structure to enable downstream questionnaire extraction.
+  Flattens nested textAnswers structure, preserves question IDs, extracts respondent metadata.
+  Use for: Layer 1 schema normalization (platform → canonical).
+  Does NOT handle questionnaire mapping or scoring (that's Layer 2 processing).
+
+tests:
+  - input: tests/input.json
+    expect: tests/expected.json

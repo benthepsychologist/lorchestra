@@ -58,6 +58,7 @@ class MockStorageClient:
         filters: dict[str, Any] | None = None,
         limit: int | None = None,
         canonical_schema: str | None = None,
+        idem_key_suffix: str | None = None,
     ) -> Iterator[dict[str, Any]]:
         """Query for canonization uses same records as query_objects."""
         return iter(self.records)

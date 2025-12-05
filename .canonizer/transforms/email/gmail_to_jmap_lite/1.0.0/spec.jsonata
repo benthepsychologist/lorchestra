@@ -1,0 +1,84 @@
+(
+  /* Helper function to parse email address from "Name <email@example.com>" format */
+  $parseEmail := function($str) {
+    $str ? (
+      $match := $match($str, /^(?:(.*?)\s*<([^>]+)>|([^\s<>]+))$/);
+      $match ? {
+        "name": $match.groups[0] ? $trim($match.groups[0]) : null,
+        "email": $match.groups[1] ? $match.groups[1] : $match.groups[2]
+      } : null
+    ) : null
+  };
+
+  /* Helper function to parse email list (comma-separated) */
+  $parseEmailList := function($str) {
+    $str ? [$map($split($str, ","), function($v) { $parseEmail($trim($v)) })] : null
+  };
+
+  /* Helper function to get header value by name */
+  $getHeader := function($headers, $name) {
+    $lookup($headers[name=$name], "value")
+  };
+
+  /* Helper function to convert epoch ms to ISO 8601 */
+  $toISO := function($epochMs) {
+    $epochMs ? $fromMillis($number($epochMs)) : null
+  };
+
+  /* Helper function to decode base64url */
+  $decodeBase64url := function($str) {
+    $str ? $base64decode($replace($replace($str, /-/, "+"), /_/, "/")) : null
+  };
+
+  /* Extract text/plain body */
+  $textPart := payload.parts[mimeType="text/plain"][0];
+  $textBody := $textPart ? $decodeBase64url($textPart.body.data) : null;
+
+  /* Extract text/html body */
+  $htmlPart := payload.parts[mimeType="text/html"][0];
+  $htmlBody := $htmlPart ? $decodeBase64url($htmlPart.body.data) : null;
+
+  /* Extract attachments */
+  $attachments := $map(payload.parts[filename != ""][filename != null], function($part) {
+    {
+      "filename": $part.filename,
+      "mimeType": $part.mimeType,
+      "size": $part.body.size,
+      "blobId": $part.body.attachmentId ? "blob-att-" & $part.body.attachmentId : "blob-" & id & "-" & $part.partId,
+      "cid": $getHeader($part.headers, "Content-Id"),
+      "isInline": $getHeader($part.headers, "Content-Disposition") = "inline"
+    }
+  });
+
+  {
+    "id": id,
+    "blobId": "blob-" & id,
+    "threadId": threadId,
+    "messageId": $getHeader(payload.headers, "Message-ID") ? [$getHeader(payload.headers, "Message-ID")] : null,
+    "inReplyTo": $getHeader(payload.headers, "In-Reply-To") ? [$getHeader(payload.headers, "In-Reply-To")] : null,
+    "references": $getHeader(payload.headers, "References") ? $split($getHeader(payload.headers, "References"), " ") : null,
+    "from": $parseEmailList($getHeader(payload.headers, "From")),
+    "to": $parseEmailList($getHeader(payload.headers, "To")),
+    "cc": $parseEmailList($getHeader(payload.headers, "Cc")),
+    "bcc": $parseEmailList($getHeader(payload.headers, "Bcc")),
+    "replyTo": $parseEmailList($getHeader(payload.headers, "Reply-To")),
+    "subject": $getHeader(payload.headers, "Subject"),
+    "sentAt": $toISO(internalDate),
+    "receivedAt": $toISO(internalDate),
+    "size": sizeEstimate,
+    "preview": $substring(snippet, 0, 256),
+    "body": {
+      "text": $textBody,
+      "html": $htmlBody
+    },
+    "attachments": $attachments,
+    "hasAttachment": $count($attachments) > 0,
+    "keywords": {
+      "$seen": "UNREAD" in labelIds ? false : true,
+      "$flagged": "STARRED" in labelIds,
+      "$draft": "DRAFT" in labelIds
+    },
+    "labels": labelIds,
+    "importance": "IMPORTANT" in labelIds ? "high" : "normal"
+  }
+)

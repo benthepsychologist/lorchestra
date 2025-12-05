@@ -1,0 +1,28 @@
+id: email/exchange_to_jmap_lite
+version: 1.0.0
+engine: jsonata
+runtime: node
+
+from_schema: iglu:com.microsoft/exchange_email/jsonschema/1-0-0
+to_schema: iglu:org.canonical/email_jmap_lite/jsonschema/1-0-0
+
+spec_path: spec.jsonata
+
+checksum:
+  jsonata_sha256: "2da6fc976a6850495ab964ac553bd6ff95545850da7bbcc2f9f047b83f19eddc"
+
+provenance:
+  author: "Ben Machina <ben@therapyai.com>"
+  created_utc: "2025-11-13T12:00:00+00:00"
+
+status: stable
+
+description: >
+  Transform Microsoft Graph/Exchange message to JMAP Lite canonical format.
+  Includes inline body content (text and HTML), attachments metadata, core headers, threading.
+  Use for: application display, most email clients.
+  Storage: ~10-50KB per email.
+
+tests:
+  - input: tests/input.json
+    expect: tests/expected.json

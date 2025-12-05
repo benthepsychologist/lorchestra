@@ -1,0 +1,7 @@
+{
+  "job_id": "create_proj_transcripts",
+  "job_type": "create_projection",
+  "projection": {
+    "name": "proj_transcripts"
+  }
+}

@@ -109,6 +109,7 @@ class StorageClient(Protocol):
         filters: dict[str, Any] | None = None,
         limit: int | None = None,
         canonical_schema: str | None = None,
+        idem_key_suffix: str | None = None,
     ) -> Iterator[dict[str, Any]]:
         """Query validated raw_objects that need canonization.
 
@@ -122,6 +123,7 @@ class StorageClient(Protocol):
             filters: Additional column filters
             limit: Max records to return
             canonical_schema: Target canonical schema (for 1:N raw->canonical mappings)
+            idem_key_suffix: Explicit suffix for idem_key matching (e.g. 'session_note')
 
         Yields:
             Dict with idem_key, payload, and metadata columns
@@ -264,6 +266,38 @@ class StorageClient(Protocol):
 
         Returns:
             Number of rows affected (inserted + updated)
+        """
+        ...
+
+    def execute_sql(
+        self,
+        sql: str,
+    ) -> dict[str, Any]:
+        """Execute arbitrary SQL and return result metadata.
+
+        Used for DDL operations like CREATE VIEW.
+
+        Args:
+            sql: SQL statement to execute
+
+        Returns:
+            Dict with execution metadata (e.g., rows_affected)
+        """
+        ...
+
+    def query_to_dataframe(
+        self,
+        sql: str,
+    ) -> list[dict[str, Any]]:
+        """Execute query and return results as list of dicts.
+
+        Used for sync operations that need to read data.
+
+        Args:
+            sql: SQL query to execute
+
+        Returns:
+            List of row dicts
         """
         ...
 

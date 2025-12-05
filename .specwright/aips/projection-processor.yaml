@@ -1,0 +1,187 @@
+aip_id: AIP-lorchestra-2025-12-05-001
+context:
+  background: 'The pipeline is solid:
+
+    - `ingest` → `raw_objects`
+
+    - `canonize` → `canonical_objects`
+
+    - `final_form` → `measurement_events` / `observations`
+
+
+    Everything after that is **read-only sugar**. You don''t need a cathedral to render/slice read-only
+    data.'
+  constraints:
+  - No external dependencies (no projection-assistant)
+  - No YAML configs or registries
+  - Inline SQL is fine - this is intentionally simple
+created: '2025-12-04T14:00:00+00:00'
+meta:
+  created_at: '2025-12-04T14:00:00+00:00'
+  created_by: benthepsychologist
+objective:
+  acceptance_criteria:
+  - '`proj_client_sessions` BQ view created with inline SQL'
+  - '`sync_sqlite` job type syncs BQ projections → local SQLite'
+  - '`file_projection` job type renders SQLite data → markdown files'
+  - 'All projection SQL lives in one place: `lorchestra/sql/projections.py`'
+  - 'Naming follows convention: `proj_<domain>_<entity>`'
+  - 'Events logged: `projection.started`, `projection.completed`, `projection.failed`'
+  - CI green (ruff + pytest)
+  goal: Add hardcoded BQ views + SQLite sync + file projections for therapist surface
+orchestrator_contract:
+  artifacts_dir: .aip_artifacts/AIP-lorchestra-2025-12-05-001
+  logging: jsonl
+  state_machine:
+    events:
+    - run_step
+    - await_gate
+    - approve
+    - reject
+    - retry
+    - escalate
+    - complete
+    states:
+    - pending
+    - running
+    - awaiting_human
+    - failed
+    - succeeded
+    - rolled_back
+plan:
+- description: Create SQL Module
+  gate_ref: 'G0: Plan Approval'
+  kind: code
+  outputs:
+  - lorchestra/sql/__init__.py
+  - lorchestra/sql/projections.py
+  prompt: 'Create `lorchestra/sql/projections.py` with:
+
+    - `PROJ_CLIENT_SESSIONS` SQL constant
+
+    - `PROJECTIONS` dict mapping name → SQL
+
+    - `get_projection_sql(name: str, project: str, dataset: str) -> str` helper'
+  role: coding_agent
+  step_id: step-001
+- description: Extend StorageClient for Raw SQL
+  gate_ref: 'G1: Code Readiness'
+  kind: code
+  outputs:
+  - lorchestra/processors/base.py
+  - lorchestra/job_runner.py
+  prompt: "Add `execute_sql()` to `StorageClient` protocol and implement in `BigQueryStorageClient`:\n\
+    ```python\ndef execute_sql(\n    self,\n    sql: str,\n) -> dict[str, Any]:\n    \"\"\"Execute arbitrary\
+    \ SQL and return result metadata.\"\"\"\n```\nAlso add `query_to_dataframe()` for sync jobs:\n```python\n\
+    def query_to_dataframe(\n    self,\n    sql: str,\n) -> list[dict[str, Any]]:\n    \"\"\"Execute query\
+    \ and return results as list of dicts.\"\"\"\n```"
+  role: coding_agent
+  step_id: step-002
+- description: Implement CreateProjectionProcessor
+  gate_ref: 'G1: Code Readiness'
+  kind: code
+  outputs:
+  - lorchestra/processors/projection.py
+  - tests/test_projection_processor.py
+  prompt: "Create `lorchestra/processors/projection.py`:\n```python\nclass CreateProjectionProcessor:\n\
+    \    \"\"\"Create/update BQ projection views from hardcoded SQL.\"\"\"\n    def run(self, job_spec,\
+    \ context, storage_client, event_client):\n        proj_name = job_spec[\"projection\"][\"name\"]\n\
+    \        sql = get_projection_sql(proj_name, PROJECT, DATASET)\n        event_client.log_event(\"\
+    projection.started\", ...)\n        storage_client.execute_sql(sql)\n        event_client.log_event(\"\
+    projection.completed\", ...)\n```\nRegister as `job_type: \"create_projection\"`."
+  role: coding_agent
+  step_id: step-003
+- description: Implement SyncSqliteProcessor
+  gate_ref: 'G1: Code Readiness'
+  kind: code
+  outputs:
+  - lorchestra/processors/projection.py
+  - tests/test_projection_processor.py
+  prompt: "Add `SyncSqliteProcessor` to `lorchestra/processors/projection.py`:\n```python\nclass SyncSqliteProcessor:\n\
+    \    \"\"\"Sync BQ projection to local SQLite (full replace).\"\"\"\n    def run(self, job_spec, context,\
+    \ storage_client, event_client):\n        proj_name = job_spec[\"source\"][\"projection\"]\n     \
+    \   sqlite_path = job_spec[\"sink\"][\"sqlite_path\"]\n        table = job_spec[\"sink\"][\"table\"\
+    ]\n        # 1. Query BQ\n        rows = storage_client.query_to_dataframe(f\"SELECT * FROM {proj_name}\"\
+    )\n        # 2. Write to SQLite (DELETE + INSERT)\n        conn = sqlite3.connect(sqlite_path)\n \
+    \       conn.execute(f\"DELETE FROM {table}\")\n        # bulk insert rows...\n        event_client.log_event(\"\
+    sync.completed\", payload={\"rows\": len(rows)})\n```\nRegister as `job_type: \"sync_sqlite\"`."
+  role: coding_agent
+  step_id: step-004
+- description: Implement FileProjectionProcessor
+  gate_ref: 'G1: Code Readiness'
+  kind: code
+  outputs:
+  - lorchestra/processors/projection.py
+  - tests/test_projection_processor.py
+  prompt: "Add `FileProjectionProcessor` to `lorchestra/processors/projection.py`:\n```python\nclass FileProjectionProcessor:\n\
+    \    \"\"\"Render SQLite data to markdown files.\"\"\"\n    def run(self, job_spec, context, storage_client,\
+    \ event_client):\n        sqlite_path = job_spec[\"source\"][\"sqlite_path\"]\n        query = job_spec[\"\
+    source\"][\"query\"]\n        base_path = Path(job_spec[\"sink\"][\"base_path\"]).expanduser()\n \
+    \       path_template = job_spec[\"sink\"][\"path_template\"]\n        content_template = job_spec[\"\
+    sink\"][\"content_template\"]\n        conn = sqlite3.connect(sqlite_path)\n        rows = conn.execute(query).fetchall()\n\
+    \        for row in rows:\n            path = base_path / path_template.format(**row)\n          \
+    \  path.parent.mkdir(parents=True, exist_ok=True)\n            path.write_text(content_template.format(**row))\n\
+    \        event_client.log_event(\"file_projection.completed\", payload={\"files\": len(rows)})\n```\n\
+    Register as `job_type: \"file_projection\"`."
+  role: coding_agent
+  step_id: step-005
+- description: Create Job Definitions
+  gate_ref: 'G1: Code Readiness'
+  kind: code
+  outputs:
+  - lorchestra/jobs/definitions/create_proj_client_sessions.json
+  - lorchestra/jobs/definitions/sync_proj_client_sessions.json
+  - lorchestra/jobs/definitions/project_session_files.json
+  prompt: "Create job definition files:\n```json\n// jobs/definitions/create_proj_client_sessions.json\n\
+    {\n  \"job_id\": \"create_proj_client_sessions\",\n  \"job_type\": \"create_projection\",\n  \"projection\"\
+    : {\n    \"name\": \"proj_client_sessions\"\n  }\n}\n// jobs/definitions/sync_proj_client_sessions.json\n\
+    {\n  \"job_id\": \"sync_proj_client_sessions\",\n  \"job_type\": \"sync_sqlite\",\n  \"source\": {\n\
+    \    \"projection\": \"proj_client_sessions\"\n  },\n  \"sink\": {\n    \"sqlite_path\": \"~/lifeos/local.db\"\
+    ,\n    \"table\": \"proj_client_sessions\"\n  }\n}\n// jobs/definitions/project_session_files.json\n\
+    {\n  \"job_id\": \"project_session_files\",\n  \"job_type\": \"file_projection\",\n  \"source\": {\n\
+    \    \"sqlite_path\": \"~/lifeos/local.db\",\n    \"query\": \"SELECT * FROM proj_client_sessions\
+    \ ORDER BY client_id, started_at\"\n  },\n  \"sink\": {\n    \"base_path\": \"~/lifeos/local_views\"\
+    ,\n    \"path_template\": \"{client_id}/sessions/{started_at}_{session_id}.md\",\n    \"content_template\"\
+    : \"# {started_at} — Session {session_id}\\n\\n## Summary\\n\\n{session_summary_md}\\n\\n## Transcript\\\
+    n\\n{transcript_md}\"\n  }\n}\n```"
+  role: coding_agent
+  step_id: step-006
+- description: Integration & CLI
+  gate_ref: 'G2: Pre-Release'
+  kind: code
+  outputs:
+  - lorchestra/job_runner.py
+  prompt: '1. Add imports to `job_runner.py`:
+
+    ```python
+
+    import lorchestra.processors.projection
+
+    ```
+
+    2. Test the full flow:
+
+    ```bash
+
+    lorchestra run create_proj_client_sessions
+
+    lorchestra run sync_proj_client_sessions
+
+    lorchestra run project_session_files
+
+    ```
+
+    3. Verify files appear in `~/lifeos/local_views/{client_id}/sessions/`'
+  role: coding_agent
+  step_id: step-007
+project_slug: lorchestra
+repo:
+  default_branch: main
+  url: git@github.com:benthepsychologist/lorchestra.git
+  working_branch: feat/projections-v0
+spec_version: 1.0.0
+tier: C
+title: Hardcoded Projections v0
+updated: '2025-12-04T14:00:00+00:00'
+version: '0.1'
+

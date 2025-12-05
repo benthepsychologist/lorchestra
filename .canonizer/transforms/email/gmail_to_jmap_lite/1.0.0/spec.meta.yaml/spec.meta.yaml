@@ -1,0 +1,28 @@
+id: email/gmail_to_jmap_lite
+version: 1.0.0
+engine: jsonata
+runtime: node
+
+from_schema: iglu:com.google/gmail_email/jsonschema/1-0-0
+to_schema: iglu:org.canonical/email_jmap_lite/jsonschema/1-0-0
+
+spec_path: spec.jsonata
+
+checksum:
+  jsonata_sha256: "0bbdd428799c75f7e7c56742052dc29c44ea5ddaeee5987b2c829ef5f989c56e"
+
+provenance:
+  author: "Ben Machina <ben@therapyai.com>"
+  created_utc: "2025-11-13T12:00:00+00:00"
+
+status: stable
+
+description: >
+  Transform Gmail API v1 message to JMAP Lite canonical format.
+  Includes inline body content (text and HTML), attachments metadata, core headers, threading.
+  Use for: application display, most email clients.
+  Storage: ~10-50KB per email.
+
+tests:
+  - input: tests/input.json
+    expect: tests/expected.json

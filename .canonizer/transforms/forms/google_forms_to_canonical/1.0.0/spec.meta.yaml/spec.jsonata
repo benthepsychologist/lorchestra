@@ -1,0 +1,26 @@
+(
+  {
+    "response_id": responseId,
+    "form_id": formId,
+    "submitted_at": createTime,
+    "last_updated_at": lastSubmittedTime,
+    "source": {
+      "platform": "google_forms",
+      "platform_version": "v1"
+    },
+    "respondent": respondentEmail ? {
+      "email": respondentEmail
+    },
+    "answers": [$each(answers, function($v, $k) {
+      {
+        "question_id": $v.questionId,
+        "answer_value": $v.textAnswers.answers[0].value,
+        "answer_type": "choice"
+      }
+    })],
+    "status": "submitted",
+    "metadata": totalScore ? {
+      "total_score": totalScore
+    }
+  }
+)

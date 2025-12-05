@@ -72,7 +72,7 @@ class TestStorageClientProtocol:
             def update_field(self, idem_keys, field, value):
                 return len(idem_keys)
 
-            def query_objects_for_canonization(self, source_system, object_type, filters=None, limit=None, canonical_schema=None):
+            def query_objects_for_canonization(self, source_system, object_type, filters=None, limit=None, canonical_schema=None, idem_key_suffix=None):
                 yield {"idem_key": "test", "payload": {}}
 
             def upsert_canonical(self, objects, correlation_id, batch_size=500):
@@ -95,6 +95,12 @@ class TestStorageClientProtocol:
 
             def upsert_observations(self, observations, table, correlation_id):
                 return len(observations)
+
+            def execute_sql(self, sql):
+                return {"rows_affected": 0, "total_rows": 0}
+
+            def query_to_dataframe(self, sql):
+                return []
 
         client = MockStorageClient()
         assert isinstance(client, StorageClient)

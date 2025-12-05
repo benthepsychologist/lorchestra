@@ -109,6 +109,7 @@ class BigQueryStorageClient:
         filters: dict[str, Any] | None = None,
         limit: int | None = None,
         canonical_schema: str | None = None,
+        idem_key_suffix: str | None = None,
     ) -> Iterator[dict[str, Any]]:
         """Query validated raw_objects that need canonization.
 
@@ -124,6 +125,7 @@ class BigQueryStorageClient:
             filters: Additional filters (field=value)
             limit: Max records to return
             canonical_schema: Target canonical schema (important for 1:N raw->canonical mappings)
+            idem_key_suffix: Explicit suffix for idem_key matching (e.g. 'session_note')
         """
         raw_table = self._table_name("raw_objects")
         canonical_table = self._table_name("canonical_objects")
@@ -145,26 +147,26 @@ class BigQueryStorageClient:
         # 1:N mappings where one raw object produces multiple canonical objects
         # (e.g., session -> clinical_session AND session -> session_transcript)
         #
-        # Canonical idem_keys use format: raw_idem_key#canonical_object_type
-        # e.g. "dataverse:session:abc123#clinical_session"
+        # Canonical idem_keys use format: raw_idem_key#suffix
+        # e.g. "dataverse:session:abc123#session_note"
         #
-        # We also filter by canonical_schema base (without version) so that:
-        # - Minor/patch version bumps don't create duplicate records
-        # - Only major (x-0-0) bumps could theoretically coexist
-        # - Different object types (clinical_session vs session_transcript) are tracked separately
-        if canonical_schema:
+        # Use explicit idem_key_suffix when provided (preferred for stability across schema changes)
+        # Otherwise fall back to extracting from schema name
+        if idem_key_suffix:
+            # Explicit suffix provided - use it directly
+            canonical_object_type = idem_key_suffix
+        elif canonical_schema:
             # Extract canonical object type from schema:
             # iglu:org.canonical/session_transcript/jsonschema/2-0-0 -> session_transcript
             schema_parts = canonical_schema.split("/")
             canonical_object_type = schema_parts[1] if len(schema_parts) > 1 else ""
+        else:
+            canonical_object_type = None
 
-            # Extract base schema name (without version) for LIKE match:
-            # iglu:org.canonical/session_transcript/jsonschema/2-0-0 -> org.canonical/session_transcript
-            schema_base = canonical_schema.split("/jsonschema/")[0].replace("iglu:", "")
-
-            # Match canonical idem_key = raw_idem_key + '#' + canonical_object_type
+        if canonical_object_type:
+            # Match canonical idem_key = raw_idem_key + '#' + suffix
             # This handles the 1:N mapping correctly
-            join_condition = f"c.idem_key = CONCAT(r.idem_key, '#{canonical_object_type}') AND c.canonical_schema LIKE 'iglu:{schema_base}/%'"
+            join_condition = f"c.idem_key = CONCAT(r.idem_key, '#{canonical_object_type}')"
         else:
             # Fallback: match any canonical record that starts with raw idem_key + '#'
             join_condition = "c.idem_key LIKE CONCAT(r.idem_key, '#%')"
@@ -749,6 +751,43 @@ class BigQueryStorageClient:
 
         return total_affected
 
+    def execute_sql(
+        self,
+        sql: str,
+    ) -> dict[str, Any]:
+        """Execute arbitrary SQL and return result metadata.
+
+        Used for DDL operations like CREATE VIEW.
+
+        Args:
+            sql: SQL statement to execute
+
+        Returns:
+            Dict with execution metadata
+        """
+        result = self.bq_client.query(sql).result()
+        return {
+            "rows_affected": result.num_dml_affected_rows or 0,
+            "total_rows": result.total_rows or 0,
+        }
+
+    def query_to_dataframe(
+        self,
+        sql: str,
+    ) -> list[dict[str, Any]]:
+        """Execute query and return results as list of dicts.
+
+        Used for sync operations that need to read data.
+
+        Args:
+            sql: SQL query to execute
+
+        Returns:
+            List of row dicts
+        """
+        result = self.bq_client.query(sql).result()
+        return [dict(row) for row in result]
+
 
 class BigQueryEventClient:
     """EventClient implementation backed by BigQuery.
@@ -899,6 +938,7 @@ def run_job(
         import lorchestra.processors.ingest  # noqa: F401
         import lorchestra.processors.canonize  # noqa: F401
         import lorchestra.processors.final_form  # noqa: F401
+        import lorchestra.processors.projection  # noqa: F401
 
         # Get processor and run
         processor = registry.get(job_type)

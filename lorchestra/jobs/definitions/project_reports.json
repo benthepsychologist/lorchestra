@@ -1,0 +1,13 @@
+{
+  "job_id": "project_reports",
+  "job_type": "file_projection",
+  "source": {
+    "sqlite_path": "~/lifeos/local.db",
+    "query": "SELECT c.client_folder, d.document_date, d.title, d.content, d.doc_type FROM clinical_documents d JOIN clients c ON d.client_id = c.client_id WHERE d.content IS NOT NULL AND d.doc_type = 'progress-report' ORDER BY c.client_folder, d.document_date"
+  },
+  "sink": {
+    "base_path": "~/lifeos/local_views",
+    "path_template": "{client_folder}/reports/{document_date}-progress-report.md",
+    "content_template": "{content}"
+  }
+}

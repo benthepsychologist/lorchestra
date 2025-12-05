@@ -1,0 +1,72 @@
+(
+  /* Helper function to convert Exchange Recipient to JMAP EmailAddress */
+  $convertRecipient := function($recipient) {
+    $recipient ? {
+      "name": $recipient.emailAddress.name,
+      "email": $recipient.emailAddress.address
+    } : null
+  };
+
+  /* Helper function to convert recipient array */
+  $convertRecipients := function($recipients) {
+    $recipients ? [$map($recipients, $convertRecipient)] : null
+  };
+
+  /* Helper function to get header value by name */
+  $getHeader := function($headers, $name) {
+    $lookup($headers[name=$name], "value")
+  };
+
+  /* Helper function to parse importance */
+  $parseImportance := function($imp) {
+    $imp = "high" ? "high" : $imp = "low" ? "low" : "normal"
+  };
+
+  /* Extract body based on contentType */
+  $textBody := body.contentType = "text" ? body.content : null;
+  $htmlBody := body.contentType = "html" ? body.content : uniqueBody.contentType = "html" ? uniqueBody.content : null;
+
+  /* Build attachments array */
+  $attachments := attachments ? $map(attachments, function($att) {
+    {
+      "filename": $att.name,
+      "mimeType": $att.contentType,
+      "size": $att.size,
+      "blobId": "blob-att-" & $att.id,
+      "cid": null,
+      "isInline": $att.isInline
+    }
+  }) : [];
+
+  {
+    "id": id,
+    "blobId": "blob-" & id,
+    "threadId": conversationId,
+    "messageId": internetMessageId ? [internetMessageId] : null,
+    "inReplyTo": $getHeader(internetMessageHeaders, "In-Reply-To") ? [$getHeader(internetMessageHeaders, "In-Reply-To")] : null,
+    "references": $getHeader(internetMessageHeaders, "References") ? $split($getHeader(internetMessageHeaders, "References"), " ") : null,
+    "from": from ? [$convertRecipient(from)] : null,
+    "to": $convertRecipients(toRecipients),
+    "cc": $convertRecipients(ccRecipients),
+    "bcc": $convertRecipients(bccRecipients),
+    "replyTo": $convertRecipients(replyTo),
+    "subject": subject,
+    "sentAt": sentDateTime,
+    "receivedAt": receivedDateTime,
+    "size": $length($string(body.content)),
+    "preview": $substring(bodyPreview, 0, 256),
+    "body": {
+      "text": $textBody,
+      "html": $htmlBody
+    },
+    "attachments": $attachments,
+    "hasAttachment": hasAttachments,
+    "keywords": {
+      "$seen": isRead,
+      "$flagged": flag.flagStatus = "flagged",
+      "$draft": isDraft
+    },
+    "labels": categories ? categories : [],
+    "importance": $parseImportance(importance)
+  }
+)

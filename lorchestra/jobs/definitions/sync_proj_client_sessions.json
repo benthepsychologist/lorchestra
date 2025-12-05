@@ -1,0 +1,11 @@
+{
+  "job_id": "sync_proj_client_sessions",
+  "job_type": "sync_sqlite",
+  "source": {
+    "projection": "proj_client_sessions"
+  },
+  "sink": {
+    "sqlite_path": "~/lifeos/local.db",
+    "table": "proj_client_sessions"
+  }
+}
