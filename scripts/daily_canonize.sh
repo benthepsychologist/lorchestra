@@ -45,6 +45,15 @@ run_job canonize_dataverse_contacts
 echo "--- Dataverse Sessions → Clinical Session ---"
 run_job canonize_dataverse_sessions
 
+echo "--- Dataverse Sessions → Session Transcripts ---"
+run_job canonize_dataverse_transcripts
+
+echo "--- Dataverse Sessions → Session Notes ---"
+run_job canonize_dataverse_session_notes
+
+echo "--- Dataverse Sessions → Session Summaries ---"
+run_job canonize_dataverse_session_summaries
+
 echo "--- Dataverse Reports → Clinical Document ---"
 run_job canonize_dataverse_reports
 

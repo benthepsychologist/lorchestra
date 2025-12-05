@@ -75,7 +75,3 @@ google-cloud-cli-linux-x86_64.tar.gz
 # Scripts with secrets (use env vars instead)
 scripts/gmail_*
 scripts/get_gmail_*
-scripts/cleanup_test_data.py
-scripts/debug_bq_failures.py
-scripts/nuclear_clean.py
-docs/GMAIL_OAUTH_TROUBLESHOOTING.md
