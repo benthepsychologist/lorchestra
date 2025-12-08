@@ -50,6 +50,7 @@ def _parse_date_to_datetime(value: str) -> datetime:
 
 def _get_last_sync_timestamp(
     bq_client: bigquery.Client,
+    dataset: str,
     source_system: str,
     connection_name: str,
     object_type: str,
@@ -61,6 +62,7 @@ def _get_last_sync_timestamp(
 
     Args:
         bq_client: BigQuery client
+        dataset: BigQuery dataset name
         source_system: Provider family (e.g., "gmail")
         connection_name: Account identifier (e.g., "gmail-acct1")
         object_type: Object type (e.g., "email")
@@ -68,8 +70,6 @@ def _get_last_sync_timestamp(
     Returns:
         ISO timestamp string of last sync, or None if no previous sync
     """
-    dataset = os.environ.get("EVENTS_BQ_DATASET", "events_dev")
-
     query = f"""
         SELECT MAX(last_seen) as last_sync
         FROM `{dataset}.raw_objects`
@@ -210,7 +210,11 @@ class IngestProcessor:
         if auto_since and since is None and not context.dry_run:
             logger.info("auto_since enabled, querying BigQuery for last sync...")
             last_sync = _get_last_sync_timestamp(
-                context.bq_client, source_system, connection_name, object_type
+                context.bq_client,
+                context.config.dataset_raw,
+                source_system,
+                connection_name,
+                object_type,
             )
             if last_sync:
                 since = last_sync

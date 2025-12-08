@@ -57,9 +57,9 @@ class CreateProjectionProcessor:
         proj_name = job_spec["projection"]["name"]
         source_system = job_spec.get("source_system", "lorchestra")
 
-        # Get project and dataset from environment
-        project = os.environ.get("GCP_PROJECT", "local-orchestration")
-        dataset = os.environ.get("EVENTS_BQ_DATASET", "events_dev")
+        # Get project and dataset from context config
+        project = context.config.project
+        dataset = context.config.dataset_canonical
 
         # Log start event
         event_client.log_event(
@@ -144,9 +144,9 @@ class SyncSqliteProcessor:
         table = job_spec["sink"]["table"]
         source_system = job_spec.get("source_system", "lorchestra")
 
-        # Get project and dataset from environment
-        project = os.environ.get("GCP_PROJECT", "local-orchestration")
-        dataset = os.environ.get("EVENTS_BQ_DATASET", "events_dev")
+        # Get project and dataset from context config
+        project = context.config.project
+        dataset = context.config.dataset_canonical
 
         # Log start event
         event_client.log_event(

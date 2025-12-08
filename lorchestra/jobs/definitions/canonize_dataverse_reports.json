@@ -16,6 +16,6 @@
     "idem_key_suffix": "clinical_report"
   },
   "options": {
-    "limit": 1000
+    "limit": 50
   }
 }

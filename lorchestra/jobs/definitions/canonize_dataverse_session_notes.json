@@ -16,6 +16,6 @@
     "idem_key_suffix": "session_note"
   },
   "options": {
-    "limit": 1000
+    "limit": 50
   }
 }

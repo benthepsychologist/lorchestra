@@ -188,7 +188,8 @@ class TestSqlCommand:
                 result = runner.invoke(main, ["sql", "SELECT 1"])
 
         assert result.exit_code == 0
-        mock_run.assert_called_once_with("SELECT 1")
+        mock_run.assert_called_once()
+        assert mock_run.call_args[0][0] == "SELECT 1"
 
     def test_sql_with_stdin(self):
         """Test sql command with SQL from stdin."""
@@ -202,7 +203,8 @@ class TestSqlCommand:
                 result = runner.invoke(main, ["sql"], input="SELECT 2\n")
 
         assert result.exit_code == 0
-        mock_run.assert_called_once_with("SELECT 2")
+        mock_run.assert_called_once()
+        assert mock_run.call_args[0][0] == "SELECT 2"
 
     def test_sql_no_input_error(self):
         """Test sql command shows error when no SQL provided."""

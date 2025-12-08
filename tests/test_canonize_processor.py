@@ -161,10 +161,11 @@ class TestCanonizeProcessorValidateOnly:
         }
 
     @pytest.fixture
-    def context(self):
+    def context(self, test_config):
         return JobContext(
             bq_client=MagicMock(),
             run_id="test-run-123",
+            config=test_config,
             dry_run=False,
         )
 
@@ -250,9 +251,9 @@ class TestCanonizeProcessorValidateOnly:
         assert len(event_client.events) == 1
         assert event_client.events[0]["event_type"] == "validation.started"
 
-    def test_validate_only_dry_run(self, processor, job_spec):
+    def test_validate_only_dry_run(self, processor, job_spec, test_config):
         """Dry run validates but doesn't write."""
-        context = JobContext(bq_client=MagicMock(), run_id="dry-test", dry_run=True)
+        context = JobContext(bq_client=MagicMock(), run_id="dry-test", config=test_config, dry_run=True)
         records = [{"idem_key": "key1", "payload": {"id": "1"}}]
         storage_client = MockStorageClient(records=records)
         event_client = MockEventClient()
@@ -308,10 +309,11 @@ class TestCanonizeProcessorFullMode:
         }
 
     @pytest.fixture
-    def context(self):
+    def context(self, test_config):
         return JobContext(
             bq_client=MagicMock(),
             run_id="test-run-456",
+            config=test_config,
             dry_run=False,
         )
 
@@ -400,9 +402,9 @@ class TestCanonizeProcessorFullMode:
         assert len(event_client.events) == 1
         assert event_client.events[0]["event_type"] == "canonization.started"
 
-    def test_full_mode_dry_run(self, processor, job_spec):
+    def test_full_mode_dry_run(self, processor, job_spec, test_config):
         """Dry run transforms but doesn't insert."""
-        context = JobContext(bq_client=MagicMock(), run_id="dry-test", dry_run=True)
+        context = JobContext(bq_client=MagicMock(), run_id="dry-test", config=test_config, dry_run=True)
         records = [{"idem_key": "key1", "payload": {"id": "1"}, "source_system": "gmail"}]
         storage_client = MockStorageClient(records=records)
         event_client = MockEventClient()
@@ -446,7 +448,7 @@ class TestCanonizeProcessorErrors:
     def processor(self):
         return CanonizeProcessor()
 
-    def test_validate_mode_error_emits_event(self, processor):
+    def test_validate_mode_error_emits_event(self, processor, test_config):
         """Validation errors emit failure event."""
         job_spec = {
             "job_id": "validate_gmail",
@@ -454,7 +456,7 @@ class TestCanonizeProcessorErrors:
             "source": {"source_system": "gmail", "object_type": "email"},
             "transform": {"mode": "validate_only", "schema_in": "iglu:test/schema/1-0-0"},
         }
-        context = JobContext(bq_client=MagicMock(), run_id="err-test", dry_run=False)
+        context = JobContext(bq_client=MagicMock(), run_id="err-test", config=test_config, dry_run=False)
 
         # Storage client that raises
         storage_client = MagicMock()
@@ -473,7 +475,7 @@ class TestCanonizeProcessorErrors:
         assert event["status"] == "failed"
         assert "BQ connection failed" in event["error_message"]
 
-    def test_full_mode_error_emits_event(self, processor):
+    def test_full_mode_error_emits_event(self, processor, test_config):
         """Canonization errors emit failure event."""
         job_spec = {
             "job_id": "canonize_gmail",
@@ -484,7 +486,7 @@ class TestCanonizeProcessorErrors:
                 "transform_ref": "email/gmail_to_jmap@1.0.0",
             },
         }
-        context = JobContext(bq_client=MagicMock(), run_id="err-test", dry_run=False)
+        context = JobContext(bq_client=MagicMock(), run_id="err-test", config=test_config, dry_run=False)
 
         storage_client = MagicMock()
         storage_client.query_objects_for_canonization.side_effect = RuntimeError("Query failed")
@@ -531,10 +533,10 @@ class TestCanonizeProcessorHelpers:
             # Will fail because schema doesn't exist, but method is called
             processor._get_validator("iglu:test/nonexistent/jsonschema/1-0-0")
 
-    def test_get_transform_returns_wrapper(self, processor):
+    def test_get_transform_returns_wrapper(self, processor, test_config):
         """_get_transform returns a TransformWrapper for CLI execution."""
         # The new implementation returns a wrapper that calls the canonizer-core CLI
-        wrapper = processor._get_transform("nonexistent@1.0.0")
+        wrapper = processor._get_transform("nonexistent@1.0.0", config=test_config)
         # Wrapper has evaluate method
         assert hasattr(wrapper, "evaluate")
         assert hasattr(wrapper, "ref")

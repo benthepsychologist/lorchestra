@@ -131,6 +131,7 @@ def log_event(
     trace_id: Optional[str] = None,
     error_message: Optional[str] = None,
     payload: Optional[Dict[str, Any]] = None,
+    dataset: Optional[str] = None,
 ) -> None:
     """
     Write event envelope to event_log table.
@@ -154,33 +155,11 @@ def log_event(
         trace_id: Optional cross-system trace ID
         error_message: Human-readable error summary if status="failed"
         payload: Optional small telemetry dict (job params, counts, duration, error metadata)
+        dataset: BigQuery dataset name (optional, defaults to EVENTS_BQ_DATASET env var)
 
     Raises:
         ValueError: If required fields are invalid
         RuntimeError: If BigQuery write fails or env vars missing
-
-    Example:
-        >>> # Job started event (system-level, no connection)
-        >>> log_event(
-        ...     event_type="job.started",
-        ...     source_system="lorchestra",
-        ...     correlation_id="gmail-20251124120000",
-        ...     status="success",
-        ...     payload={"job_name": "gmail_ingest"},
-        ...     bq_client=client
-        ... )
-
-        >>> # Ingestion completed event (provider + connection + object)
-        >>> log_event(
-        ...     event_type="ingest.completed",
-        ...     source_system="gmail",
-        ...     connection_name="gmail-acct1",
-        ...     target_object_type="email",
-        ...     correlation_id="gmail-20251124120000",
-        ...     status="success",
-        ...     payload={"records_extracted": 100, "duration_seconds": 10.2},
-        ...     bq_client=client
-        ... )
     """
     # Validate required fields
     if not event_type or not isinstance(event_type, str):
@@ -223,7 +202,7 @@ def log_event(
 
     # Write to event_log (or test_event_log in test mode)
     table_name = "test_event_log" if _TEST_TABLE_MODE else "event_log"
-    table_ref = _get_table_ref_by_name(table_name)
+    table_ref = _get_table_ref_by_name(table_name, dataset=dataset)
     errors = bq_client.insert_rows_json(table_ref, [envelope])
 
     if errors:
@@ -246,6 +225,7 @@ def upsert_objects(
     schema_ref: Optional[str] = None,
     trace_id: Optional[str] = None,
     batch_size: int = 5000,
+    dataset: Optional[str] = None,
 ) -> UpsertResult:
     """
     Batch MERGE objects into raw_objects table.
@@ -270,6 +250,7 @@ def upsert_objects(
         schema_ref: Iglu URI for object schema (e.g., "iglu:com.mensio.raw/raw_gmail_email/jsonschema/1-0-0")
         trace_id: Optional cross-system trace ID
         batch_size: Batch size for processing (default 5000)
+        dataset: BigQuery dataset name (optional, defaults to EVENTS_BQ_DATASET env var)
 
     Returns:
         UpsertResult with total_records, inserted, updated, batch_count, duration_seconds
@@ -277,24 +258,6 @@ def upsert_objects(
     Raises:
         ValueError: If required fields are invalid
         RuntimeError: If BigQuery write fails
-
-    Example:
-        >>> from lorchestra.idem_keys import gmail_idem_key
-        >>>
-        >>> result = upsert_objects(
-        ...     objects=email_iterator,
-        ...     source_system="gmail",
-        ...     connection_name="gmail-acct1",
-        ...     object_type="email",
-        ...     correlation_id="gmail-20251124120000",
-        ...     idem_key_fn=gmail_idem_key("gmail", "gmail-acct1"),
-        ...     bq_client=client
-        ... )
-        >>> print(f"Upserted {result.total_records}: {result.inserted} new, {result.updated} updated")
-
-    Note:
-        - idem_key pattern: {source_system}:{connection_name}:{object_type}:{external_id}
-        - Automatically emits upsert.completed event with telemetry
     """
     # Validate required fields
     if not source_system or not isinstance(source_system, str):
@@ -358,6 +321,7 @@ def upsert_objects(
                 trace_id=trace_id,
                 idem_key_fn=idem_key_fn,
                 bq_client=bq_client,
+                dataset=dataset,
             )
             total_inserted += inserted
             total_updated += updated
@@ -378,6 +342,7 @@ def upsert_objects(
             trace_id=trace_id,
             idem_key_fn=idem_key_fn,
             bq_client=bq_client,
+            dataset=dataset,
         )
         total_inserted += inserted
         total_updated += updated
@@ -401,6 +366,7 @@ def upsert_objects(
             "duration_seconds": round(duration_seconds, 2),
         },
         bq_client=bq_client,
+        dataset=dataset,
     )
 
     return UpsertResult(
@@ -425,6 +391,7 @@ def _upsert_batch(
     trace_id: Optional[str],
     idem_key_fn: Callable[[Dict[str, Any]], str],
     bq_client,
+    dataset: Optional[str] = None,
 ) -> tuple[int, int]:
     """
     Upsert a single batch of objects to raw_objects.
@@ -447,6 +414,7 @@ def _upsert_batch(
         trace_id: Optional trace ID
         idem_key_fn: Function to compute idem_key from object
         bq_client: BigQuery client
+        dataset: BigQuery dataset name (optional)
 
     Returns:
         Tuple of (inserted_count, updated_count)
@@ -454,7 +422,7 @@ def _upsert_batch(
     Raises:
         RuntimeError: If load or MERGE fails
     """
-    dataset = os.environ.get("EVENTS_BQ_DATASET")
+    dataset = dataset or os.environ.get("EVENTS_BQ_DATASET")
     if not dataset:
         raise RuntimeError("Missing required environment variable: EVENTS_BQ_DATASET")
 
@@ -463,7 +431,7 @@ def _upsert_batch(
 
     # Use test table if in test mode
     target_table_name = "test_raw_objects" if _TEST_TABLE_MODE else "raw_objects"
-    raw_objects_ref = _get_table_ref_by_name(target_table_name)
+    raw_objects_ref = _get_table_ref_by_name(target_table_name, dataset=dataset)
 
     now = datetime.now(timezone.utc).isoformat()
 
@@ -592,12 +560,13 @@ def _extract_external_id(payload: Dict[str, Any]) -> Optional[str]:
     )
 
 
-def _get_table_ref_by_name(table_name: str) -> str:
+def _get_table_ref_by_name(table_name: str, dataset: Optional[str] = None) -> str:
     """
     Get fully-qualified BigQuery table reference by explicit table name.
 
     Args:
         table_name: Table name (e.g., "event_log", "test_event_log")
+        dataset: Optional dataset override
 
     Returns:
         Table reference string: "dataset.table_name"
@@ -605,7 +574,7 @@ def _get_table_ref_by_name(table_name: str) -> str:
     Raises:
         RuntimeError: If required EVENTS_BQ_DATASET environment variable is missing
     """
-    dataset = os.environ.get("EVENTS_BQ_DATASET")
+    dataset = dataset or os.environ.get("EVENTS_BQ_DATASET")
 
     if not dataset:
         raise RuntimeError("Missing required environment variable: EVENTS_BQ_DATASET")
@@ -613,7 +582,7 @@ def _get_table_ref_by_name(table_name: str) -> str:
     return f"{dataset}.{table_name}"
 
 
-def ensure_test_tables_exist(bq_client) -> None:
+def ensure_test_tables_exist(bq_client, dataset: Optional[str] = None) -> None:
     """Create test_event_log and test_raw_objects if they don't exist.
 
     Copies schema from production tables. Only called when --test-table is active.
@@ -621,9 +590,10 @@ def ensure_test_tables_exist(bq_client) -> None:
 
     Args:
         bq_client: google.cloud.bigquery.Client instance
+        dataset: BigQuery dataset name (optional)
     """
     project = os.environ.get("GCP_PROJECT") or bq_client.project
-    dataset = os.environ.get("EVENTS_BQ_DATASET")
+    dataset = dataset or os.environ.get("EVENTS_BQ_DATASET")
     if not dataset:
         raise RuntimeError("Missing required environment variable: EVENTS_BQ_DATASET")
 

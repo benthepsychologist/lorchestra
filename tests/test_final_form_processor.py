@@ -178,6 +178,16 @@ class MockStorageClient:
         for record in self.canonical_records[:limit] if limit else self.canonical_records:
             yield record
 
+    def query_canonical_for_formation(
+        self,
+        canonical_schema: str | None = None,
+        filters: dict[str, Any] | None = None,
+        limit: int | None = None,
+        measurement_table: str = "measurement_events",
+    ) -> Iterator[dict[str, Any]]:
+        """Mock implementation delegates to query_canonical."""
+        return self.query_canonical(canonical_schema, filters, limit)
+
     def upsert_measurements(
         self,
         measurements: list[dict[str, Any]],
@@ -282,10 +292,11 @@ class TestFinalFormProcessor:
         }
 
     @pytest.fixture
-    def context(self):
+    def context(self, test_config):
         return JobContext(
             bq_client=MagicMock(),
             run_id="test-run-789",
+            config=test_config,
             dry_run=False,
         )
 
@@ -387,9 +398,9 @@ class TestFinalFormProcessor:
         assert len(event_client.events) == 1
         assert event_client.events[0]["event_type"] == "formation.started"
 
-    def test_dry_run_mode(self, processor, job_spec):
+    def test_dry_run_mode(self, processor, job_spec, test_config):
         """Dry run processes but doesn't upsert."""
-        context = JobContext(bq_client=MagicMock(), run_id="dry-test", dry_run=True)
+        context = JobContext(bq_client=MagicMock(), run_id="dry-test", config=test_config, dry_run=True)
         records = [{
             "idem_key": "key1",
             "payload": {
@@ -496,18 +507,17 @@ class TestFinalFormProcessorErrors:
     def processor(self):
         return FinalFormProcessor()
 
-    def test_error_emits_failure_event(self, processor):
+    def test_error_emits_failure_event(self, processor, test_config):
         """Errors emit failure event with details."""
         job_spec = {
             "job_id": "form_intake_01",
             "job_type": "final_form",
             "source": {"filter": {"canonical_schema": "test"}},
-            "transform": {"binding_id": "intake_01"},
         }
-        context = JobContext(bq_client=MagicMock(), run_id="err-test", dry_run=False)
+        context = JobContext(bq_client=MagicMock(), run_id="err-test", config=test_config, dry_run=False)
 
         storage_client = MagicMock()
-        storage_client.query_canonical.side_effect = RuntimeError("BQ connection failed")
+        storage_client.query_canonical_for_formation.side_effect = RuntimeError("BQ connection failed")
 
         event_client = MockEventClient()
 
@@ -525,7 +535,7 @@ class TestFinalFormProcessorErrors:
         assert "BQ connection failed" in error_event["error_message"]
         assert error_event["payload"]["error_type"] == "RuntimeError"
 
-    def test_pipeline_creation_failure(self, processor):
+    def test_pipeline_creation_failure(self, processor, test_config):
         """Pipeline creation failure emits failure event."""
         job_spec = {
             "job_id": "form_intake_01",
@@ -533,7 +543,7 @@ class TestFinalFormProcessorErrors:
             "source": {"filter": {}},
             "transform": {"binding_id": "nonexistent"},
         }
-        context = JobContext(bq_client=MagicMock(), run_id="err-test", dry_run=False)
+        context = JobContext(bq_client=MagicMock(), run_id="err-test", config=test_config, dry_run=False)
         storage_client = MockStorageClient()
         event_client = MockEventClient()
 
@@ -577,11 +587,12 @@ class TestFinalFormProcessorHelpers:
         payload = {
             "form_id": "googleforms::abc123",
             "submission_id": "sub-001",
+            "submission_id": "sub-001",
             "submitted_at": "2025-12-03T12:00:00Z",
             "respondent": {"id": "user-123"},
-            "items": [
-                {"field_key": "q1", "answer": "A little bit"},
-                {"field_key": "q2", "answer": "Often"},
+            "answers": [
+                {"question_id": "q1", "answer_value": "A little bit"},
+                {"question_id": "q2", "answer_value": "Often"},
             ],
         }
 
@@ -592,8 +603,8 @@ class TestFinalFormProcessorHelpers:
         assert result["subject_id"] == "user-123"
         assert result["timestamp"] == "2025-12-03T12:00:00Z"
         assert len(result["items"]) == 2
-        assert result["items"][0] == {"field_key": "q1", "answer": "A little bit"}
-        assert result["items"][1] == {"field_key": "q2", "answer": "Often"}
+        assert result["items"][0] == {"field_key": "q1", "answer": "A little bit", "position": 0}
+        assert result["items"][1] == {"field_key": "q2", "answer": "Often", "position": 1}
 
     def test_build_form_response_missing_respondent(self, processor):
         """_build_form_response handles missing respondent."""

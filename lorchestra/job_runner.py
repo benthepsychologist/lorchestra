@@ -27,11 +27,10 @@ from typing import Any, Callable, Iterator
 from google.cloud import bigquery
 
 from lorchestra.processors import registry
-from lorchestra.processors.base import (
-    JobContext,
-    UpsertResult,
-)
+from lorchestra.processors.base import JobContext, UpsertResult
 from lorchestra.stack_clients import event_client as ec
+# Type import locally to avoid circulars if necessary, or just use Any if lazy
+from lorchestra.config import LorchestraConfig
 
 logger = logging.getLogger(__name__)
 
@@ -42,12 +41,13 @@ DEFINITIONS_DIR = Path(__file__).parent / "jobs" / "definitions"
 class BigQueryStorageClient:
     """StorageClient implementation backed by BigQuery.
 
-    Implements the StorageClient protocol using BigQuery as the backing store.
+    Implements the StorageClient protocol using the BigQuery client.
     """
 
-    def __init__(self, bq_client: bigquery.Client, dataset: str, test_table: bool = False):
+    def __init__(self, bq_client: bigquery.Client, config: LorchestraConfig, test_table: bool = False):
         self.bq_client = bq_client
-        self.dataset = dataset
+        self.config = config
+        self.dataset = config.dataset_raw  # Default to raw, but methods might use others
         self.test_table = test_table
 
     def _table_name(self, base_name: str) -> str:
@@ -55,6 +55,21 @@ class BigQueryStorageClient:
         if self.test_table:
             return f"test_{base_name}"
         return base_name
+    
+    def _dataset_for_table(self, table_name: str) -> str:
+        """Resolve dataset based on table type/name."""
+        # This is a bit of a heuristic. Ideally we'd map table -> dataset explicitly.
+        # But for now, we know:
+        # raw_objects -> dataset_raw
+        # canonical_objects -> dataset_canonical
+        # measurement_events, observations -> dataset_derived (or canonical? Usually derived/analytics)
+        # Using config to resolve instead of self.dataset
+        if "raw_objects" in table_name:
+            return self.config.dataset_raw
+        elif "canonical_objects" in table_name:
+            return self.config.dataset_canonical
+        else:
+            return self.config.dataset_derived  # measurements, observations, etc.
 
     def query_objects(
         self,
@@ -64,7 +79,9 @@ class BigQueryStorageClient:
         limit: int | None = None,
     ) -> Iterator[dict[str, Any]]:
         """Query objects from raw_objects."""
-        table = self._table_name("raw_objects")
+        table_base = "raw_objects"
+        table = self._table_name(table_base)
+        dataset = self._dataset_for_table(table_base)
         filters = filters or {}
 
         # Build WHERE clause
@@ -91,7 +108,7 @@ class BigQueryStorageClient:
         query = f"""
             SELECT idem_key, source_system, connection_name, object_type,
                    payload, correlation_id, validation_status, last_seen
-            FROM `{self.dataset}.{table}`
+            FROM `{dataset}.{table}`
             WHERE {where_clause}
             {limit_clause}
         """
@@ -127,8 +144,13 @@ class BigQueryStorageClient:
             canonical_schema: Target canonical schema (important for 1:N raw->canonical mappings)
             idem_key_suffix: Explicit suffix for idem_key matching (e.g. 'session_note')
         """
-        raw_table = self._table_name("raw_objects")
-        canonical_table = self._table_name("canonical_objects")
+        raw_base = "raw_objects"
+        raw_table = self._table_name(raw_base)
+        raw_dataset = self._dataset_for_table(raw_base)
+        
+        canonical_base = "canonical_objects"
+        canonical_table = self._table_name(canonical_base)
+        canonical_dataset = self._dataset_for_table(canonical_base)
         filters = filters or {}
 
         # Build WHERE clause conditions
@@ -188,8 +210,8 @@ class BigQueryStorageClient:
         query = f"""
             SELECT r.idem_key, r.source_system, r.connection_name, r.object_type,
                    r.payload, r.correlation_id, r.validation_status, r.last_seen
-            FROM `{self.dataset}.{raw_table}` r
-            LEFT JOIN `{self.dataset}.{canonical_table}` c ON {join_condition}
+            FROM `{raw_dataset}.{raw_table}` r
+            LEFT JOIN `{canonical_dataset}.{canonical_table}` c ON {join_condition}
             WHERE {where_clause}
             {limit_clause}
         """
@@ -219,6 +241,7 @@ class BigQueryStorageClient:
             correlation_id=correlation_id,
             idem_key_fn=idem_key_fn,
             bq_client=self.bq_client,
+            dataset=self.config.dataset_raw,
         )
         return UpsertResult(inserted=result.inserted, updated=result.updated)
 
@@ -232,11 +255,13 @@ class BigQueryStorageClient:
         if not idem_keys:
             return 0
 
-        table = self._table_name("raw_objects")
+        table_base = "raw_objects"
+        table = self._table_name(table_base)
+        dataset = self._dataset_for_table(table_base)
 
         # Build UPDATE query
         query = f"""
-            UPDATE `{self.dataset}.{table}`
+            UPDATE `{dataset}.{table}`
             SET {field} = @value, last_seen = CURRENT_TIMESTAMP()
             WHERE idem_key IN UNNEST(@idem_keys)
         """
@@ -273,8 +298,10 @@ class BigQueryStorageClient:
         if not objects:
             return {"inserted": 0, "updated": 0}
 
-        table = self._table_name("canonical_objects")
-        table_ref = f"{self.dataset}.{table}"
+        table_base = "canonical_objects"
+        table = self._table_name(table_base)
+        dataset = self._dataset_for_table(table_base)
+        table_ref = f"{dataset}.{table}"
 
         total_inserted = 0
         total_updated = 0
@@ -370,7 +397,9 @@ class BigQueryStorageClient:
         Filters can reference either table columns or payload fields.
         Payload fields are accessed via JSON_VALUE(payload, '$.field_name').
         """
-        table = self._table_name("canonical_objects")
+        table_base = "canonical_objects"
+        table = self._table_name(table_base)
+        dataset = self._dataset_for_table(table_base)
         filters = filters or {}
 
         # Build WHERE clause
@@ -408,7 +437,7 @@ class BigQueryStorageClient:
         query = f"""
             SELECT idem_key, source_system, connection_name, object_type,
                    canonical_schema, transform_ref, payload, correlation_id
-            FROM `{self.dataset}.{table}`
+            FROM `{dataset}.{table}`
             WHERE {where_clause}
             {limit_clause}
         """
@@ -432,8 +461,8 @@ class BigQueryStorageClient:
         - canonical_schema matches (if provided)
         - additional filters match
         - AND either:
-          - Not yet in measurement_events (never formed), OR
-          - canonical_objects.canonicalized_at > measurement_events.processed_at (re-canonized since last processing)
+            - Not yet in measurement_events (never formed), OR
+            - canonical_objects.canonicalized_at > measurement_events.processed_at (re-canonized since last processing)
 
         This enables incremental processing - only new or updated canonical
         records are returned, avoiding re-processing the entire table.
@@ -444,8 +473,14 @@ class BigQueryStorageClient:
             measurement_table: Name of measurement events table
             limit: Max records to return
         """
-        canonical_table = self._table_name("canonical_objects")
-        measurement_table = self._table_name(measurement_table)
+        canonical_base = "canonical_objects"
+        canonical_table = self._table_name(canonical_base)
+        canonical_dataset = self._dataset_for_table(canonical_base)
+
+        measurement_base = measurement_table
+        measurement_table_name = self._table_name(measurement_base)
+        measurement_dataset = self._dataset_for_table(measurement_base)
+        
         filters = filters or {}
 
         # Build WHERE clause conditions
@@ -489,10 +524,10 @@ class BigQueryStorageClient:
         query = f"""
             SELECT c.idem_key, c.source_system, c.connection_name, c.object_type,
                    c.canonical_schema, c.transform_ref, c.payload, c.correlation_id
-            FROM `{self.dataset}.{canonical_table}` c
+            FROM `{canonical_dataset}.{canonical_table}` c
             LEFT JOIN (
                 SELECT canonical_idem_key, MAX(processed_at) as processed_at
-                FROM `{self.dataset}.{measurement_table}`
+                FROM `{measurement_dataset}.{measurement_table_name}`
                 GROUP BY canonical_idem_key
             ) m ON c.idem_key = m.canonical_idem_key
             WHERE {where_clause}
@@ -515,8 +550,10 @@ class BigQueryStorageClient:
         if not measurements:
             return 0
 
-        table_name = self._table_name(table)
-        table_ref = f"{self.dataset}.{table_name}"
+        table_base = table
+        table_name = self._table_name(table_base)
+        dataset = self._dataset_for_table(table_base)
+        table_ref = f"{dataset}.{table_name}"
 
         rows = []
         for m in measurements:
@@ -549,8 +586,10 @@ class BigQueryStorageClient:
         if not observations:
             return 0
 
-        table_name = self._table_name(table)
-        table_ref = f"{self.dataset}.{table_name}"
+        table_base = table
+        table_name = self._table_name(table_base)
+        dataset = self._dataset_for_table(table_base)
+        table_ref = f"{dataset}.{table_name}"
 
         rows = []
         for o in observations:
@@ -587,8 +626,10 @@ class BigQueryStorageClient:
         if not measurements:
             return 0
 
-        table_name = self._table_name(table)
-        table_ref = f"{self.dataset}.{table_name}"
+        table_base = table
+        table_name = self._table_name(table_base)
+        dataset = self._dataset_for_table(table_base)
+        table_ref = f"{dataset}.{table_name}"
         total_affected = 0
 
         # Process in batches
@@ -669,8 +710,10 @@ class BigQueryStorageClient:
         if not observations:
             return 0
 
-        table_name = self._table_name(table)
-        table_ref = f"{self.dataset}.{table_name}"
+        table_base = table
+        table_name = self._table_name(table_base)
+        dataset = self._dataset_for_table(table_base)
+        table_ref = f"{dataset}.{table_name}"
         total_affected = 0
 
         # Process in batches
@@ -680,6 +723,7 @@ class BigQueryStorageClient:
             # Build source data as a query with UNION ALL
             source_rows = []
             for o in batch:
+
                 # Escape single quotes
                 def esc(v):
                     return str(v).replace("'", "\\'") if v is not None else ""
@@ -795,8 +839,9 @@ class BigQueryEventClient:
     Implements the EventClient protocol using the existing event_client module.
     """
 
-    def __init__(self, bq_client: bigquery.Client):
+    def __init__(self, bq_client: bigquery.Client, config: LorchestraConfig):
         self.bq_client = bq_client
+        self.config = config
 
     def log_event(
         self,
@@ -820,6 +865,7 @@ class BigQueryEventClient:
             payload=payload,
             error_message=error_message,
             bq_client=self.bq_client,
+            dataset=self.config.dataset_raw,
         )
 
 
@@ -852,10 +898,10 @@ def load_job_definition(job_id: str, definitions_dir: Path | None = None) -> dic
 
     return job_def
 
-
 def run_job(
     job_id: str,
     *,
+    config: LorchestraConfig | None = None,
     dry_run: bool = False,
     test_table: bool = False,
     definitions_dir: Path | None = None,
@@ -871,6 +917,7 @@ def run_job(
 
     Args:
         job_id: Job identifier (e.g., "gmail_ingest_acct1")
+        config: Configuration object (required, though optional locally for test compat)
         dry_run: If True, skip all writes and log what would happen
         test_table: If True, write to test tables instead of production
         definitions_dir: Optional directory containing job definitions
@@ -880,7 +927,21 @@ def run_job(
         FileNotFoundError: If job definition doesn't exist
         KeyError: If job_type is not registered
         Exception: If processor raises an error
+        ValueError: If config is missing
     """
+    if config is None:
+         # Try to load if not provided, for backward compat or direct testing
+         # But ideally caller should provide it
+        from lorchestra.config import load_config
+        try:
+             config = load_config()
+        except Exception as e:
+             # If we are in a test env that mocks env vars but didn't pass config, we might want to allow it
+             # But generally we should enforce config.
+             # For now, let's just log and try to proceed if we can default (which we can't really properly)
+             # or just fail.
+             raise ValueError(f"Configuration required to run job: {e}")
+
     # Generate run ID for correlation
     run_id = f"{job_id}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
 
@@ -902,19 +963,17 @@ def run_job(
 
     # Create BigQuery client if not provided
     if bq_client is None:
-        bq_client = bigquery.Client()
+        bq_client = bigquery.Client(project=config.project)
 
-    # Get dataset from environment
-    dataset = os.environ.get("EVENTS_BQ_DATASET", "events_dev")
-
-    # Create protocol implementations
-    storage_client = BigQueryStorageClient(bq_client, dataset, test_table=test_table)
-    event_client = BigQueryEventClient(bq_client)
+    # Initialize shared clients with config
+    storage_client = BigQueryStorageClient(bq_client, config, test_table=test_table)
+    event_client = BigQueryEventClient(bq_client, config)
 
     # Create job context
     context = JobContext(
         bq_client=bq_client,
         run_id=run_id,
+        config=config,
         dry_run=dry_run,
         test_table=test_table,
     )

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Iterator, Protocol, runtime_checkable
 
 from google.cloud import bigquery
+from lorchestra.config import LorchestraConfig
 
 
 @dataclass
@@ -29,6 +30,7 @@ class JobContext:
 
     bq_client: bigquery.Client
     run_id: str
+    config: LorchestraConfig
     dry_run: bool = False
     test_table: bool = False
 

@@ -24,11 +24,12 @@ class TestCreateProjectionProcessor:
         return CreateProjectionProcessor()
 
     @pytest.fixture
-    def mock_context(self):
+    def mock_context(self, test_config):
         """Create a mock JobContext."""
         return JobContext(
             bq_client=MagicMock(),
             run_id="test-run-123",
+            config=test_config,
             dry_run=False,
             test_table=False,
         )
@@ -45,7 +46,6 @@ class TestCreateProjectionProcessor:
         """Create a mock EventClient."""
         return MagicMock()
 
-    @patch.dict("os.environ", {"GCP_PROJECT": "test-project", "EVENTS_BQ_DATASET": "test_dataset"})
     def test_create_projection_executes_sql(
         self, processor, mock_context, mock_storage_client, mock_event_client
     ):
@@ -63,10 +63,9 @@ class TestCreateProjectionProcessor:
         sql_arg = mock_storage_client.execute_sql.call_args[0][0]
         assert "CREATE OR REPLACE VIEW" in sql_arg
         assert "test-project" in sql_arg
-        assert "test_dataset" in sql_arg
+        assert "test_canonical" in sql_arg
         assert "proj_clients" in sql_arg
 
-    @patch.dict("os.environ", {"GCP_PROJECT": "test-project", "EVENTS_BQ_DATASET": "test_dataset"})
     def test_create_projection_logs_events(
         self, processor, mock_context, mock_storage_client, mock_event_client
     ):
@@ -93,14 +92,14 @@ class TestCreateProjectionProcessor:
         assert completed_call.kwargs["event_type"] == "projection.completed"
         assert completed_call.kwargs["status"] == "success"
 
-    @patch.dict("os.environ", {"GCP_PROJECT": "test-project", "EVENTS_BQ_DATASET": "test_dataset"})
     def test_create_projection_dry_run(
-        self, processor, mock_storage_client, mock_event_client
+        self, processor, mock_storage_client, mock_event_client, test_config
     ):
         """CreateProjectionProcessor skips SQL execution in dry run mode."""
         context = JobContext(
             bq_client=MagicMock(),
             run_id="test-run-123",
+            config=test_config,
             dry_run=True,
             test_table=False,
         )
@@ -119,7 +118,6 @@ class TestCreateProjectionProcessor:
         dry_run_call = mock_event_client.log_event.call_args_list[1]
         assert dry_run_call.kwargs["event_type"] == "projection.dry_run"
 
-    @patch.dict("os.environ", {"GCP_PROJECT": "test-project", "EVENTS_BQ_DATASET": "test_dataset"})
     def test_create_projection_logs_failure(
         self, processor, mock_context, mock_storage_client, mock_event_client
     ):
@@ -163,11 +161,12 @@ class TestSyncSqliteProcessor:
         return SyncSqliteProcessor()
 
     @pytest.fixture
-    def mock_context(self):
+    def mock_context(self, test_config):
         """Create a mock JobContext."""
         return JobContext(
             bq_client=MagicMock(),
             run_id="test-run-123",
+            config=test_config,
             dry_run=False,
             test_table=False,
         )
@@ -187,7 +186,6 @@ class TestSyncSqliteProcessor:
         """Create a mock EventClient."""
         return MagicMock()
 
-    @patch.dict("os.environ", {"GCP_PROJECT": "test-project", "EVENTS_BQ_DATASET": "test_dataset"})
     def test_sync_sqlite_queries_bq_and_writes_sqlite(
         self, processor, mock_context, mock_storage_client, mock_event_client
     ):
@@ -218,7 +216,6 @@ class TestSyncSqliteProcessor:
             assert rows[0][0] == "c1"  # client_id
             assert rows[1][0] == "c2"
 
-    @patch.dict("os.environ", {"GCP_PROJECT": "test-project", "EVENTS_BQ_DATASET": "test_dataset"})
     def test_sync_sqlite_logs_events(
         self, processor, mock_context, mock_storage_client, mock_event_client
     ):
@@ -246,14 +243,14 @@ class TestSyncSqliteProcessor:
             assert completed_call.kwargs["event_type"] == "sync.completed"
             assert completed_call.kwargs["payload"]["rows"] == 2
 
-    @patch.dict("os.environ", {"GCP_PROJECT": "test-project", "EVENTS_BQ_DATASET": "test_dataset"})
     def test_sync_sqlite_dry_run(
-        self, processor, mock_storage_client, mock_event_client
+        self, processor, mock_storage_client, mock_event_client, test_config
     ):
         """SyncSqliteProcessor skips sync in dry run mode."""
         context = JobContext(
             bq_client=MagicMock(),
             run_id="test-run-123",
+            config=test_config,
             dry_run=True,
             test_table=False,
         )
@@ -275,7 +272,6 @@ class TestSyncSqliteProcessor:
             dry_run_call = mock_event_client.log_event.call_args_list[1]
             assert dry_run_call.kwargs["event_type"] == "sync.dry_run"
 
-    @patch.dict("os.environ", {"GCP_PROJECT": "test-project", "EVENTS_BQ_DATASET": "test_dataset"})
     def test_sync_sqlite_handles_empty_results(
         self, processor, mock_context, mock_event_client
     ):
@@ -299,7 +295,6 @@ class TestSyncSqliteProcessor:
             assert completed_call.kwargs["event_type"] == "sync.completed"
             assert completed_call.kwargs["payload"]["rows"] == 0
 
-    @patch.dict("os.environ", {"GCP_PROJECT": "test-project", "EVENTS_BQ_DATASET": "test_dataset"})
     def test_sync_sqlite_replaces_existing_data(
         self, processor, mock_context, mock_storage_client, mock_event_client
     ):
@@ -342,11 +337,12 @@ class TestFileProjectionProcessor:
         return FileProjectionProcessor()
 
     @pytest.fixture
-    def mock_context(self):
+    def mock_context(self, test_config):
         """Create a mock JobContext."""
         return JobContext(
             bq_client=MagicMock(),
             run_id="test-run-123",
+            config=test_config,
             dry_run=False,
             test_table=False,
         )
@@ -453,12 +449,13 @@ class TestFileProjectionProcessor:
             assert completed_call.kwargs["payload"]["files"] == 1
 
     def test_file_projection_dry_run(
-        self, processor, mock_storage_client, mock_event_client
+        self, processor, mock_storage_client, mock_event_client, test_config
     ):
         """FileProjectionProcessor skips file creation in dry run mode."""
         context = JobContext(
             bq_client=MagicMock(),
             run_id="test-run-123",
+            config=test_config,
             dry_run=True,
             test_table=False,
         )

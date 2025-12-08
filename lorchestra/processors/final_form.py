@@ -74,12 +74,23 @@ class FinalFormProcessor:
         # Transform config
         binding_id = transform_config.get("binding_id")
         binding_version = transform_config.get("binding_version")
+
+        # Resolve registry paths from config or defaults
+        formation_root = context.config.formation_registry_root
+        if formation_root:
+            root_path = Path(formation_root).expanduser()
+            default_measure = root_path / "measure-registry"
+            default_binding = root_path / "form-binding-registry"
+        else:
+            default_measure = DEFAULT_MEASURE_REGISTRY
+            default_binding = DEFAULT_BINDING_REGISTRY
+
         measure_registry_path = Path(
-            transform_config.get("measure_registry_path", DEFAULT_MEASURE_REGISTRY)
-        )
+            transform_config.get("measure_registry_path", default_measure)
+        ).expanduser()
         binding_registry_path = Path(
-            transform_config.get("binding_registry_path", DEFAULT_BINDING_REGISTRY)
-        )
+            transform_config.get("binding_registry_path", default_binding)
+        ).expanduser()
 
         # Sink config
         measurement_table = sink.get("measurement_table", "measurement_events")

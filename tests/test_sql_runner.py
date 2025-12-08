@@ -111,54 +111,42 @@ class TestValidateReadonlySql:
 class TestSubstitutePlaceholders:
     """Tests for substitute_placeholders function."""
 
-    def test_substitutes_project_and_dataset(self):
+    def test_substitutes_project_and_dataset(self, test_config):
         """Test basic placeholder substitution."""
         from lorchestra.sql_runner import substitute_placeholders
 
-        env = {"GCP_PROJECT": "my-project", "EVENTS_BQ_DATASET": "my_dataset"}
-        with patch.dict(os.environ, env, clear=False):
-            result = substitute_placeholders(
-                "SELECT * FROM `${PROJECT}.${DATASET}.table`"
-            )
-        assert result == "SELECT * FROM `my-project.my_dataset.table`"
+        result = substitute_placeholders(
+            "SELECT * FROM `${PROJECT}.${DATASET_RAW}.table`",
+            config=test_config,
+        )
+        assert result == "SELECT * FROM `test-project.test_events.table`"
 
-    def test_substitutes_extra_placeholders(self):
+    def test_substitutes_legacy_dataset(self, test_config):
+        """Test legacy ${DATASET} placeholder substitution."""
+        from lorchestra.sql_runner import substitute_placeholders
+
+        result = substitute_placeholders(
+            "SELECT * FROM `${PROJECT}.${DATASET}.table`",
+            config=test_config,
+        )
+        assert result == "SELECT * FROM `test-project.test_events.table`"
+
+    def test_substitutes_extra_placeholders(self, test_config):
         """Test extra placeholder substitution."""
         from lorchestra.sql_runner import substitute_placeholders
 
-        env = {"GCP_PROJECT": "my-project", "EVENTS_BQ_DATASET": "my_dataset"}
-        with patch.dict(os.environ, env, clear=False):
-            result = substitute_placeholders(
-                "SELECT * FROM table WHERE days < ${DAYS}",
-                extra={"DAYS": "30"},
-            )
+        result = substitute_placeholders(
+            "SELECT * FROM table WHERE days < ${DAYS}",
+            config=test_config,
+            extra={"DAYS": "30"},
+        )
         assert result == "SELECT * FROM table WHERE days < 30"
-
-    def test_fails_without_gcp_project(self):
-        """Test that missing GCP_PROJECT raises error."""
-        from lorchestra.sql_runner import substitute_placeholders
-
-        env = {"EVENTS_BQ_DATASET": "my_dataset"}
-        with patch.dict(os.environ, env, clear=True):
-            with pytest.raises(click.UsageError) as exc_info:
-                substitute_placeholders("SELECT * FROM table")
-            assert "GCP_PROJECT" in str(exc_info.value)
-
-    def test_fails_without_events_bq_dataset(self):
-        """Test that missing EVENTS_BQ_DATASET raises error."""
-        from lorchestra.sql_runner import substitute_placeholders
-
-        env = {"GCP_PROJECT": "my-project"}
-        with patch.dict(os.environ, env, clear=True):
-            with pytest.raises(click.UsageError) as exc_info:
-                substitute_placeholders("SELECT * FROM table")
-            assert "EVENTS_BQ_DATASET" in str(exc_info.value)
 
 
 class TestRunSqlQuery:
     """Tests for run_sql_query function."""
 
-    def test_executes_valid_query(self):
+    def test_executes_valid_query(self, test_config):
         """Test that valid query is executed."""
         from lorchestra.sql_runner import run_sql_query
 
@@ -177,18 +165,17 @@ class TestRunSqlQuery:
         mock_result.total_rows = 1
         mock_client.query.return_value.result.return_value = mock_result
 
-        env = {"GCP_PROJECT": "my-project", "EVENTS_BQ_DATASET": "my_dataset"}
-        with patch.dict(os.environ, env, clear=False):
-            with patch("google.cloud.bigquery.Client", return_value=mock_client):
-                run_sql_query("SELECT col1, col2 FROM table")
+        with patch("google.cloud.bigquery.Client", return_value=mock_client):
+            run_sql_query("SELECT col1, col2 FROM table", config=test_config)
 
         mock_client.query.assert_called_once()
+        # Verify allow_large_results is not set (default)
+        # Verify client initialized with correct project
+        # We can't easily check init args of mocked class return value unless we mock definition
 
-    def test_rejects_invalid_query(self):
+    def test_rejects_invalid_query(self, test_config):
         """Test that invalid query raises error before execution."""
         from lorchestra.sql_runner import run_sql_query
 
-        env = {"GCP_PROJECT": "my-project", "EVENTS_BQ_DATASET": "my_dataset"}
-        with patch.dict(os.environ, env, clear=False):
-            with pytest.raises(click.UsageError):
-                run_sql_query("INSERT INTO table VALUES (1)")
+        with pytest.raises(click.UsageError):
+            run_sql_query("INSERT INTO table VALUES (1)", config=test_config)

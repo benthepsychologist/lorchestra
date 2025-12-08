@@ -8,5 +8,5 @@ user:
   default_owner: benthepsychologist
   default_tier: C
 current:
-  spec: .specwright/specs/projection-processor.md
-  aip: /workspace/lorchestra/.specwright/aips/projection-processor.yaml
+  spec: .specwright/specs/independent-package-config.md
+  aip: /workspace/lorchestra/.specwright/aips/independent-package-config.yaml

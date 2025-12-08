@@ -2,11 +2,11 @@
   "job_id": "project_session_summaries",
   "job_type": "file_projection",
   "source": {
-    "sqlite_path": "~/lifeos/local.db",
+    "sqlite_path": "~/clinical-vault/local.db",
     "query": "SELECT c.client_folder, s.session_num, d.content, d.doc_type FROM clinical_documents d JOIN sessions s ON d.session_id = s.session_id JOIN clients c ON d.client_id = c.client_id WHERE d.content IS NOT NULL AND d.doc_type = 'client-summary' ORDER BY c.client_folder, s.session_num"
   },
   "sink": {
-    "base_path": "~/lifeos/local_views",
+    "base_path": "~/clinical-vault/views",
     "path_template": "{client_folder}/sessions/session-{session_num}/session-summary.md",
     "content_template": "{content}"
   }

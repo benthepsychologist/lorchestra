@@ -1,0 +1,191 @@
+aip_id: AIP-lorchestra-2025-12-06-001
+context:
+  background: ''
+  constraints: []
+created: '2025-12-06T12:06:46.547860+00:00'
+meta:
+  created_at: '2025-12-06T12:06:46.547860+00:00'
+  created_by: benthepsychologist
+objective:
+  acceptance_criteria:
+  - '`lorchestra init` command creates `~/.config/lorchestra/config.yaml` and optional `.env`'
+  - '`LorchestraConfig` model accurately represents all required paths and settings'
+  - Job runner and processors respect config values instead of hardcoded paths
+  - '`LORCHESTRA_HOME` environment variable overrides default config location'
+  - Existing tests pass with mocked configuration
+  goal: Refactor lorchestra to use independent configuration discovery and loading
+orchestrator_contract:
+  artifacts_dir: .aip_artifacts/AIP-lorchestra-2025-12-06-001
+  logging: jsonl
+  state_machine:
+    events:
+    - run_step
+    - await_gate
+    - approve
+    - reject
+    - retry
+    - escalate
+    - complete
+    states:
+    - pending
+    - running
+    - awaiting_human
+    - failed
+    - succeeded
+    - rolled_back
+plan:
+- description: Config Model & Loader
+  gate_ref: 'G0: Plan Approval'
+  gate_review:
+    approval_metadata:
+      date: ''
+      rationale: ''
+      reviewer: ''
+    checklist:
+      Architecture Review:
+      - Config model includes all necessary fields
+      - Home path resolution logic is robust (env var > default)
+      - Error handling for missing config is clear
+      Code Quality:
+      - Type hints are used throughout
+      - Tests cover happy path and missing file scenarios
+  kind: code
+  outputs:
+  - lorchestra/config.py
+  - lorchestra/__init__.py
+  - tests/test_config.py
+  prompt: "Implement the core configuration logic for `lorchestra`.\n1. Create a `LorchestraConfig` dataclass/model\
+    \ in `lorchestra/config.py` with fields:\n   - `project`, `dataset_raw`, `dataset_canonical`, `dataset_derived`\n\
+    \   - `sqlite_path`, `local_views_root`\n   - `canonizer_registry_root`, `formation_registry_root`\
+    \ (optional)\n   - `env_file` (optional)\n2. Implement `get_lorchestra_home()` resolving `LORCHESTRA_HOME`\
+    \ or `~/.config/lorchestra`.\n3. Implement `load_config()` to read `config.yaml` and optionally load\
+    \ `.env`.\n4. Export these from `lorchestra/__init__.py`.\n5. Add unit tests in `tests/test_config.py`."
+  role: coding_agent
+  step_id: step-001
+- description: Wire Config into CLI
+  gate_ref: 'G1: Design Review'
+  gate_review:
+    approval_metadata:
+      date: ''
+      rationale: ''
+      reviewer: ''
+    checklist:
+      Design Quality:
+      - CLI context correctly propagates config
+      - '`run_job` signature update is clean'
+      - No circular dependencies introduced
+  kind: code
+  outputs:
+  - lorchestra/cli.py
+  - lorchestra/job_runner.py
+  prompt: 'Integrate the cleaned configuration loading into the CLI entry point.
+
+    1. Modify `lorchestra/cli.py` to load config in the `main` callback.
+
+    2. Store the config object in the click/typer context (`ctx.obj`).
+
+    3. Update specific commands (like `run`) to retrieve the config from context.
+
+    4. Update `lorchestra/job_runner.py` to accept a `config` argument in `run_job`.
+
+    5. Pass the config instance down to `run_job`.'
+  role: coding_agent
+  step_id: step-002
+- description: Implement Init Command
+  gate_ref: 'G2: Code Readiness'
+  gate_review:
+    approval_metadata:
+      date: ''
+      rationale: ''
+      reviewer: ''
+    checklist:
+      Functionality:
+      - Init command creates valid YAML
+      - Idempotency checked (doesn't overwrite without flag)
+      - Permissions/directory creation handled
+  kind: code
+  outputs:
+  - lorchestra/cli.py
+  - tests/test_cli.py
+  prompt: 'Add a `lorchestra init` command to bootstrap the configuration.
+
+    1. In `lorchestra/cli.py`, add an `init` command.
+
+    2. It should check for `LORCHESTRA_HOME` existence and create it.
+
+    3. Write a default `config.yaml` with sensible defaults (pointing to `~/lifeos/...`).
+
+    4. Optionally create a `.env` template if one doesn''t exist.
+
+    5. Print helpful next steps (e.g. "Run `can init`...").
+
+    6. Add a test for the init command in `tests/test_cli.py`.'
+  role: coding_agent
+  step_id: step-003
+- description: Migrate Hardcoded Paths
+  gate_ref: 'G3: Pre-Release'
+  gate_review:
+    approval_metadata:
+      date: ''
+      rationale: ''
+      reviewer: ''
+    checklist:
+      Code Quality:
+      - All hardcoded paths removed
+      - Fallbacks removed (fail fast if config missing)
+      - Tests pass with mocked config
+  kind: code
+  outputs:
+  - lorchestra/processors/projection.py
+  - lorchestra/storage/bigquery_client.py
+  - lorchestra/sql_runner.py
+  prompt: 'Replace all hardcoded path assumptions with configuration values.
+
+    1. Scan `lorchestra/processors/*.py`, `lorchestra/storage/*.py`, and `lorchestra/sql_runner.py`.
+
+    2. Replace usage of `os.environ` or hardcoded strings with `config.<field>`.
+
+    3. Update `BigQueryStorageClient` and other client factories to accept config parameters designated
+    in Step 1.
+
+    4. Ensure `sqlite_path` and `local_views_root` are resolved from config.'
+  role: coding_agent
+  step_id: step-004
+- description: Verification & Documentation
+  gate_ref: 'G4: Final Approval'
+  gate_review:
+    approval_metadata:
+      date: ''
+      rationale: ''
+      reviewer: ''
+    checklist:
+      Documentation:
+      - README updated with new setup instructions
+      - Migration notes added for existing users
+      Verification:
+      - Manual walkthrough completed
+      - End-to-end flow validated
+  kind: code
+  outputs:
+  - README.md
+  - walkthrough.md
+  prompt: 'Verify the full flow and update documentation.
+
+    1. Perform a manual verification by initializing a fresh config and running a dry-run job.
+
+    2. Update `README.md` to explain the new `init` flow and configuration file structure.
+
+    3. Document how to set up `LORCHESTRA_HOME`.'
+  role: coding_agent
+  step_id: step-005
+project_slug: lorchestra
+repo:
+  default_branch: main
+  url: git@github.com:benthepsychologist/lorchestra.git
+  working_branch: feat/independent-package-config
+spec_version: 1.0.0
+tier: C
+title: Independent Package Config
+updated: '2025-12-06T12:06:46.547874+00:00'
+version: '0.1'
+

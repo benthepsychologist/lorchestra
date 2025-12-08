@@ -28,12 +28,13 @@ class TestUpsertResult:
 class TestJobContext:
     """Tests for JobContext dataclass."""
 
-    def test_job_context_creation(self):
+    def test_job_context_creation(self, test_config):
         """JobContext stores execution context."""
         bq_client = MagicMock()
         ctx = JobContext(
             bq_client=bq_client,
             run_id="test-run-123",
+            config=test_config,
             dry_run=True,
             test_table=False,
         )
@@ -42,10 +43,10 @@ class TestJobContext:
         assert ctx.dry_run is True
         assert ctx.test_table is False
 
-    def test_job_context_defaults(self):
+    def test_job_context_defaults(self, test_config):
         """JobContext has sensible defaults."""
         bq_client = MagicMock()
-        ctx = JobContext(bq_client=bq_client, run_id="test")
+        ctx = JobContext(bq_client=bq_client, run_id="test", config=test_config)
         assert ctx.dry_run is False
         assert ctx.test_table is False
 

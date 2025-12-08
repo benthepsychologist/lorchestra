@@ -176,10 +176,11 @@ class TestIngestProcessor:
         }
 
     @pytest.fixture
-    def context(self):
+    def context(self, test_config):
         return JobContext(
             bq_client=MagicMock(),
             run_id="test-run-123",
+            config=test_config,
             dry_run=False,
         )
 
@@ -201,6 +202,7 @@ class TestIngestProcessor:
         # Mock injest module which is imported inside run()
         mock_injest = MagicMock()
         mock_injest.get_stream.return_value = mock_stream
+        mock_injest.get_stream_legacy.return_value = mock_stream
 
         mock_injest_config = MagicMock()
 
@@ -232,13 +234,14 @@ class TestIngestProcessor:
         assert event["payload"]["records_updated"] == 2
         assert event["payload"]["object_type"] == "email"
 
-    def test_dry_run_mode(self, processor, job_spec, storage_client, event_client):
+    def test_dry_run_mode(self, processor, job_spec, storage_client, event_client, test_config):
         """Dry run mode extracts but doesn't write."""
-        context = JobContext(bq_client=MagicMock(), run_id="test-dry", dry_run=True)
+        context = JobContext(bq_client=MagicMock(), run_id="test-dry", config=test_config, dry_run=True)
 
         mock_stream = MockStream([{"id": "msg1"}])
         mock_injest = MagicMock()
         mock_injest.get_stream.return_value = mock_stream
+        mock_injest.get_stream_legacy.return_value = mock_stream
 
         with patch.dict("sys.modules", {
             "injest": mock_injest,
@@ -282,6 +285,7 @@ class TestIngestProcessor:
         """Failures emit error event with details."""
         mock_injest = MagicMock()
         mock_injest.get_stream.side_effect = RuntimeError("API connection failed")
+        mock_injest.get_stream_legacy.side_effect = RuntimeError("API connection failed")
 
         with patch.dict("sys.modules", {
             "injest": mock_injest,
@@ -312,6 +316,7 @@ class TestIngestProcessor:
         ])
         mock_injest = MagicMock()
         mock_injest.get_stream.return_value = mock_stream
+        mock_injest.get_stream_legacy.return_value = mock_stream
 
         with patch.dict("sys.modules", {
             "injest": mock_injest,
@@ -340,7 +345,7 @@ class TestIngestProcessor:
 
                 # Verify last sync was queried
                 mock_get_last_sync.assert_called_once_with(
-                    context.bq_client, "gmail", "gmail-acct1", "email"
+                    context.bq_client, context.config.dataset_raw, "gmail", "gmail-acct1", "email"
                 )
 
 

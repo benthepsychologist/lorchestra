@@ -9,10 +9,10 @@ All queries must pass through the read-only validator which:
 4. Rejects multi-statement SQL (only trailing ; allowed)
 """
 
-import os
 import re
-
 import click
+from google.cloud import bigquery
+from lorchestra.config import LorchestraConfig
 
 
 # Mutating SQL keywords - these are NOT allowed
@@ -77,36 +77,33 @@ def validate_readonly_sql(sql: str) -> None:
 
 def substitute_placeholders(
     sql: str,
+    config: LorchestraConfig,
     extra: dict[str, str] | None = None,
 ) -> str:
     """Substitute ${PLACEHOLDER} values in SQL.
 
+    Supports:
+    - ${PROJECT}
+    - ${DATASET_RAW}
+    - ${DATASET_CANONICAL}
+    - ${DATASET_DERIVED}
+    - ${DATASET} (Legacy/Generic - maps to dataset_raw)
+
     Args:
         sql: SQL with placeholders
+        config: Configuration object
         extra: Additional placeholders (e.g., {"DAYS": "7"})
 
     Returns:
         SQL with placeholders replaced
-
-    Raises:
-        click.UsageError: If required env vars are missing
     """
-    project = os.environ.get('GCP_PROJECT')
-    dataset = os.environ.get('EVENTS_BQ_DATASET')
-
-    if not project:
-        raise click.UsageError(
-            "GCP_PROJECT environment variable is required. "
-            "Set it with: export GCP_PROJECT=your-project-id"
-        )
-    if not dataset:
-        raise click.UsageError(
-            "EVENTS_BQ_DATASET environment variable is required. "
-            "Set it with: export EVENTS_BQ_DATASET=your-dataset"
-        )
-
-    sql = sql.replace('${PROJECT}', project)
-    sql = sql.replace('${DATASET}', dataset)
+    sql = sql.replace('${PROJECT}', config.project)
+    sql = sql.replace('${DATASET_RAW}', config.dataset_raw)
+    sql = sql.replace('${DATASET_CANONICAL}', config.dataset_canonical)
+    sql = sql.replace('${DATASET_DERIVED}', config.dataset_derived)
+    
+    # Fallback/Legacy
+    sql = sql.replace('${DATASET}', config.dataset_raw)
 
     if extra:
         for key, value in extra.items():
@@ -115,31 +112,36 @@ def substitute_placeholders(
     return sql
 
 
-# Known tables that can be auto-qualified
-KNOWN_TABLES = [
-    'event_log',
-    'raw_objects',
-    'canonical_objects',
-]
+# Known tables that can be auto-qualified using specific datasets
+TABLE_MAPPING = {
+    'event_log': 'dataset_raw',
+    'raw_objects': 'dataset_raw',
+    'canonical_objects': 'dataset_canonical',
+    'measurement_events': 'dataset_derived',
+    'observations': 'dataset_derived',
+}
 
 
-def auto_qualify_tables(sql: str, project: str, dataset: str) -> str:
+def auto_qualify_tables(sql: str, config: LorchestraConfig) -> str:
     """Auto-qualify bare table names with project.dataset prefix.
 
     Replaces bare references like ``FROM event_log`` with
-    ``FROM `project.dataset.event_log```.
+    ``FROM `project.dataset.event_log```, using the correct dataset
+    for the table type.
 
     Only qualifies known tables to avoid false positives.
     """
-    for table in KNOWN_TABLES:
+    for table, ds_field in TABLE_MAPPING.items():
+        dataset = getattr(config, ds_field)
+        
         # Match: FROM/JOIN table_name (not already qualified)
         # Negative lookbehind for `.` or backtick to avoid re-qualifying
-        pattern = rf'(?<![`.])(\bFROM\s+)({table})(\s|$|,)'
-        replacement = rf'\1`{project}.{dataset}.{table}`\3'
+        pattern = rf'(?<![`.])(\\bFROM\\s+)({table})(\\s|$|,)'
+        replacement = rf'\\1`{config.project}.{dataset}.{table}`\\3'
         sql = re.sub(pattern, replacement, sql, flags=re.IGNORECASE)
 
-        pattern = rf'(?<![`.])(\bJOIN\s+)({table})(\s|$)'
-        replacement = rf'\1`{project}.{dataset}.{table}`\3'
+        pattern = rf'(?<![`.])(\\bJOIN\\s+)({table})(\\s|$)'
+        replacement = rf'\\1`{config.project}.{dataset}.{table}`\\3'
         sql = re.sub(pattern, replacement, sql, flags=re.IGNORECASE)
 
     return sql
@@ -147,33 +149,30 @@ def auto_qualify_tables(sql: str, project: str, dataset: str) -> str:
 
 def run_sql_query(
     sql: str,
+    config: LorchestraConfig,
     extra_placeholders: dict[str, str] | None = None,
 ) -> None:
     """Execute read-only SQL and print results as aligned table.
 
     Args:
         sql: SQL query (may contain ${PROJECT}, ${DATASET} placeholders)
+        config: Configuration object
         extra_placeholders: Additional placeholders to substitute
 
     Raises:
-        click.UsageError: If query fails validation or env vars missing
+        click.UsageError: If query fails validation
     """
-    from google.cloud import bigquery
+    # Substitute placeholders
+    sql = substitute_placeholders(sql, config, extra_placeholders)
 
-    # Substitute placeholders (fails loudly if env vars missing)
-    sql = substitute_placeholders(sql, extra_placeholders)
-
-    # Auto-qualify known table names (event_log, raw_objects, etc.)
-    project = os.environ['GCP_PROJECT']
-    dataset = os.environ['EVENTS_BQ_DATASET']
-    sql = auto_qualify_tables(sql, project, dataset)
+    # Auto-qualify known table names
+    sql = auto_qualify_tables(sql, config)
 
     # Validate read-only
     validate_readonly_sql(sql)
 
     # Execute
-    project = os.environ['GCP_PROJECT']
-    client = bigquery.Client(project=project)
+    client = bigquery.Client(project=config.project)
 
     try:
         result = client.query(sql).result()
@@ -224,3 +223,4 @@ def run_sql_query(
 
     # Print row count
     click.echo(f"\n({len(rows)} rows)")
+

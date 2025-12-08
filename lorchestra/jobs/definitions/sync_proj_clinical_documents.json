@@ -5,7 +5,7 @@
     "projection": "proj_clinical_documents"
   },
   "sink": {
-    "sqlite_path": "~/lifeos/local.db",
+    "sqlite_path": "~/clinical-vault/local.db",
     "table": "clinical_documents"
   }
 }

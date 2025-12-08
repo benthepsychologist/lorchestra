@@ -13,5 +13,8 @@
     "schema_in": "iglu:com.stripe/refund/jsonschema/1-0-0",
     "schema_out": "iglu:org.canonical/refund/jsonschema/1-0-0",
     "transform_ref": "refund/stripe_to_canonical@1-0-0"
+  },
+  "options": {
+    "limit": 100
   }
 }

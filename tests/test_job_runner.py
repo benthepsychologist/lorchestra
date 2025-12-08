@@ -75,17 +75,17 @@ class TestBigQueryStorageClient:
         return MagicMock()
 
     @pytest.fixture
-    def storage_client(self, mock_bq_client):
-        return BigQueryStorageClient(mock_bq_client, "test_dataset")
+    def storage_client(self, mock_bq_client, test_config):
+        return BigQueryStorageClient(mock_bq_client, test_config)
 
     def test_table_name_production(self, storage_client):
         """Production mode uses original table names."""
         assert storage_client._table_name("raw_objects") == "raw_objects"
         assert storage_client._table_name("canonical_objects") == "canonical_objects"
 
-    def test_table_name_test_mode(self, mock_bq_client):
+    def test_table_name_test_mode(self, mock_bq_client, test_config):
         """Test mode prefixes table names."""
-        client = BigQueryStorageClient(mock_bq_client, "test_dataset", test_table=True)
+        client = BigQueryStorageClient(mock_bq_client, test_config, test_table=True)
         assert client._table_name("raw_objects") == "test_raw_objects"
         assert client._table_name("canonical_objects") == "test_canonical_objects"
 
@@ -190,10 +190,10 @@ class TestBigQueryStorageClient:
 class TestBigQueryEventClient:
     """Tests for BigQueryEventClient."""
 
-    def test_log_event_delegates_to_event_client(self):
+    def test_log_event_delegates_to_event_client(self, test_config):
         """log_event delegates to event_client module."""
         mock_bq_client = MagicMock()
-        client = BigQueryEventClient(mock_bq_client)
+        client = BigQueryEventClient(mock_bq_client, test_config)
 
         with patch("lorchestra.job_runner.ec.log_event") as mock_log_event:
             client.log_event(
@@ -214,6 +214,7 @@ class TestBigQueryEventClient:
                 payload={"key": "value"},
                 error_message=None,
                 bq_client=mock_bq_client,
+                dataset="test_events",
             )
 
 
@@ -245,7 +246,7 @@ class TestRunJob:
             }))
             yield defs_dir
 
-    def test_run_job_loads_definition_and_dispatches(self, defs_dir, mock_bq_client):
+    def test_run_job_loads_definition_and_dispatches(self, defs_dir, mock_bq_client, test_config):
         """run_job loads definition and dispatches to processor."""
         mock_processor = MagicMock()
 
@@ -257,6 +258,7 @@ class TestRunJob:
                     "test_ingest",
                     definitions_dir=defs_dir,
                     bq_client=mock_bq_client,
+                    config=test_config,
                     dry_run=True,
                 )
 
@@ -274,7 +276,7 @@ class TestRunJob:
                 assert isinstance(context, JobContext)
                 assert context.dry_run is True
 
-    def test_run_job_emits_lifecycle_events(self, defs_dir, mock_bq_client):
+    def test_run_job_emits_lifecycle_events(self, defs_dir, mock_bq_client, test_config):
         """run_job emits job.started and job.completed events."""
         mock_processor = MagicMock()
 
@@ -286,6 +288,7 @@ class TestRunJob:
                     "test_ingest",
                     definitions_dir=defs_dir,
                     bq_client=mock_bq_client,
+                    config=test_config,
                 )
 
                 # Check log_event was called for started and completed
@@ -295,7 +298,7 @@ class TestRunJob:
                 assert "job.started" in event_types
                 assert "job.completed" in event_types
 
-    def test_run_job_emits_failed_event_on_error(self, defs_dir, mock_bq_client):
+    def test_run_job_emits_failed_event_on_error(self, defs_dir, mock_bq_client, test_config):
         """run_job emits job.failed event on processor error."""
         mock_processor = MagicMock()
         mock_processor.run.side_effect = RuntimeError("Processor error")
@@ -309,6 +312,7 @@ class TestRunJob:
                         "test_ingest",
                         definitions_dir=defs_dir,
                         bq_client=mock_bq_client,
+                        config=test_config,
                     )
 
                 # Check job.failed event was emitted
@@ -319,7 +323,7 @@ class TestRunJob:
                 assert "job.failed" in event_types
                 assert "job.completed" not in event_types
 
-    def test_run_job_sets_run_mode(self, defs_dir, mock_bq_client):
+    def test_run_job_sets_run_mode(self, defs_dir, mock_bq_client, test_config):
         """run_job sets and resets run mode."""
         mock_processor = MagicMock()
 
@@ -331,6 +335,7 @@ class TestRunJob:
                     "test_ingest",
                     definitions_dir=defs_dir,
                     bq_client=mock_bq_client,
+                    config=test_config,
                     dry_run=True,
                     test_table=True,
                 )
@@ -341,7 +346,7 @@ class TestRunJob:
                 # Verify reset_run_mode was called
                 mock_ec.reset_run_mode.assert_called_once()
 
-    def test_run_job_missing_job_type_raises(self, mock_bq_client):
+    def test_run_job_missing_job_type_raises(self, mock_bq_client, test_config):
         """run_job raises ValueError if job_type is missing."""
         with TemporaryDirectory() as tmpdir:
             defs_dir = Path(tmpdir)
@@ -353,9 +358,9 @@ class TestRunJob:
 
             with patch("lorchestra.job_runner.ec"):
                 with pytest.raises(ValueError, match="missing job_type"):
-                    run_job("bad_job", definitions_dir=defs_dir, bq_client=mock_bq_client)
+                    run_job("bad_job", definitions_dir=defs_dir, bq_client=mock_bq_client, config=test_config)
 
-    def test_run_job_unknown_job_type_raises(self, mock_bq_client):
+    def test_run_job_unknown_job_type_raises(self, mock_bq_client, test_config):
         """run_job raises KeyError for unknown job_type."""
         with TemporaryDirectory() as tmpdir:
             defs_dir = Path(tmpdir)
@@ -367,4 +372,4 @@ class TestRunJob:
 
             with patch("lorchestra.job_runner.ec"):
                 with pytest.raises(KeyError, match="Unknown job_type"):
-                    run_job("unknown_type", definitions_dir=defs_dir, bq_client=mock_bq_client)
+                    run_job("unknown_type", definitions_dir=defs_dir, bq_client=mock_bq_client, config=test_config)

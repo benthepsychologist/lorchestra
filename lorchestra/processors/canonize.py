@@ -151,7 +151,7 @@ class CanonizeProcessor:
                 return
 
             # Get validator from canonizer
-            validator = self._get_validator(schema_in)
+            validator = self._get_validator(schema_in, context.config)
 
             # Validate each record
             passed_keys = []
@@ -292,7 +292,7 @@ class CanonizeProcessor:
                 return
 
             # Get transform from canonizer
-            transform = self._get_transform(transform_ref)
+            transform = self._get_transform(transform_ref, context.config)
 
             # Transform each record
             success_records = []
@@ -416,11 +416,12 @@ class CanonizeProcessor:
 
             raise
 
-    def _get_validator(self, schema_iglu: str):
+    def _get_validator(self, schema_iglu: str, config: Any):
         """Get validator for a schema URI.
 
         Args:
             schema_iglu: Iglu schema URI (e.g., "iglu:raw/email_gmail/jsonschema/1-0-0")
+            config: LorchestraConfig object
 
         Returns:
             Validator instance from canonizer
@@ -428,21 +429,28 @@ class CanonizeProcessor:
         from pathlib import Path
 
         # Import canonizer validator
-        import sys
-        sys.path.insert(0, "/workspace/canonizer")
-        from canonizer.core.validator import SchemaValidator, load_schema_from_iglu_uri
+        # Ideally this should be installed in the environment
+        try:
+            from canonizer.core.validator import SchemaValidator, load_schema_from_iglu_uri
+        except ImportError:
+            # Fallback for dev environment
+            import sys
+            sys.path.insert(0, "/workspace/canonizer")
+            from canonizer.core.validator import SchemaValidator, load_schema_from_iglu_uri
 
-        schemas_dir = Path("/workspace/lorchestra/.canonizer/registry/schemas")
+        registry_root = Path(config.canonizer_registry_root or "/workspace/lorchestra/.canonizer/registry")
+        schemas_dir = registry_root / "schemas"
         schema_path = load_schema_from_iglu_uri(schema_iglu, schemas_dir)
         return SchemaValidator(schema_path)
 
-    def _get_transform(self, transform_ref: str):
+    def _get_transform(self, transform_ref: str, config: Any):
         """Get a transform wrapper that uses canonizer-core CLI's run command.
 
         Uses the Node.js CLI directly to properly support extensions like htmlToMarkdown.
 
         Args:
             transform_ref: Transform reference (e.g., "email/gmail_to_jmap_lite@1.0.0")
+            config: LorchestraConfig object
 
         Returns:
             Transform wrapper with evaluate() method
@@ -450,8 +458,13 @@ class CanonizeProcessor:
         import subprocess
         import tempfile
         import os
+        from pathlib import Path
 
-        registry_path = "/workspace/lorchestra/.canonizer/registry"
+        registry_root = config.canonizer_registry_root or "/workspace/lorchestra/.canonizer/registry"
+        registry_path = str(registry_root)
+        
+        # This path is still hardcoded as it's the external tool location
+        # TODO: Make this configurable too
         cli_bin = "/workspace/canonizer/packages/canonizer-core/bin/canonizer-core"
 
         class TransformWrapper:

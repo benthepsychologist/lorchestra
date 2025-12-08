@@ -16,6 +16,6 @@
     "idem_key_suffix": "session_transcript"
   },
   "options": {
-    "limit": 1000
+    "limit": 25
   }
 }
