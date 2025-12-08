@@ -5,7 +5,8 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from unittest.mock import MagicMock, patch
+import yaml
+from unittest.mock import MagicMock
 
 from lorchestra.processors.base import JobContext
 from lorchestra.processors.projection import (
@@ -557,3 +558,280 @@ class TestFileProjectionProcessor:
             expected_file = output_dir / "clients" / "c1" / "2024" / "01" / "session.md"
             assert expected_file.exists()
             assert expected_file.read_text() == "content"
+
+    def test_file_projection_renders_front_matter(
+        self, processor, mock_context, mock_storage_client, mock_event_client
+    ):
+        """FileProjectionProcessor renders YAML front matter when configured."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sqlite_path = Path(tmpdir) / "test.db"
+            conn = sqlite3.connect(sqlite_path)
+            conn.execute('''
+                CREATE TABLE transcripts (
+                    client_id TEXT,
+                    idem_key TEXT,
+                    transcript_id TEXT,
+                    content TEXT
+                )
+            ''')
+            conn.execute(
+                "INSERT INTO transcripts VALUES ('c1', 'key123', 't1', 'Hello world')"
+            )
+            conn.commit()
+            conn.close()
+
+            output_dir = Path(tmpdir) / "output"
+            job_spec = {
+                "job_id": "test_file_projection",
+                "job_type": "file_projection",
+                "source": {
+                    "sqlite_path": str(sqlite_path),
+                    "query": "SELECT * FROM transcripts",
+                },
+                "sink": {
+                    "base_path": str(output_dir),
+                    "path_template": "{client_id}/{transcript_id}.md",
+                    "content_template": "{content}",
+                    "front_matter": {
+                        "source_type": "transcript",
+                        "idem_key": "{idem_key}",
+                        "transcript_id": "{transcript_id}",
+                        "client_id": "{client_id}",
+                    },
+                },
+            }
+
+            processor.run(job_spec, mock_context, mock_storage_client, mock_event_client)
+
+            # Verify file was created with front matter
+            output_file = output_dir / "c1" / "t1.md"
+            assert output_file.exists()
+
+            content = output_file.read_text()
+            lines = content.split("\n")
+
+            # Verify front matter structure
+            assert lines[0] == "---"
+            # Find closing delimiter
+            closing_idx = None
+            for i, line in enumerate(lines[1:], 1):
+                if line == "---":
+                    closing_idx = i
+                    break
+            assert closing_idx is not None, "No closing --- found"
+
+            # Parse front matter
+            front_matter_yaml = "\n".join(lines[1:closing_idx])
+            front_matter = yaml.safe_load(front_matter_yaml)
+
+            assert front_matter["source_type"] == "transcript"
+            assert front_matter["idem_key"] == "key123"
+            assert front_matter["transcript_id"] == "t1"
+            assert front_matter["client_id"] == "c1"
+
+            # Verify blank line after front matter
+            assert lines[closing_idx + 1] == ""
+
+            # Verify content body
+            assert "Hello world" in content
+
+    def test_file_projection_no_front_matter_backward_compatible(
+        self, processor, mock_context, mock_storage_client, mock_event_client
+    ):
+        """FileProjectionProcessor produces identical output without front_matter config."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sqlite_path = Path(tmpdir) / "test.db"
+            conn = sqlite3.connect(sqlite_path)
+            conn.execute('CREATE TABLE docs (client_id TEXT, content TEXT)')
+            conn.execute("INSERT INTO docs VALUES ('c1', 'Document content')")
+            conn.commit()
+            conn.close()
+
+            output_dir = Path(tmpdir) / "output"
+            job_spec = {
+                "job_id": "test_file_projection",
+                "job_type": "file_projection",
+                "source": {
+                    "sqlite_path": str(sqlite_path),
+                    "query": "SELECT * FROM docs",
+                },
+                "sink": {
+                    "base_path": str(output_dir),
+                    "path_template": "{client_id}.md",
+                    "content_template": "{content}",
+                    # No front_matter config
+                },
+            }
+
+            processor.run(job_spec, mock_context, mock_storage_client, mock_event_client)
+
+            output_file = output_dir / "c1.md"
+            content = output_file.read_text()
+
+            # Content should be exactly the template output, no front matter
+            assert content == "Document content"
+            assert "---" not in content
+
+    def test_file_projection_front_matter_handles_special_characters(
+        self, processor, mock_context, mock_storage_client, mock_event_client
+    ):
+        """FileProjectionProcessor handles special characters in front matter values."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sqlite_path = Path(tmpdir) / "test.db"
+            conn = sqlite3.connect(sqlite_path)
+            conn.execute('''
+                CREATE TABLE docs (
+                    client_id TEXT,
+                    idem_key TEXT,
+                    title TEXT,
+                    content TEXT
+                )
+            ''')
+            # Test various special characters
+            conn.execute(
+                "INSERT INTO docs VALUES (?, ?, ?, ?)",
+                (
+                    "c1",
+                    "abc123#session_transcript",  # Contains #
+                    'John "Johnny" Doe',  # Contains quotes
+                    "Content here",
+                ),
+            )
+            conn.execute(
+                "INSERT INTO docs VALUES (?, ?, ?, ?)",
+                (
+                    "c2",
+                    "foo:bar:baz",  # Contains colons
+                    "José García",  # Unicode characters
+                    "More content",
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+            output_dir = Path(tmpdir) / "output"
+            job_spec = {
+                "job_id": "test_file_projection",
+                "job_type": "file_projection",
+                "source": {
+                    "sqlite_path": str(sqlite_path),
+                    "query": "SELECT * FROM docs ORDER BY client_id",
+                },
+                "sink": {
+                    "base_path": str(output_dir),
+                    "path_template": "{client_id}.md",
+                    "content_template": "{content}",
+                    "front_matter": {
+                        "idem_key": "{idem_key}",
+                        "title": "{title}",
+                    },
+                },
+            }
+
+            processor.run(job_spec, mock_context, mock_storage_client, mock_event_client)
+
+            # Verify first file (special chars: # and quotes)
+            file1 = output_dir / "c1.md"
+            content1 = file1.read_text()
+            lines1 = content1.split("\n")
+            assert lines1[0] == "---"
+            closing_idx = lines1.index("---", 1)
+            front_matter1 = yaml.safe_load("\n".join(lines1[1:closing_idx]))
+            assert front_matter1["idem_key"] == "abc123#session_transcript"
+            assert front_matter1["title"] == 'John "Johnny" Doe'
+
+            # Verify second file (colons and unicode)
+            file2 = output_dir / "c2.md"
+            content2 = file2.read_text()
+            lines2 = content2.split("\n")
+            closing_idx2 = lines2.index("---", 1)
+            front_matter2 = yaml.safe_load("\n".join(lines2[1:closing_idx2]))
+            assert front_matter2["idem_key"] == "foo:bar:baz"
+            assert front_matter2["title"] == "José García"
+
+    def test_file_projection_front_matter_missing_key_raises_error(
+        self, processor, mock_context, mock_storage_client, mock_event_client
+    ):
+        """FileProjectionProcessor raises RuntimeError with helpful message on missing key."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sqlite_path = Path(tmpdir) / "test.db"
+            conn = sqlite3.connect(sqlite_path)
+            conn.execute('CREATE TABLE docs (client_id TEXT, content TEXT)')
+            conn.execute("INSERT INTO docs VALUES ('c1', 'Content')")
+            conn.commit()
+            conn.close()
+
+            output_dir = Path(tmpdir) / "output"
+            job_spec = {
+                "job_id": "test_missing_key_job",
+                "job_type": "file_projection",
+                "source": {
+                    "sqlite_path": str(sqlite_path),
+                    "query": "SELECT * FROM docs",
+                },
+                "sink": {
+                    "base_path": str(output_dir),
+                    "path_template": "{client_id}.md",
+                    "content_template": "{content}",
+                    "front_matter": {
+                        "idem_key": "{nonexistent_key}",  # This key doesn't exist
+                    },
+                },
+            }
+
+            with pytest.raises(RuntimeError) as exc_info:
+                processor.run(
+                    job_spec, mock_context, mock_storage_client, mock_event_client
+                )
+
+            error_msg = str(exc_info.value)
+            assert "nonexistent_key" in error_msg
+            assert "test_missing_key_job" in error_msg
+            assert "client_id" in error_msg  # Should list available keys
+            assert "content" in error_msg
+
+    def test_file_projection_front_matter_literal_values_preserved(
+        self, processor, mock_context, mock_storage_client, mock_event_client
+    ):
+        """FileProjectionProcessor preserves literal (non-template) values in front matter."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sqlite_path = Path(tmpdir) / "test.db"
+            conn = sqlite3.connect(sqlite_path)
+            conn.execute('CREATE TABLE docs (client_id TEXT, content TEXT)')
+            conn.execute("INSERT INTO docs VALUES ('c1', 'Content')")
+            conn.commit()
+            conn.close()
+
+            output_dir = Path(tmpdir) / "output"
+            job_spec = {
+                "job_id": "test_file_projection",
+                "job_type": "file_projection",
+                "source": {
+                    "sqlite_path": str(sqlite_path),
+                    "query": "SELECT * FROM docs",
+                },
+                "sink": {
+                    "base_path": str(output_dir),
+                    "path_template": "{client_id}.md",
+                    "content_template": "{content}",
+                    "front_matter": {
+                        "source_type": "contact",  # Literal string, no placeholder
+                        "client_id": "{client_id}",  # Placeholder
+                        "version": 1,  # Non-string literal (int)
+                        "active": True,  # Non-string literal (bool)
+                    },
+                },
+            }
+
+            processor.run(job_spec, mock_context, mock_storage_client, mock_event_client)
+
+            output_file = output_dir / "c1.md"
+            content = output_file.read_text()
+            lines = content.split("\n")
+            closing_idx = lines.index("---", 1)
+            front_matter = yaml.safe_load("\n".join(lines[1:closing_idx]))
+
+            assert front_matter["source_type"] == "contact"
+            assert front_matter["client_id"] == "c1"
+            assert front_matter["version"] == 1
+            assert front_matter["active"] is True

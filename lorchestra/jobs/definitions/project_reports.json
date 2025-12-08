@@ -3,11 +3,18 @@
   "job_type": "file_projection",
   "source": {
     "sqlite_path": "~/clinical-vault/local.db",
-    "query": "SELECT c.client_folder, d.document_date, d.title, d.content, d.doc_type FROM clinical_documents d JOIN clients c ON d.client_id = c.client_id WHERE d.content IS NOT NULL AND d.doc_type = 'progress-report' ORDER BY c.client_folder, d.document_date"
+    "query": "SELECT c.client_folder, d.document_date, d.title, d.content, d.idem_key, d.document_id, d.client_id, d.doc_type FROM clinical_documents d JOIN clients c ON d.client_id = c.client_id WHERE d.content IS NOT NULL AND d.doc_type = 'progress-report' ORDER BY c.client_folder, d.document_date"
   },
   "sink": {
     "base_path": "~/clinical-vault/views",
     "path_template": "{client_folder}/reports/{document_date}-progress-report.md",
-    "content_template": "{content}"
+    "content_template": "{content}",
+    "front_matter": {
+      "source_type": "clinical_document",
+      "idem_key": "{idem_key}",
+      "document_id": "{document_id}",
+      "client_id": "{client_id}",
+      "doc_type": "{doc_type}"
+    }
   }
 }

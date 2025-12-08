@@ -1,0 +1,91 @@
+aip_id: AIP-lorchestra-2025-12-08-001
+context:
+  background: 'The projection pipeline currently renders markdown files from SQLite data, but these files
+    lack metadata about their source. Adding YAML front matter with source identifiers (idem_key, entity
+    IDs) will enable:
+
+    1. Write-back to Dataverse from edited markdown
+
+    2. Traceability between projected files and source data
+
+    3. Future bidirectional sync capabilities'
+  constraints:
+  - No edits under protected paths (`src/core/**`, `infra/**`)
+  - Changes must be backward compatible (`front_matter` is optional)
+  - IDs in front matter must be canonical Dataverse IDs (not local surrogates)
+created: '2025-12-08T17:34:30.453300+00:00'
+meta:
+  created_at: '2025-12-08T17:34:30.453300+00:00'
+  created_by: benthepsychologist
+objective:
+  acceptance_criteria:
+  - CI green (lint + unit)
+  - FileProjectionProcessor supports structured `front_matter` config in job specs
+  - Front matter rendered via `yaml.safe_dump` for correctness
+  - All projection jobs (except `project_session_files.json`) include front matter with source identifiers
+  - Projection queries updated to include `idem_key` and relevant IDs
+  - Tests pass for front matter rendering, including edge cases
+  - 'Backward compatibility: jobs without `front_matter` produce identical output to before'
+  - Test coverage for "weird" values (`:`, `#`, unicode, quotes)
+  goal: Add YAML front matter with source identifiers to all projected markdown files, enabling write-back
+    to Dataverse
+orchestrator_contract:
+  artifacts_dir: .aip_artifacts/AIP-lorchestra-2025-12-08-001
+  logging: jsonl
+  state_machine:
+    events:
+    - run_step
+    - await_gate
+    - approve
+    - reject
+    - retry
+    - escalate
+    - complete
+    states:
+    - pending
+    - running
+    - awaiting_human
+    - failed
+    - succeeded
+    - rolled_back
+plan:
+- description: Update FileProjectionProcessor
+  gate_ref: 'G1: Code Readiness'
+  kind: code
+  role: coding_agent
+  step_id: step-001
+- description: Update Projection Queries
+  gate_ref: 'G1: Code Readiness'
+  kind: code
+  role: coding_agent
+  step_id: step-002
+- description: Add Structured Front Matter Config
+  gate_ref: 'G1: Code Readiness'
+  kind: code
+  role: coding_agent
+  step_id: step-003
+- description: Scope Exclusion - project_session_files.json
+  kind: code
+  role: coding_agent
+  step_id: step-004
+- description: Testing & Validation
+  gate_ref: 'G2: Pre-Release'
+  kind: code
+  role: coding_agent
+  step_id: step-005
+- description: Verify Output Format
+  gate_ref: 'G2: Pre-Release'
+  kind: code
+  role: coding_agent
+  step_id: step-006
+project_slug: lorchestra
+repo:
+  default_branch: main
+  url: git@github.com:benthepsychologist/lorchestra.git
+  working_branch: feat/projector-update-with-config-and-local-files-update
+spec_version: 1.1.0
+tier: C
+title: Add Front Matter to Projection Markdown Files
+updated: '2025-12-08T18:00:00+00:00'
+version: '0.1'
+

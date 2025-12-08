@@ -26,10 +26,11 @@ Pipeline flow:
 See docs/projection-pipeline.md for full documentation.
 """
 
-import os
 import sqlite3
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 from lorchestra.processors import registry
 from lorchestra.processors.base import EventClient, JobContext, StorageClient
@@ -324,6 +325,9 @@ class FileProjectionProcessor:
                 )
                 return
 
+            # Get optional front_matter config
+            front_matter_spec = job_spec["sink"].get("front_matter")
+
             # Render files
             files_written = 0
             for row in rows:
@@ -331,8 +335,34 @@ class FileProjectionProcessor:
                 file_path = base_path / path_template.format(**row)
                 file_path.parent.mkdir(parents=True, exist_ok=True)
 
-                # Render content from template
-                content = content_template.format(**row)
+                # Render content body from template
+                content_body = content_template.format(**row)
+
+                # Build front matter if configured
+                if front_matter_spec:
+                    # Resolve placeholders in front matter values
+                    resolved = {}
+                    for key, value in front_matter_spec.items():
+                        if isinstance(value, str):
+                            try:
+                                resolved[key] = value.format(**row)
+                            except KeyError as exc:
+                                raise RuntimeError(
+                                    f"Missing key {exc!s} in front_matter for job "
+                                    f"'{job_spec.get('job_id', 'unknown')}'. "
+                                    f"Available keys: {list(row.keys())}"
+                                ) from exc
+                        else:
+                            resolved[key] = value
+
+                    # Use yaml.safe_dump for correct YAML output
+                    front_matter_yaml = yaml.safe_dump(
+                        resolved, sort_keys=False, allow_unicode=True
+                    )
+                    content = f"---\n{front_matter_yaml}---\n\n{content_body}"
+                else:
+                    content = content_body
+
                 file_path.write_text(content)
                 files_written += 1
 

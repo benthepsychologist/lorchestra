@@ -3,11 +3,19 @@
   "job_type": "file_projection",
   "source": {
     "sqlite_path": "~/clinical-vault/local.db",
-    "query": "SELECT c.client_folder, s.session_num, d.content, d.doc_type FROM clinical_documents d JOIN sessions s ON d.session_id = s.session_id JOIN clients c ON d.client_id = c.client_id WHERE d.content IS NOT NULL AND d.doc_type = 'soap-note' ORDER BY c.client_folder, s.session_num"
+    "query": "SELECT c.client_folder, s.session_num, d.content, d.idem_key, d.document_id, d.session_id, d.client_id, d.doc_type FROM clinical_documents d JOIN sessions s ON d.session_id = s.session_id JOIN clients c ON d.client_id = c.client_id WHERE d.content IS NOT NULL AND d.doc_type = 'soap-note' ORDER BY c.client_folder, s.session_num"
   },
   "sink": {
     "base_path": "~/clinical-vault/views",
     "path_template": "{client_folder}/sessions/session-{session_num}/session-note.md",
-    "content_template": "{content}"
+    "content_template": "{content}",
+    "front_matter": {
+      "source_type": "clinical_document",
+      "idem_key": "{idem_key}",
+      "document_id": "{document_id}",
+      "session_id": "{session_id}",
+      "client_id": "{client_id}",
+      "doc_type": "{doc_type}"
+    }
   }
 }
