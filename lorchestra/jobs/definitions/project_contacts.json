@@ -11,8 +11,11 @@
     "content_template": "# {first_name} {last_name}\n\n**Email:** {email}\n**Mobile:** {mobile}\n**Phone:** {phone}\n**Type:** {client_type}\n**Created:** {created_at}",
     "front_matter": {
       "source_type": "contact",
-      "idem_key": "{idem_key}",
-      "client_id": "{client_id}"
+      "entity": "contacts",
+      "record_id": "{client_id}",
+      "record_id_field": "contactid",
+      "projected_at": "{_projected_at}",
+      "idem_key": "{idem_key}"
     }
   }
 }

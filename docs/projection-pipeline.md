@@ -55,6 +55,7 @@ Three processors handle the pipeline stages:
 #### SyncSqliteProcessor
 - **Job type:** `sync_sqlite`
 - **Purpose:** Syncs BQ projection to SQLite table (full replace)
+- **Adds `projected_at` column:** UTC ISO timestamp for all rows in a sync run (used for writeback change detection)
 - **Config:**
   ```json
   {
@@ -69,7 +70,8 @@ Three processors handle the pipeline stages:
 
 #### FileProjectionProcessor
 - **Job type:** `file_projection`
-- **Purpose:** Queries SQLite and writes markdown files
+- **Purpose:** Queries SQLite and writes markdown files with YAML frontmatter
+- **Injects `_projected_at`:** Available as template variable for frontmatter (UTC ISO timestamp)
 - **Config:**
   ```json
   {
@@ -81,12 +83,60 @@ Three processors handle the pipeline stages:
     "sink": {
       "base_path": "~/lifeos/local_views",
       "path_template": "{client_folder}/sessions/session-{session_num}/transcript.md",
-      "content_template": "{content}"
+      "content_template": "{content}",
+      "front_matter": {
+        "source_type": "transcript",
+        "entity": "cre92_clientsessions",
+        "record_id": "{session_id}",
+        "record_id_field": "cre92_clientsessionid",
+        "projected_at": "{_projected_at}",
+        "idem_key": "{idem_key}",
+        "editable_fields": {"cre92_clientsessionnote": "body"}
+      }
     }
   }
   ```
 
-### 3. Job Definitions (`lorchestra/jobs/definitions/`)
+### 4. Frontmatter for Writeback Support
+
+Markdown files include YAML frontmatter with all metadata needed for writeback to Dataverse:
+
+```yaml
+---
+source_type: clinical_document
+entity: cre92_clientsessions
+record_id: c78067ad-df10-f011-998a-002248b0cb29
+record_id_field: cre92_clientsessionid
+projected_at: 2025-12-09T16:00:00+00:00
+idem_key: dataverse:dataverse-clinic:session:c78067ad-...
+editable_fields:
+  cre92_clientsessionnote: body
+---
+
+# Session Note Content
+...
+```
+
+| Field | Purpose |
+|-------|---------|
+| `entity` | Dataverse entity name for PATCH |
+| `record_id` | GUID of the record to update |
+| `record_id_field` | Dataverse field name for the ID |
+| `projected_at` | UTC timestamp for change detection (compare vs file mtime) |
+| `idem_key` | Canonical object identifier |
+| `editable_fields` | Map of Dataverse field → markdown location (`body` = entire content after frontmatter) |
+
+**Editable fields by entity:**
+
+| File | Entity | Editable Field |
+|------|--------|----------------|
+| `session-note.md` | `cre92_clientsessions` | `cre92_clientsessionnote: body` |
+| `session-summary.md` | `cre92_clientsessions` | `cre92_clientsessionsummary: body` |
+| `transcript.md` | `cre92_clientsessions` | (none - read only) |
+| `contact.md` | `contacts` | (none - read only) |
+| `*-progress-report.md` | `cre92_clientreports` | (none - read only) |
+
+### 5. Job Definitions (`lorchestra/jobs/definitions/`)
 
 | Job | Type | Purpose |
 |-----|------|---------|

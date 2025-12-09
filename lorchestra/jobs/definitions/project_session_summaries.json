@@ -11,11 +11,12 @@
     "content_template": "{content}",
     "front_matter": {
       "source_type": "clinical_document",
+      "entity": "cre92_clientsessions",
+      "record_id": "{session_id}",
+      "record_id_field": "cre92_clientsessionid",
+      "projected_at": "{_projected_at}",
       "idem_key": "{idem_key}",
-      "document_id": "{document_id}",
-      "session_id": "{session_id}",
-      "client_id": "{client_id}",
-      "doc_type": "{doc_type}"
+      "editable_fields": {"cre92_clientsessionsummary": "body"}
     }
   }
 }

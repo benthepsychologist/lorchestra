@@ -27,6 +27,7 @@ See docs/projection-pipeline.md for full documentation.
 """
 
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -181,6 +182,9 @@ class SyncSqliteProcessor:
                 )
                 return
 
+            # Capture projection time BEFORE any processing
+            projection_time = datetime.now(timezone.utc).isoformat()
+
             # 1. Query BQ projection
             rows = storage_client.query_to_dataframe(f"SELECT * FROM {view_name}")
 
@@ -197,18 +201,18 @@ class SyncSqliteProcessor:
             # 2. Ensure SQLite directory exists
             sqlite_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # 3. Write to SQLite (DELETE + INSERT)
+            # 3. Write to SQLite (DROP + CREATE + INSERT for full replace)
             conn = sqlite3.connect(sqlite_path)
             try:
-                # Get column names from first row
-                columns = list(rows[0].keys())
+                # Get column names from first row, add projected_at
+                columns = list(rows[0].keys()) + ["projected_at"]
 
-                # Create table if not exists (infer types from first row)
+                # Drop table if exists (ensures schema is always correct)
+                conn.execute(f'DROP TABLE IF EXISTS "{table}"')
+
+                # Create table with current schema
                 col_defs = ", ".join(f'"{col}" TEXT' for col in columns)
-                conn.execute(f'CREATE TABLE IF NOT EXISTS "{table}" ({col_defs})')
-
-                # Delete existing data
-                conn.execute(f'DELETE FROM "{table}"')
+                conn.execute(f'CREATE TABLE "{table}" ({col_defs})')
 
                 # Bulk insert rows
                 placeholders = ", ".join("?" * len(columns))
@@ -216,7 +220,12 @@ class SyncSqliteProcessor:
                 insert_sql = f'INSERT INTO "{table}" ({col_names}) VALUES ({placeholders})'
 
                 for row in rows:
-                    values = [str(row.get(col)) if row.get(col) is not None else None for col in columns]
+                    # Build values for original columns, then append projected_at
+                    values = [
+                        str(row.get(col)) if row.get(col) is not None else None
+                        for col in columns[:-1]  # Exclude projected_at from row lookup
+                    ]
+                    values.append(projection_time)
                     conn.execute(insert_sql, values)
 
                 conn.commit()
@@ -325,18 +334,24 @@ class FileProjectionProcessor:
                 )
                 return
 
+            # Capture projection time for all files in this run
+            projection_time = datetime.now(timezone.utc).isoformat()
+
             # Get optional front_matter config
             front_matter_spec = job_spec["sink"].get("front_matter")
 
             # Render files
             files_written = 0
             for row in rows:
+                # Inject _projected_at into row data for template substitution
+                row_with_meta = {**row, "_projected_at": projection_time}
+
                 # Build file path from template
-                file_path = base_path / path_template.format(**row)
+                file_path = base_path / path_template.format(**row_with_meta)
                 file_path.parent.mkdir(parents=True, exist_ok=True)
 
                 # Render content body from template
-                content_body = content_template.format(**row)
+                content_body = content_template.format(**row_with_meta)
 
                 # Build front matter if configured
                 if front_matter_spec:
@@ -345,12 +360,12 @@ class FileProjectionProcessor:
                     for key, value in front_matter_spec.items():
                         if isinstance(value, str):
                             try:
-                                resolved[key] = value.format(**row)
+                                resolved[key] = value.format(**row_with_meta)
                             except KeyError as exc:
                                 raise RuntimeError(
                                     f"Missing key {exc!s} in front_matter for job "
                                     f"'{job_spec.get('job_id', 'unknown')}'. "
-                                    f"Available keys: {list(row.keys())}"
+                                    f"Available keys: {list(row_with_meta.keys())}"
                                 ) from exc
                         else:
                             resolved[key] = value

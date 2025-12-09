@@ -328,6 +328,79 @@ class TestSyncSqliteProcessor:
             assert len(rows) == 2
             assert rows[0][0] == "c1"  # New data, not old_client
 
+    def test_sync_sqlite_adds_projected_at_column(
+        self, processor, mock_context, mock_storage_client, mock_event_client
+    ):
+        """SyncSqliteProcessor adds projected_at column to SQLite table."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sqlite_path = Path(tmpdir) / "test.db"
+            job_spec = {
+                "job_id": "test_sync",
+                "job_type": "sync_sqlite",
+                "source": {"projection": "proj_clients"},
+                "sink": {"sqlite_path": str(sqlite_path), "table": "sessions"},
+            }
+
+            processor.run(job_spec, mock_context, mock_storage_client, mock_event_client)
+
+            # Verify projected_at column exists
+            conn = sqlite3.connect(sqlite_path)
+            cursor = conn.execute("PRAGMA table_info(sessions)")
+            columns = [row[1] for row in cursor.fetchall()]
+            conn.close()
+
+            assert "projected_at" in columns
+
+    def test_sync_sqlite_projected_at_is_valid_iso_timestamp(
+        self, processor, mock_context, mock_storage_client, mock_event_client
+    ):
+        """SyncSqliteProcessor projected_at is a valid ISO timestamp."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sqlite_path = Path(tmpdir) / "test.db"
+            job_spec = {
+                "job_id": "test_sync",
+                "job_type": "sync_sqlite",
+                "source": {"projection": "proj_clients"},
+                "sink": {"sqlite_path": str(sqlite_path), "table": "sessions"},
+            }
+
+            processor.run(job_spec, mock_context, mock_storage_client, mock_event_client)
+
+            # Verify projected_at is a valid ISO timestamp
+            conn = sqlite3.connect(sqlite_path)
+            cursor = conn.execute("SELECT projected_at FROM sessions LIMIT 1")
+            projected_at = cursor.fetchone()[0]
+            conn.close()
+
+            from datetime import datetime
+            # Should parse without error
+            parsed = datetime.fromisoformat(projected_at)
+            assert parsed is not None
+
+    def test_sync_sqlite_projected_at_same_for_all_rows(
+        self, processor, mock_context, mock_storage_client, mock_event_client
+    ):
+        """SyncSqliteProcessor uses same projected_at for all rows in a sync."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sqlite_path = Path(tmpdir) / "test.db"
+            job_spec = {
+                "job_id": "test_sync",
+                "job_type": "sync_sqlite",
+                "source": {"projection": "proj_clients"},
+                "sink": {"sqlite_path": str(sqlite_path), "table": "sessions"},
+            }
+
+            processor.run(job_spec, mock_context, mock_storage_client, mock_event_client)
+
+            # Verify all rows have the same projected_at
+            conn = sqlite3.connect(sqlite_path)
+            cursor = conn.execute("SELECT DISTINCT projected_at FROM sessions")
+            distinct_timestamps = cursor.fetchall()
+            conn.close()
+
+            # Should only have one distinct timestamp
+            assert len(distinct_timestamps) == 1
+
 
 class TestFileProjectionProcessor:
     """Tests for FileProjectionProcessor."""
@@ -835,3 +908,96 @@ class TestFileProjectionProcessor:
             assert front_matter["client_id"] == "c1"
             assert front_matter["version"] == 1
             assert front_matter["active"] is True
+
+    def test_file_projection_injects_projected_at(
+        self, processor, mock_context, mock_storage_client, mock_event_client
+    ):
+        """FileProjectionProcessor injects _projected_at for frontmatter templates."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sqlite_path = Path(tmpdir) / "test.db"
+            conn = sqlite3.connect(sqlite_path)
+            conn.execute('CREATE TABLE docs (client_id TEXT, content TEXT)')
+            conn.execute("INSERT INTO docs VALUES ('c1', 'Content')")
+            conn.commit()
+            conn.close()
+
+            output_dir = Path(tmpdir) / "output"
+            job_spec = {
+                "job_id": "test_file_projection",
+                "job_type": "file_projection",
+                "source": {
+                    "sqlite_path": str(sqlite_path),
+                    "query": "SELECT * FROM docs",
+                },
+                "sink": {
+                    "base_path": str(output_dir),
+                    "path_template": "{client_id}.md",
+                    "content_template": "{content}",
+                    "front_matter": {
+                        "source_type": "contact",
+                        "projected_at": "{_projected_at}",
+                    },
+                },
+            }
+
+            processor.run(job_spec, mock_context, mock_storage_client, mock_event_client)
+
+            output_file = output_dir / "c1.md"
+            content = output_file.read_text()
+            lines = content.split("\n")
+            closing_idx = lines.index("---", 1)
+            front_matter = yaml.safe_load("\n".join(lines[1:closing_idx]))
+
+            # Verify projected_at is present and is a valid ISO timestamp
+            assert "projected_at" in front_matter
+            from datetime import datetime
+            # Should parse without error
+            parsed = datetime.fromisoformat(front_matter["projected_at"])
+            assert parsed is not None
+
+    def test_file_projection_projected_at_same_for_all_files(
+        self, processor, mock_context, mock_storage_client, mock_event_client
+    ):
+        """FileProjectionProcessor uses same projected_at for all files in a run."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sqlite_path = Path(tmpdir) / "test.db"
+            conn = sqlite3.connect(sqlite_path)
+            conn.execute('CREATE TABLE docs (client_id TEXT, content TEXT)')
+            conn.execute("INSERT INTO docs VALUES ('c1', 'Content 1')")
+            conn.execute("INSERT INTO docs VALUES ('c2', 'Content 2')")
+            conn.execute("INSERT INTO docs VALUES ('c3', 'Content 3')")
+            conn.commit()
+            conn.close()
+
+            output_dir = Path(tmpdir) / "output"
+            job_spec = {
+                "job_id": "test_file_projection",
+                "job_type": "file_projection",
+                "source": {
+                    "sqlite_path": str(sqlite_path),
+                    "query": "SELECT * FROM docs ORDER BY client_id",
+                },
+                "sink": {
+                    "base_path": str(output_dir),
+                    "path_template": "{client_id}.md",
+                    "content_template": "{content}",
+                    "front_matter": {
+                        "projected_at": "{_projected_at}",
+                    },
+                },
+            }
+
+            processor.run(job_spec, mock_context, mock_storage_client, mock_event_client)
+
+            # Read all files and extract projected_at
+            timestamps = []
+            for client_id in ["c1", "c2", "c3"]:
+                output_file = output_dir / f"{client_id}.md"
+                content = output_file.read_text()
+                lines = content.split("\n")
+                closing_idx = lines.index("---", 1)
+                front_matter = yaml.safe_load("\n".join(lines[1:closing_idx]))
+                timestamps.append(front_matter["projected_at"])
+
+            # All timestamps should be identical
+            assert timestamps[0] == timestamps[1] == timestamps[2]
