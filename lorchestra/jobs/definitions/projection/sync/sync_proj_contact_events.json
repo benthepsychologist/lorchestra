@@ -1,0 +1,11 @@
+{
+  "job_id": "sync_proj_contact_events",
+  "job_type": "sync_sqlite",
+  "source": {
+    "projection": "proj_contact_events"
+  },
+  "sink": {
+    "sqlite_path": "~/clinical-vault/local.db",
+    "table": "contact_events"
+  }
+}

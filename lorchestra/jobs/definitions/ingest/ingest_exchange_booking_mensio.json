@@ -1,0 +1,15 @@
+{
+  "job_id": "ingest_exchange_booking_mensio",
+  "job_type": "ingest",
+  "source": {
+    "stream": "exchange_booking_mensio"
+  },
+  "sink": {
+    "source_system": "exchange",
+    "connection_name": "exchange-booking-mensio",
+    "object_type": "email"
+  },
+  "options": {
+    "auto_since": true
+  }
+}

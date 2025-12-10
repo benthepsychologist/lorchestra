@@ -1,0 +1,18 @@
+{
+  "job_id": "proj_obs_followup",
+  "job_type": "project_observations",
+  "description": "Project followup measurement_events to observations (GAD-7, PHQ-9, IPIP-NEO-60-C, FSCRS)",
+  "source": {
+    "filter": {
+      "binding_id": "followup"
+    }
+  },
+  "transform": {
+    "binding_id": "followup",
+    "binding_version": "1.0.0"
+  },
+  "sink": {
+    "measurement_table": "measurement_events",
+    "table": "observations"
+  }
+}

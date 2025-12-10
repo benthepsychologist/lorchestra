@@ -1,0 +1,21 @@
+{
+  "job_id": "canonize_dataverse_reports",
+  "job_type": "canonize",
+  "source": {
+    "source_system": "dataverse",
+    "object_type": "report",
+    "filter": {
+      "validation_status": "pass"
+    }
+  },
+  "transform": {
+    "mode": "full",
+    "schema_in": "iglu:com.microsoft/dataverse_report/jsonschema/1-0-0",
+    "schema_out": "iglu:org.canonical/clinical_document/jsonschema/2-0-0",
+    "transform_ref": "clinical_document/dataverse_to_canonical@2-0-0",
+    "idem_key_suffix": "clinical_report"
+  },
+  "options": {
+    "limit": 50
+  }
+}

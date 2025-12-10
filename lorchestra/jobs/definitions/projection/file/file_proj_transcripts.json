@@ -1,0 +1,21 @@
+{
+  "job_id": "file_proj_transcripts",
+  "job_type": "file_projection",
+  "source": {
+    "sqlite_path": "~/clinical-vault/local.db",
+    "query": "SELECT c.client_folder, s.session_num, t.content, t.idem_key, t.transcript_id, t.session_id, t.client_id FROM transcripts t JOIN sessions s ON t.session_id = s.session_id JOIN clients c ON t.client_id = c.client_id WHERE t.content IS NOT NULL ORDER BY c.client_folder, s.session_num"
+  },
+  "sink": {
+    "base_path": "~/clinical-vault/views",
+    "path_template": "{client_folder}/sessions/session-{session_num}/transcript.md",
+    "content_template": "{content}",
+    "front_matter": {
+      "source_type": "transcript",
+      "entity": "cre92_clientsessions",
+      "record_id": "{session_id}",
+      "record_id_field": "cre92_clientsessionid",
+      "projected_at": "{_projected_at}",
+      "idem_key": "{idem_key}"
+    }
+  }
+}

@@ -160,18 +160,26 @@ class SyncSqliteProcessor:
 
         Args:
             job_spec: Job specification with source.projection, sink.sqlite_path, sink.table
+                      Optional source.dataset to override default (for tables in derived dataset)
             context: Execution context
             storage_client: Storage operations interface
             event_client: Event emission interface
         """
-        proj_name = job_spec["source"]["projection"]
+        source_config = job_spec["source"]
+        proj_name = source_config["projection"]
         sqlite_path = Path(job_spec["sink"]["sqlite_path"]).expanduser()
         table = job_spec["sink"]["table"]
         source_system = job_spec.get("source_system", "lorchestra")
 
-        # Get project and dataset from context config
+        # Get project and dataset from context config (with optional override)
         project = context.config.project
-        dataset = context.config.dataset_canonical
+        dataset_override = source_config.get("dataset")
+        if dataset_override == "derived":
+            dataset = context.config.dataset_derived
+        elif dataset_override:
+            dataset = dataset_override
+        else:
+            dataset = context.config.dataset_canonical
 
         # Log start event
         event_client.log_event(

@@ -1,0 +1,7 @@
+{
+  "job_id": "view_proj_contact_events",
+  "job_type": "create_projection",
+  "projection": {
+    "name": "proj_contact_events"
+  }
+}

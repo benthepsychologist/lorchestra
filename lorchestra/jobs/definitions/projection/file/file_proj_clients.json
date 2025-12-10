@@ -1,0 +1,21 @@
+{
+  "job_id": "file_proj_clients",
+  "job_type": "file_projection",
+  "source": {
+    "sqlite_path": "~/clinical-vault/local.db",
+    "query": "SELECT client_folder, first_name, last_name, email, mobile, phone, client_type, created_at, idem_key, client_id FROM clients ORDER BY client_folder"
+  },
+  "sink": {
+    "base_path": "~/clinical-vault/views",
+    "path_template": "{client_folder}/contact.md",
+    "content_template": "# {first_name} {last_name}\n\n**Email:** {email}\n**Mobile:** {mobile}\n**Phone:** {phone}\n**Type:** {client_type}\n**Created:** {created_at}",
+    "front_matter": {
+      "source_type": "contact",
+      "entity": "contacts",
+      "record_id": "{client_id}",
+      "record_id_field": "contactid",
+      "projected_at": "{_projected_at}",
+      "idem_key": "{idem_key}"
+    }
+  }
+}

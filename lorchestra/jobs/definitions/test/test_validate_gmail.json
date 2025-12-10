@@ -1,0 +1,12 @@
+{
+  "job_id": "test_validate_gmail",
+  "job_type": "canonize",
+  "source": {
+    "source_system": "gmail",
+    "object_type": "email"
+  },
+  "transform": {
+    "mode": "validate_only",
+    "schema_in": "iglu:com.google/gmail_email/jsonschema/1-0-0"
+  }
+}

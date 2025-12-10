@@ -1,0 +1,15 @@
+{
+  "job_id": "ingest_stripe_customers",
+  "job_type": "ingest",
+  "source": {
+    "stream": "stripe_customers"
+  },
+  "sink": {
+    "source_system": "stripe",
+    "connection_name": "stripe-prod",
+    "object_type": "customer"
+  },
+  "options": {
+    "auto_since": true
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "job_id": "proj_obs_intake_01",
+  "job_type": "project_observations",
+  "description": "Project intake_01 measurement_events to observations (PHQ-9, GAD-7, SAFE, Joy, MSI, Trauma Exposure, PTSD Screen, Sleep Disturbances)",
+  "source": {
+    "filter": {
+      "binding_id": "intake_01"
+    }
+  },
+  "transform": {
+    "binding_id": "intake_01",
+    "binding_version": "1.0.0"
+  },
+  "sink": {
+    "measurement_table": "measurement_events",
+    "table": "observations"
+  }
+}

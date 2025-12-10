@@ -1,0 +1,15 @@
+{
+  "job_id": "ingest_dataverse_sessions",
+  "job_type": "ingest",
+  "source": {
+    "stream": "dataverse_sessions"
+  },
+  "sink": {
+    "source_system": "dataverse",
+    "connection_name": "dataverse-clinic",
+    "object_type": "session"
+  },
+  "options": {
+    "auto_since": true
+  }
+}

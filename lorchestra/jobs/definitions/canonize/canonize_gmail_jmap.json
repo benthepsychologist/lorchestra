@@ -1,0 +1,20 @@
+{
+  "job_id": "canonize_gmail_jmap",
+  "job_type": "canonize",
+  "source": {
+    "source_system": "gmail",
+    "object_type": "email",
+    "filter": {
+      "validation_status": "pass"
+    }
+  },
+  "transform": {
+    "mode": "full",
+    "schema_in": "iglu:com.google/gmail_email/jsonschema/1-0-0",
+    "schema_out": "iglu:org.canonical/email_jmap_lite/jsonschema/1-0-0",
+    "transform_ref": "email/gmail_to_jmap_lite@1.0.0"
+  },
+  "options": {
+    "limit": 100
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "job_id": "form_intake_02",
+  "job_type": "final_form",
+  "source": {
+    "filter": {
+      "canonical_schema": "iglu:org.canonical/form_response/jsonschema/1-0-0",
+      "connection_name": "google-forms-intake-02"
+    }
+  },
+  "transform": {
+    "binding_id": "intake_02",
+    "binding_version": "1.0.0"
+  },
+  "sink": {
+    "measurement_table": "measurement_events",
+    "observation_table": "observations"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "job_id": "canonize_dataverse_contacts",
+  "job_type": "canonize",
+  "source": {
+    "source_system": "dataverse",
+    "object_type": "contact",
+    "filter": {
+      "validation_status": "pass"
+    }
+  },
+  "transform": {
+    "mode": "full",
+    "schema_in": "iglu:com.microsoft/dataverse_contact/jsonschema/1-0-0",
+    "schema_out": "iglu:org.canonical/contact/jsonschema/2-0-0",
+    "transform_ref": "contact/dataverse_to_canonical@2-0-0"
+  },
+  "options": {
+    "limit": 100
+  }
+}

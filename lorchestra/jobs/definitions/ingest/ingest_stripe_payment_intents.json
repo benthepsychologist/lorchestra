@@ -1,0 +1,15 @@
+{
+  "job_id": "ingest_stripe_payment_intents",
+  "job_type": "ingest",
+  "source": {
+    "stream": "stripe_payment_intents"
+  },
+  "sink": {
+    "source_system": "stripe",
+    "connection_name": "stripe-prod",
+    "object_type": "payment_intent"
+  },
+  "options": {
+    "auto_since": true
+  }
+}

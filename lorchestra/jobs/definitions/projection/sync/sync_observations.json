@@ -1,0 +1,12 @@
+{
+  "job_id": "sync_observations",
+  "job_type": "sync_sqlite",
+  "source": {
+    "projection": "observations",
+    "dataset": "derived"
+  },
+  "sink": {
+    "sqlite_path": "~/clinical-vault/local.db",
+    "table": "observations"
+  }
+}
