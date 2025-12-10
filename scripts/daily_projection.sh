@@ -44,6 +44,7 @@ run_job sync_proj_sessions
 run_job sync_proj_transcripts
 run_job sync_proj_clinical_documents
 run_job sync_proj_form_responses
+run_job sync_proj_contact_events
 
 # Step 2: Clear existing files if full refresh
 if [[ "$FULL_REFRESH" == true ]]; then

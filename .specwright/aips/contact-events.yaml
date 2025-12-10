@@ -1,0 +1,69 @@
+aip_id: AIP-lorchestra-2025-12-09-001
+context:
+  background: ''
+  constraints: []
+created: '2025-12-09T19:37:43.907616+00:00'
+meta:
+  created_at: '2025-12-09T19:37:43.907616+00:00'
+  created_by: benthepsychologist
+objective:
+  acceptance_criteria:
+  - '`proj_contact_events` BQ view/table created'
+  - Row-per-event grain from all source systems
+  - Sync job copies to SQLite `contact_events` table
+  - Daily pipeline includes rebuild
+  - CI green (lint + unit)
+  - '**Validation check:** At least one client''s full activity history can be reconstructed correctly
+    from `proj_contact_events` (forms + sessions) and matches raw canonicals end-to-end'
+  goal: Implement contact_events - unified operational event ledger for all client-touch events
+orchestrator_contract:
+  artifacts_dir: .aip_artifacts/AIP-lorchestra-2025-12-09-001
+  logging: jsonl
+  state_machine:
+    events:
+    - run_step
+    - await_gate
+    - approve
+    - reject
+    - retry
+    - escalate
+    - complete
+    states:
+    - pending
+    - running
+    - awaiting_human
+    - failed
+    - succeeded
+    - rolled_back
+plan:
+- description: Define Source Mappings
+  kind: code
+  role: coding_agent
+  step_id: step-001
+- description: Add SQL Projection
+  kind: code
+  role: coding_agent
+  step_id: step-002
+- description: Create Job Definitions
+  kind: code
+  role: coding_agent
+  step_id: step-003
+- description: Update Pipeline Scripts
+  kind: code
+  role: coding_agent
+  step_id: step-004
+- description: Usage Queries
+  kind: code
+  role: coding_agent
+  step_id: step-005
+project_slug: lorchestra
+repo:
+  default_branch: main
+  url: git@github.com:benthepsychologist/lorchestra.git
+  working_branch: feat/contact-events
+spec_version: 1.0.0
+tier: C
+title: Contact Events Projection
+updated: '2025-12-09T19:37:43.907616+00:00'
+version: '0.1'
+

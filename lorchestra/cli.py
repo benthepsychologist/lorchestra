@@ -3,8 +3,9 @@ CLI interface for lorchestra job orchestrator.
 
 Provides commands to discover, inspect, and run jobs.
 
-Jobs are defined as JSON files in jobs/definitions/*.json and dispatched
-via the JobRunner to typed processors (ingest, canonize, final_form).
+Jobs are defined as JSON files in jobs/definitions/**/*.json (organized by
+processor type in subdirectories) and dispatched via the JobRunner to typed
+processors (ingest, canonize, formation, projection).
 """
 
 
@@ -24,10 +25,14 @@ QUERIES_DIR = Path(__file__).parent / "queries"
 
 
 def _get_available_jobs() -> list[str]:
-    """Get list of available job IDs."""
+    """Get list of available job IDs from all subdirectories (excluding _deprecated)."""
     if not DEFINITIONS_DIR.exists():
         return []
-    return sorted([f.stem for f in DEFINITIONS_DIR.glob("*.json")])
+    # Search root and all subdirectories, excluding _deprecated
+    return sorted([
+        f.stem for f in DEFINITIONS_DIR.glob("**/*.json")
+        if "_deprecated" not in str(f)
+    ])
 
 
 @click.group()
@@ -198,21 +203,25 @@ def jobs_group():
 
 
 @jobs_group.command("list")
-@click.option("--type", "job_type", help="Filter by job type (ingest, canonize, final_form)")
+@click.option("--type", "job_type", help="Filter by job type (ingest, canonize, projection)")
 def list_jobs(job_type: str = None):
     """List available jobs."""
     import json
 
-    jobs = _get_available_jobs()
+    # Find all job definition files (excluding _deprecated)
+    job_files = [
+        f for f in DEFINITIONS_DIR.glob("**/*.json")
+        if "_deprecated" not in str(f)
+    ]
 
-    if not jobs:
+    if not job_files:
         click.echo("No job definitions found.")
         return
 
     # Group by job_type
     by_type: dict[str, list[str]] = {}
-    for job_id in jobs:
-        def_path = DEFINITIONS_DIR / f"{job_id}.json"
+    for def_path in job_files:
+        job_id = def_path.stem
         with open(def_path) as f:
             job_def = json.load(f)
         jt = job_def.get("job_type", "unknown")
@@ -244,10 +253,15 @@ def show_job(job: str):
     if job_id.startswith("job_"):
         job_id = job_id[4:]
 
-    def_path = DEFINITIONS_DIR / f"{job_id}.json"
+    # Search root and subdirectories
+    filename = f"{job_id}.json"
+    def_path = DEFINITIONS_DIR / filename
     if not def_path.exists():
-        click.echo(f"✗ Unknown job: {job}", err=True)
-        raise SystemExit(1)
+        found = list(DEFINITIONS_DIR.glob(f"**/{filename}"))
+        if not found:
+            click.echo(f"✗ Unknown job: {job}", err=True)
+            raise SystemExit(1)
+        def_path = found[0]
 
     with open(def_path) as f:
         job_def = json.load(f)

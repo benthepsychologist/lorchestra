@@ -1,32 +1,53 @@
 """Projection processors for lorchestra.
 
-This module provides processors for the therapist surface projection pipeline:
+This module provides processors for all projection pipelines:
+
+VIEW PROJECTIONS (canonical → BQ views):
 
 1. CreateProjectionProcessor (job_type: create_projection)
    - Creates/updates BigQuery views from SQL defined in lorchestra/sql/projections.py
    - Views extract and flatten data from canonical_objects table
    - Run once initially, then whenever projection SQL changes
 
-2. SyncSqliteProcessor (job_type: sync_sqlite)
+TABLE PROJECTIONS (source → BQ tables via MERGE upsert):
+
+2. MeasurementEventProjection (job_type: project_measurement_events)
+   - Projects canonical form_responses → measurement_events table
+   - 1 row per form submission (FHIR MeasurementEvent grain)
+   - Incremental: only processes new/updated canonical records
+
+3. ObservationProjection (job_type: project_observations)
+   - Projects measurement_events → observations table
+   - Uses final-form for clinical instrument scoring
+   - 1 row per scored construct with components JSON
+   - Incremental: only processes measurement_events without observations
+
+LOCAL PROJECTIONS (BQ → local storage):
+
+4. SyncSqliteProcessor (job_type: sync_sqlite)
    - Syncs BQ projection view to local SQLite table
    - Uses full replace strategy (DELETE + INSERT)
    - Run daily to refresh local data
 
-3. FileProjectionProcessor (job_type: file_projection)
+5. FileProjectionProcessor (job_type: file_projection)
    - Queries SQLite and renders results to markdown files
-   - Uses path_template for file locations: "{client_folder}/sessions/session-{session_num}/transcript.md"
-   - Uses content_template for file content: "{content}"
+   - Uses path_template for file locations
+   - Uses content_template for file content
 
-Pipeline flow:
-    BigQuery canonical_objects
-        → BQ Views (proj_*)
-        → SQLite tables
-        → Markdown files
+Pipeline flows:
+    canonical_objects → BQ Views (proj_*)           [create_projection]
+    canonical_objects → measurement_events table    [project_measurement_events]
+    measurement_events → observations table         [project_observations]
+    BQ views/tables → SQLite tables                 [sync_sqlite]
+    SQLite → Markdown files                         [file_projection]
 
 See docs/projection-pipeline.md for full documentation.
 """
 
+import json
+import logging
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -36,6 +57,8 @@ import yaml
 from lorchestra.processors import registry
 from lorchestra.processors.base import EventClient, JobContext, StorageClient
 from lorchestra.sql.projections import get_projection_sql
+
+logger = logging.getLogger(__name__)
 
 
 class CreateProjectionProcessor:
@@ -409,7 +432,568 @@ class FileProjectionProcessor:
             raise
 
 
-# Register the processors
+# =============================================================================
+# TABLE PROJECTION PROCESSORS
+# =============================================================================
+
+# Default registry paths for final-form
+DEFAULT_MEASURE_REGISTRY = Path("/workspace/final-form/measure-registry")
+DEFAULT_BINDING_REGISTRY = Path("/workspace/final-form/form-binding-registry")
+
+
+class MeasurementEventProjection:
+    """Project canonical form_responses → measurement_events table.
+
+    This is "canonization v2" for measurement data:
+    1. Reads canonical form_response objects (incremental)
+    2. Extracts and categorizes them by binding type
+    3. Wraps in FHIR-adjacent MeasurementEvent metadata
+    4. Upserts to measurement_events table
+
+    The measurement_event is the raw record that a measurement occurred.
+    Observations (scored results) are derived by a separate projection job.
+    """
+
+    def run(
+        self,
+        job_spec: dict[str, Any],
+        context: JobContext,
+        storage_client: StorageClient,
+        event_client: EventClient,
+    ) -> None:
+        """Execute a measurement_event projection job."""
+        job_id = job_spec["job_id"]
+        source = job_spec["source"]
+        sink = job_spec.get("sink", {})
+        options = job_spec.get("options", {})
+        events_config = job_spec.get("events", {})
+
+        # Source config
+        source_filter = source.get("filter", {})
+        canonical_schema = source_filter.get("canonical_schema")
+
+        # Sink config
+        measurement_table = sink.get("table", "measurement_events")
+        event_type = sink.get("event_type", "form")
+        event_subtype = sink.get("event_subtype")  # binding_id
+
+        # Options
+        limit = options.get("limit")
+
+        # Event names
+        on_started = events_config.get("on_started", "projection.measurement_events.started")
+        on_complete = events_config.get("on_complete", "projection.measurement_events.completed")
+        on_fail = events_config.get("on_fail", "projection.measurement_events.failed")
+
+        logger.info(f"Starting measurement_event projection: {job_id}")
+        logger.info(f"  event_type: {event_type}, event_subtype: {event_subtype}")
+        if context.dry_run:
+            logger.info("  DRY RUN - no writes will occur")
+
+        start_time = time.time()
+
+        event_client.log_event(
+            event_type=on_started,
+            source_system="projection",
+            target_object_type="measurement_event",
+            correlation_id=context.run_id,
+            status="success",
+            payload={"job_id": job_id, "event_subtype": event_subtype},
+        )
+
+        try:
+            # Query canonical objects (incremental - skip already processed)
+            filters = {k: v for k, v in source_filter.items() if k != "canonical_schema"}
+            records = list(
+                storage_client.query_canonical_for_formation(
+                    canonical_schema=canonical_schema,
+                    filters=filters,
+                    measurement_table=measurement_table,
+                    limit=limit,
+                )
+            )
+
+            logger.info(f"Found {len(records)} canonical records to process")
+
+            if not records:
+                logger.info("No records to process")
+                return
+
+            # Create measurement_events
+            measurement_rows = []
+            failed_records = []
+
+            for i, record in enumerate(records):
+                try:
+                    me_row = self._canonical_to_measurement_event(
+                        record=record,
+                        event_type=event_type,
+                        event_subtype=event_subtype,
+                        correlation_id=record.get("correlation_id") or context.run_id,
+                    )
+                    measurement_rows.append(me_row)
+
+                except Exception as e:
+                    failed_records.append({"idem_key": record["idem_key"], "error": str(e)})
+                    if len(failed_records) <= 3:
+                        logger.warning(f"FAILED: {record['idem_key'][:50]}... Error: {e}")
+
+                if (i + 1) % 100 == 0:
+                    logger.info(f"Processed {i + 1}/{len(records)}...")
+
+            logger.info(f"Results: {len(measurement_rows)} measurement_events, {len(failed_records)} failed")
+
+            # Upsert measurement_events
+            measurements_upserted = 0
+            if not context.dry_run and measurement_rows:
+                measurements_upserted = storage_client.upsert_measurements(
+                    measurements=measurement_rows,
+                    table=measurement_table,
+                    correlation_id=context.run_id,
+                )
+                logger.info(f"Upserted {measurements_upserted} measurement events")
+            elif context.dry_run:
+                logger.info(f"[DRY-RUN] Would upsert {len(measurement_rows)} measurement events")
+
+            duration_seconds = time.time() - start_time
+
+            event_client.log_event(
+                event_type=on_complete,
+                source_system="projection",
+                target_object_type="measurement_event",
+                correlation_id=context.run_id,
+                status="success",
+                payload={
+                    "job_id": job_id,
+                    "records_processed": len(records),
+                    "measurements_created": len(measurement_rows),
+                    "measurements_upserted": measurements_upserted,
+                    "records_failed": len(failed_records),
+                    "duration_seconds": round(duration_seconds, 2),
+                    "dry_run": context.dry_run,
+                },
+            )
+
+            logger.info(f"Projection complete: {len(measurement_rows)} events, duration={duration_seconds:.2f}s")
+
+        except Exception as e:
+            duration_seconds = time.time() - start_time
+            logger.error(f"Measurement event projection failed: {e}", exc_info=True)
+
+            event_client.log_event(
+                event_type=on_fail,
+                source_system="projection",
+                target_object_type="measurement_event",
+                correlation_id=context.run_id,
+                status="failed",
+                error_message=str(e),
+                payload={
+                    "job_id": job_id,
+                    "error_type": type(e).__name__,
+                    "duration_seconds": round(duration_seconds, 2),
+                },
+            )
+            raise
+
+    def _canonical_to_measurement_event(
+        self,
+        record: dict[str, Any],
+        event_type: str,
+        event_subtype: str | None,
+        correlation_id: str,
+    ) -> dict[str, Any]:
+        """Create a measurement_event row from a canonical form_response."""
+        payload = record.get("payload", {})
+
+        # Use canonical idem_key as measurement_event_id (1:1 mapping)
+        idem_key = record["idem_key"]
+
+        # Get subject_id from respondent
+        respondent = payload.get("respondent", {})
+        subject_id = respondent.get("id") or respondent.get("email")
+
+        # Get form metadata
+        form_id = payload.get("form_id")
+        form_submission_id = payload.get("response_id") or payload.get("submission_id")
+        occurred_at = payload.get("submitted_at")
+
+        now = datetime.now(timezone.utc).isoformat()
+
+        return {
+            "idem_key": idem_key,
+            "measurement_event_id": idem_key,
+            "subject_id": subject_id,
+            "subject_contact_id": None,
+            "event_type": event_type,
+            "event_subtype": event_subtype,
+            "occurred_at": occurred_at,
+            "received_at": now,
+            "source_system": "google_forms",
+            "source_entity": "form_response",
+            "source_id": form_submission_id,
+            "canonical_object_id": idem_key,
+            "form_id": form_id,
+            "binding_id": event_subtype,  # event_subtype is the binding_id
+            "binding_version": None,  # Set by scoring job
+            "metadata": json.dumps({}),
+            "correlation_id": correlation_id,
+            "processed_at": now,
+            "created_at": now,
+        }
+
+
+class ObservationProjection:
+    """Project measurement_events → observations table.
+
+    This processor:
+    1. Reads measurement_events that don't have observations yet (incremental)
+    2. Looks up canonical payload via canonical_object_id
+    3. Runs final-form scoring pipeline
+    4. Creates observations (1 per scored measure, with components JSON)
+
+    This is the scoring/formation step that derives clinical scores from raw form data.
+    """
+
+    def run(
+        self,
+        job_spec: dict[str, Any],
+        context: JobContext,
+        storage_client: StorageClient,
+        event_client: EventClient,
+    ) -> None:
+        """Execute an observation projection job."""
+        # Import final-form here to avoid import errors if not installed
+        from final_form.pipeline import Pipeline, PipelineConfig, ProcessingResult  # noqa: F401
+
+        job_id = job_spec["job_id"]
+        source = job_spec["source"]
+        transform_config = job_spec.get("transform", {})
+        sink = job_spec.get("sink", {})
+        options = job_spec.get("options", {})
+        events_config = job_spec.get("events", {})
+
+        # Source config - filter measurement_events
+        source_filter = source.get("filter", {})
+        binding_id_filter = source_filter.get("binding_id")
+
+        # Transform config
+        binding_id = transform_config.get("binding_id")
+        binding_version = transform_config.get("binding_version")
+
+        # Resolve registry paths
+        formation_root = context.config.formation_registry_root
+        if formation_root:
+            root_path = Path(formation_root).expanduser()
+            default_measure = root_path / "measure-registry"
+            default_binding = root_path / "form-binding-registry"
+        else:
+            default_measure = DEFAULT_MEASURE_REGISTRY
+            default_binding = DEFAULT_BINDING_REGISTRY
+
+        measure_registry_path = Path(
+            transform_config.get("measure_registry_path", default_measure)
+        ).expanduser()
+        binding_registry_path = Path(
+            transform_config.get("binding_registry_path", default_binding)
+        ).expanduser()
+
+        # Sink config
+        measurement_table = sink.get("measurement_table", "measurement_events")
+        observation_table = sink.get("table", sink.get("observation_table", "observations"))
+
+        # Options
+        limit = options.get("limit")
+
+        # Event names
+        on_started = events_config.get("on_started", "projection.observations.started")
+        on_complete = events_config.get("on_complete", "projection.observations.completed")
+        on_fail = events_config.get("on_fail", "projection.observations.failed")
+
+        logger.info(f"Starting observation projection: {job_id}")
+        logger.info(f"  binding: {binding_id}@{binding_version or 'latest'}")
+        if context.dry_run:
+            logger.info("  DRY RUN - no writes will occur")
+
+        start_time = time.time()
+
+        event_client.log_event(
+            event_type=on_started,
+            source_system="projection",
+            target_object_type="observation",
+            correlation_id=context.run_id,
+            status="success",
+            payload={"job_id": job_id, "binding_id": binding_id},
+        )
+
+        try:
+            # Create the final-form Pipeline
+            config = PipelineConfig(
+                measure_registry_path=measure_registry_path,
+                binding_registry_path=binding_registry_path,
+                binding_id=binding_id,
+                binding_version=binding_version,
+            )
+            pipeline = Pipeline(config)
+
+            loaded_binding_id = pipeline.binding_spec.binding_id
+            loaded_binding_version = pipeline.binding_spec.version
+
+            # Query measurement_events that need scoring (incremental)
+            records = list(
+                storage_client.query_measurement_events_for_scoring(
+                    measurement_table=measurement_table,
+                    observation_table=observation_table,
+                    binding_id=binding_id_filter or binding_id,
+                    limit=limit,
+                )
+            )
+
+            logger.info(f"Found {len(records)} measurement_events to score")
+
+            if not records:
+                logger.info("No records to score")
+                return
+
+            # Score each measurement_event
+            observation_rows = []
+            failed_records = []
+            total_diagnostics_errors = 0
+            total_diagnostics_warnings = 0
+
+            for i, me_record in enumerate(records):
+                try:
+                    # Look up canonical payload
+                    canonical_object_id = me_record["canonical_object_id"]
+                    canonical_record = storage_client.get_canonical_by_idem_key(canonical_object_id)
+
+                    if not canonical_record:
+                        raise ValueError(f"Canonical object not found: {canonical_object_id}")
+
+                    payload = canonical_record.get("payload", {})
+
+                    # Build form_response for final-form
+                    form_response = self._build_form_response(canonical_record, payload)
+
+                    # Run scoring
+                    result: ProcessingResult = pipeline.process(form_response)
+
+                    # Track diagnostics
+                    if result.diagnostics:
+                        if hasattr(result.diagnostics, "errors"):
+                            total_diagnostics_errors += len(result.diagnostics.errors)
+                        if hasattr(result.diagnostics, "warnings"):
+                            total_diagnostics_warnings += len(result.diagnostics.warnings)
+
+                    # Create observations from scored results
+                    correlation_id = me_record.get("correlation_id") or context.run_id
+
+                    for event in result.events:
+                        obs_row = self._measure_to_observation(
+                            event=event,
+                            measurement_event_id=me_record["measurement_event_id"],
+                            correlation_id=correlation_id,
+                        )
+                        observation_rows.append(obs_row)
+
+                except Exception as e:
+                    failed_records.append({
+                        "measurement_event_id": me_record["measurement_event_id"],
+                        "error": str(e),
+                    })
+                    if len(failed_records) <= 3:
+                        logger.warning(f"FAILED: {me_record['measurement_event_id'][:50]}... Error: {e}")
+
+                if (i + 1) % 100 == 0:
+                    logger.info(f"Scored {i + 1}/{len(records)}...")
+
+            logger.info(f"Results: {len(observation_rows)} observations, {len(failed_records)} failed")
+
+            # Upsert observations
+            observations_upserted = 0
+            if not context.dry_run and observation_rows:
+                observations_upserted = storage_client.upsert_observations(
+                    observations=observation_rows,
+                    table=observation_table,
+                    correlation_id=context.run_id,
+                )
+                logger.info(f"Upserted {observations_upserted} observations")
+            elif context.dry_run:
+                logger.info(f"[DRY-RUN] Would upsert {len(observation_rows)} observations")
+
+            duration_seconds = time.time() - start_time
+
+            event_client.log_event(
+                event_type=on_complete,
+                source_system="projection",
+                target_object_type="observation",
+                correlation_id=context.run_id,
+                status="success",
+                payload={
+                    "job_id": job_id,
+                    "binding_id": loaded_binding_id,
+                    "binding_version": loaded_binding_version,
+                    "records_scored": len(records),
+                    "observations_created": len(observation_rows),
+                    "observations_upserted": observations_upserted,
+                    "records_failed": len(failed_records),
+                    "duration_seconds": round(duration_seconds, 2),
+                    "diagnostics": {
+                        "errors": total_diagnostics_errors,
+                        "warnings": total_diagnostics_warnings,
+                    },
+                    "dry_run": context.dry_run,
+                },
+            )
+
+            logger.info(f"Projection complete: {len(observation_rows)} observations, duration={duration_seconds:.2f}s")
+
+        except Exception as e:
+            duration_seconds = time.time() - start_time
+            logger.error(f"Observation projection failed: {e}", exc_info=True)
+
+            event_client.log_event(
+                event_type=on_fail,
+                source_system="projection",
+                target_object_type="observation",
+                correlation_id=context.run_id,
+                status="failed",
+                error_message=str(e),
+                payload={
+                    "job_id": job_id,
+                    "binding_id": binding_id,
+                    "error_type": type(e).__name__,
+                    "duration_seconds": round(duration_seconds, 2),
+                },
+            )
+            raise
+
+    def _build_form_response(
+        self,
+        record: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Map canonical form_response → final-form input format."""
+        answers_data = payload.get("answers", [])
+        items = []
+        for i, ans in enumerate(answers_data):
+            items.append({
+                "field_key": ans.get("question_id"),
+                "answer": ans.get("answer_value"),
+                "position": i,
+            })
+
+        connection_name = record.get("connection_name", "")
+        form_id = payload.get("form_id") or f"googleforms::{connection_name}"
+
+        respondent = payload.get("respondent", {})
+        subject_id = respondent.get("id") or respondent.get("email")
+
+        return {
+            "form_id": form_id,
+            "form_submission_id": payload.get("response_id") or payload.get("submission_id"),
+            "subject_id": subject_id,
+            "timestamp": payload.get("submitted_at"),
+            "items": items,
+        }
+
+    def _measure_to_observation(
+        self,
+        event: Any,  # MeasurementEvent from final-form
+        measurement_event_id: str,
+        correlation_id: str,
+    ) -> dict[str, Any]:
+        """Create an observation row from a scored MeasurementEvent."""
+        # Build idempotent key
+        idem_key = f"{measurement_event_id}:{event.measure_id}"
+
+        # Build components array
+        components = []
+        for obs in event.observations:
+            components.append({
+                "code": obs.code,
+                "kind": obs.kind,
+                "value": obs.value,
+                "value_type": obs.value_type,
+                "label": obs.label,
+                "raw_answer": obs.raw_answer,
+                "position": obs.position,
+                "missing": obs.missing,
+            })
+
+        # Extract total score and severity
+        total_score = self._extract_total_score(event)
+        severity_label = self._extract_severity(event)
+        severity_code = self._severity_label_to_code(severity_label) if severity_label else None
+
+        now = datetime.now(timezone.utc).isoformat()
+
+        return {
+            "idem_key": idem_key,
+            "observation_id": event.measurement_event_id,
+            "measurement_event_id": measurement_event_id,
+            "subject_id": event.subject_id,
+            "measure_code": event.measure_id,
+            "measure_version": event.measure_version,
+            "value_numeric": total_score,
+            "value_text": None,
+            "unit": "score",
+            "severity_code": severity_code,
+            "severity_label": severity_label,
+            "components": json.dumps(components),
+            "metadata": json.dumps({}),
+            "correlation_id": correlation_id,
+            "processed_at": now,
+            "created_at": now,
+        }
+
+    def _extract_total_score(self, event: Any) -> float | None:
+        """Extract the total score from a MeasurementEvent."""
+        for obs in event.observations:
+            if obs.kind == "scale" and obs.code.endswith("_total"):
+                if obs.value is not None:
+                    try:
+                        return float(obs.value)
+                    except (TypeError, ValueError):
+                        pass
+        return None
+
+    def _extract_severity(self, event: Any) -> str | None:
+        """Extract severity label from a MeasurementEvent."""
+        for obs in event.observations:
+            if obs.kind == "scale" and obs.code.endswith("_total"):
+                if obs.label:
+                    return obs.label
+        return None
+
+    def _severity_label_to_code(self, label: str) -> str | None:
+        """Map severity label to standardized code."""
+        if not label:
+            return None
+        label_lower = label.lower()
+        if "none" in label_lower or "minimal" in label_lower:
+            return "none"
+        elif "mild" in label_lower:
+            return "mild"
+        elif "moderate" in label_lower:
+            if "severe" in label_lower:
+                return "moderate_severe"
+            return "moderate"
+        elif "severe" in label_lower:
+            return "severe"
+        return None
+
+
+# =============================================================================
+# REGISTER ALL PROCESSORS
+# =============================================================================
+
+# View projections
 registry.register("create_projection", CreateProjectionProcessor())
+
+# Table projections
+registry.register("project_measurement_events", MeasurementEventProjection())
+registry.register("project_observations", ObservationProjection())
+
+# Local projections
 registry.register("sync_sqlite", SyncSqliteProcessor())
 registry.register("file_projection", FileProjectionProcessor())

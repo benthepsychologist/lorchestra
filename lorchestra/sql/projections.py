@@ -12,6 +12,7 @@ Available projections:
     proj_transcripts       - Session transcripts
     proj_clinical_documents - Session notes, summaries, reports
     proj_form_responses    - Form responses linked to clients by email
+    proj_contact_events    - Unified operational event ledger (forms + sessions)
 
 Usage:
     from lorchestra.sql.projections import get_projection_sql
@@ -122,6 +123,85 @@ WHERE canonical_schema = 'iglu:org.canonical/clinical_document/jsonschema/2-0-0'
 """
 
 # =============================================================================
+# proj_contact_events - Unified operational event ledger for all client-touch events
+# =============================================================================
+PROJ_CONTACT_EVENTS = """
+CREATE OR REPLACE VIEW `{project}.{dataset}.proj_contact_events` AS
+
+-- Source 1: measurement_events (forms)
+-- New schema: 1 row per form submission (not per measure)
+-- event_subtype = binding_id (intake_01, followup, etc.)
+-- occurred_at = when form was submitted
+SELECT
+    c.client_id AS contact_id,
+    m.subject_id AS contact_email,
+    m.event_type AS event_type,
+    m.event_subtype AS event_name,
+    m.source_system AS event_source,
+    m.occurred_at AS event_timestamp,
+    'measurement_events' AS source_system,
+    m.measurement_event_id AS source_record_id,
+    TO_JSON_STRING(STRUCT(
+        m.binding_id,
+        m.binding_version,
+        m.form_id,
+        m.source_id AS form_submission_id,
+        m.canonical_object_id,
+        m.idem_key
+    )) AS payload
+FROM `{project}.{dataset}.measurement_events` m
+LEFT JOIN (
+    SELECT
+        JSON_VALUE(payload, '$.contact_id') AS client_id,
+        LOWER(JSON_VALUE(payload, '$.email')) AS email
+    FROM `{project}.{dataset}.canonical_objects`
+    WHERE canonical_schema = 'iglu:org.canonical/contact/jsonschema/2-0-0'
+      AND JSON_VALUE(payload, '$.client_type_label') = 'Therapy'
+) c ON LOWER(m.subject_id) = c.email
+
+UNION ALL
+
+-- Source 2: proj_sessions (clinical sessions)
+SELECT
+    s.client_id AS contact_id,
+    c.email AS contact_email,
+    'session' AS event_type,
+    s.session_status AS event_name,
+    'dataverse' AS event_source,
+    COALESCE(
+        TIMESTAMP(s.started_at),
+        TIMESTAMP(s.ended_at)
+    ) AS event_timestamp,
+    'proj_sessions' AS source_system,
+    s.session_id AS source_record_id,
+    TO_JSON_STRING(STRUCT(
+        s.session_num,
+        s.idem_key
+    )) AS payload
+FROM (
+    SELECT
+        JSON_VALUE(payload, '$.session_id') AS session_id,
+        JSON_VALUE(payload, '$.contact_id') AS client_id,
+        CAST(JSON_VALUE(payload, '$.session_num') AS INT64) AS session_num,
+        JSON_VALUE(payload, '$.created_at') AS started_at,
+        JSON_VALUE(payload, '$.updated_at') AS ended_at,
+        JSON_VALUE(payload, '$.status') AS session_status,
+        idem_key
+    FROM `{project}.{dataset}.canonical_objects`
+    WHERE canonical_schema = 'iglu:org.canonical/clinical_session/jsonschema/2-0-0'
+      AND JSON_VALUE(payload, '$.contact_id') IS NOT NULL
+) s
+LEFT JOIN (
+    SELECT
+        JSON_VALUE(payload, '$.contact_id') AS client_id,
+        JSON_VALUE(payload, '$.email') AS email
+    FROM `{project}.{dataset}.canonical_objects`
+    WHERE canonical_schema = 'iglu:org.canonical/contact/jsonschema/2-0-0'
+      AND JSON_VALUE(payload, '$.client_type_label') = 'Therapy'
+) c ON s.client_id = c.client_id
+"""
+
+# =============================================================================
 # proj_form_responses - Form responses (measurement events) linked to clients by email
 # =============================================================================
 PROJ_FORM_RESPONSES = """
@@ -154,6 +234,7 @@ PROJECTIONS: dict[str, str] = {
     "proj_transcripts": PROJ_TRANSCRIPTS,
     "proj_clinical_documents": PROJ_CLINICAL_DOCUMENTS,
     "proj_form_responses": PROJ_FORM_RESPONSES,
+    "proj_contact_events": PROJ_CONTACT_EVENTS,
 }
 
 

@@ -8,5 +8,5 @@ user:
   default_owner: benthepsychologist
   default_tier: C
 current:
-  spec: .specwright/specs/projector-update-with-config-and-local-files-update.md
-  aip: /workspace/lorchestra/.specwright/aips/projector-update-with-config-and-local-files-update.yaml
+  spec: .specwright/specs/final-form-processing-v2.md
+  aip: /workspace/lorchestra/.specwright/aips/final-form-processing-v2.yaml

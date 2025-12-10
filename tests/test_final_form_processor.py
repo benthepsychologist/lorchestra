@@ -1,5 +1,11 @@
-"""Tests for FinalFormProcessor."""
+"""Tests for FinalFormProcessor.
 
+Tests the FHIR-aligned data model:
+- measurement_events: 1 row per form submission
+- observations: 1 row per scored construct (PHQ-9, GAD-7) with components JSON array
+"""
+
+import json
 import pytest
 from unittest.mock import MagicMock, patch
 from typing import Any, Iterator
@@ -37,7 +43,7 @@ class MockTelemetry:
 
 
 class MockObservation:
-    """Mock Observation for testing."""
+    """Mock Observation for testing (final-form's Observation = our component)."""
 
     def __init__(
         self,
@@ -65,7 +71,7 @@ class MockObservation:
 
 
 class MockMeasurementEvent:
-    """Mock MeasurementEvent for testing."""
+    """Mock MeasurementEvent for testing (final-form's MeasurementEvent = our observation)."""
 
     def __init__(
         self,
@@ -84,9 +90,9 @@ class MockMeasurementEvent:
         self.subject_id = subject_id
         self.timestamp = timestamp
         self.observations = observations or [
-            MockObservation(code="q1", value=1, position=1),
-            MockObservation(code="q2", value=2, position=2),
-            MockObservation(code="total", kind="scale", value=3, label="minimal", position=None),
+            MockObservation(code="phq9_item1", value=1, position=1),
+            MockObservation(code="phq9_item2", value=2, position=2),
+            MockObservation(code="phq9_total", kind="scale", value=3, label="Minimal depression", position=None),
         ]
         self.source = source or MockSource()
         self.telemetry = telemetry or MockTelemetry()
@@ -301,7 +307,12 @@ class TestFinalFormProcessor:
         )
 
     def test_successful_formation(self, processor, job_spec, context):
-        """Successful formation creates measurements and observations."""
+        """Successful formation creates measurements and observations.
+
+        FHIR-aligned data model:
+        - 1 measurement_event per form submission (not per measure)
+        - 1 observation per scored construct with components JSON array
+        """
         records = [
             {
                 "idem_key": "key1",
@@ -344,27 +355,47 @@ class TestFinalFormProcessor:
         assert query_call["canonical_schema"] == "iglu:org.canonical/form_response/jsonschema/1-0-0"
         assert query_call["filters"]["form_id"] == "googleforms::test-form"
 
-        # Verify measurements upserted
+        # Verify measurements upserted - NEW: 1 per submission, not per measure
         assert len(storage_client.measurement_calls) == 1
         m_call = storage_client.measurement_calls[0]
         assert m_call["table"] == "measurement_events"
-        # 2 records x 1 measurement event each = 2 measurements
+        # 2 submissions = 2 measurement_events (not 2 per measure!)
         assert len(m_call["measurements"]) == 2
 
-        # Check measurement structure
+        # Check NEW measurement structure (FHIR-aligned)
         m1 = m_call["measurements"][0]
-        assert m1["idem_key"] == "key1:phq9:measurement"
-        assert m1["canonical_idem_key"] == "key1"
-        assert m1["measure_id"] == "phq9"
-        assert m1["measure_version"] == "1.0.0"
-        assert m1["subject_id"] == "user-123"
+        assert m1["idem_key"] == "key1"  # Now uses canonical idem_key directly
+        assert m1["measurement_event_id"] == "key1"  # Same as idem_key
+        assert m1["canonical_object_id"] == "key1"
+        assert m1["event_type"] == "form"
+        assert m1["event_subtype"] == "intake_01"  # binding_id
+        assert m1["source_system"] == "google_forms"
+        assert m1["source_entity"] == "form_response"
 
-        # Verify observations upserted
+        # Verify observations upserted - NEW: 1 per measure (not per item)
         assert len(storage_client.observation_calls) == 1
         o_call = storage_client.observation_calls[0]
         assert o_call["table"] == "observations"
-        # 2 records x 3 observations each (2 items + 1 scale) = 6 observations
-        assert len(o_call["observations"]) == 6
+        # 2 submissions x 1 measure (phq9) each = 2 observations (with components arrays)
+        assert len(o_call["observations"]) == 2
+
+        # Check NEW observation structure - has components array
+        obs1 = o_call["observations"][0]
+        assert obs1["idem_key"] == "key1:phq9"  # submission_idem_key:measure_code
+        assert obs1["measurement_event_id"] == "key1"  # FK to measurement_events
+        assert obs1["measure_code"] == "phq9"
+        assert obs1["measure_version"] == "1.0.0"
+        assert obs1["value_numeric"] == 3.0  # Total score extracted
+        assert obs1["severity_label"] == "Minimal depression"
+        assert obs1["severity_code"] == "none"  # Mapped from label
+        assert obs1["unit"] == "score"
+        # Components is a JSON string containing all items/scales
+        components = json.loads(obs1["components"])
+        assert len(components) == 3  # 2 items + 1 scale
+        assert components[0]["code"] == "phq9_item1"
+        assert components[0]["kind"] == "item"
+        assert components[2]["code"] == "phq9_total"
+        assert components[2]["kind"] == "scale"
 
         # Verify events (started + completed)
         assert len(event_client.events) == 2
@@ -376,8 +407,8 @@ class TestFinalFormProcessor:
         assert completed_event["event_type"] == "formation.completed"
         assert completed_event["status"] == "success"
         assert completed_event["source_system"] == "final_form"
-        assert completed_event["payload"]["measurements_created"] == 2
-        assert completed_event["payload"]["observations_created"] == 6
+        assert completed_event["payload"]["measurements_created"] == 2  # 2 submissions
+        assert completed_event["payload"]["observations_created"] == 2  # 2 measures
         assert completed_event["payload"]["binding_id"] == "intake_01"
         assert completed_event["payload"]["binding_version"] == "1.0.0"
         assert "diagnostics" in completed_event["payload"]
@@ -575,7 +606,7 @@ class TestFinalFormProcessorRegistration:
 
 
 class TestFinalFormProcessorHelpers:
-    """Tests for helper methods."""
+    """Tests for helper methods (FHIR-aligned data model)."""
 
     @pytest.fixture
     def processor(self):
@@ -586,7 +617,6 @@ class TestFinalFormProcessorHelpers:
         record = {"idem_key": "key1"}
         payload = {
             "form_id": "googleforms::abc123",
-            "submission_id": "sub-001",
             "submission_id": "sub-001",
             "submitted_at": "2025-12-03T12:00:00Z",
             "respondent": {"id": "user-123"},
@@ -615,95 +645,141 @@ class TestFinalFormProcessorHelpers:
 
         assert result["subject_id"] is None
 
-    def test_measurement_event_to_storage(self, processor):
-        """_measurement_event_to_storage correctly transforms MeasurementEvent."""
+    def test_submission_to_measurement_event(self, processor):
+        """_submission_to_measurement_event creates 1 row per submission."""
+        record = {"idem_key": "canon-key-1"}
+        payload = {
+            "form_id": "googleforms::test",
+            "submission_id": "sub-001",
+            "submitted_at": "2025-12-03T12:00:00Z",
+            "respondent": {"id": "user-123"},
+        }
+        form_response = {
+            "form_id": "googleforms::test",
+            "form_submission_id": "sub-001",
+            "subject_id": "user-123",
+            "timestamp": "2025-12-03T12:00:00Z",
+        }
+        # Create a mock result with events
+        result = MockProcessingResult(
+            events=[MockMeasurementEvent(measure_id="phq9"), MockMeasurementEvent(measure_id="gad7")]
+        )
+
+        me_row = processor._submission_to_measurement_event(
+            record=record,
+            payload=payload,
+            form_response=form_response,
+            result=result,
+            correlation_id="corr-001",
+        )
+
+        # Uses canonical idem_key directly (1 per submission)
+        assert me_row["idem_key"] == "canon-key-1"
+        assert me_row["measurement_event_id"] == "canon-key-1"
+        assert me_row["canonical_object_id"] == "canon-key-1"
+        assert me_row["subject_id"] == "user-123"
+        assert me_row["subject_contact_id"] is None  # Future projection
+        assert me_row["event_type"] == "form"
+        assert me_row["event_subtype"] == "intake_01"  # From first event's binding_id
+        assert me_row["source_system"] == "google_forms"
+        assert me_row["source_entity"] == "form_response"
+        assert me_row["source_id"] == "sub-001"
+        assert me_row["binding_id"] == "intake_01"
+        assert me_row["binding_version"] == "1.0.0"
+        assert me_row["correlation_id"] == "corr-001"
+        assert "processed_at" in me_row
+        assert "created_at" in me_row
+        assert "metadata" in me_row
+
+    def test_measure_to_observation(self, processor):
+        """_measure_to_observation creates 1 row per measure with components."""
         event = MockMeasurementEvent(
             measurement_event_id="me-001",
             measure_id="phq9",
             measure_version="1.0.0",
             subject_id="user-123",
-            timestamp="2025-12-03T12:00:00Z",
+            observations=[
+                MockObservation(code="phq9_item1", kind="item", value=2, position=1),
+                MockObservation(code="phq9_item2", kind="item", value=3, position=2),
+                MockObservation(code="phq9_total", kind="scale", value=15, label="Moderate depression", position=None),
+            ],
         )
 
-        result = processor._measurement_event_to_storage(
+        obs_row = processor._measure_to_observation(
             event=event,
-            canonical_idem_key="canon-key-1",
+            measurement_event_idem_key="canon-key-1",
+            measurement_event_id="canon-key-1",
             correlation_id="corr-001",
         )
 
-        assert result["idem_key"] == "canon-key-1:phq9:measurement"
-        assert result["canonical_idem_key"] == "canon-key-1"
-        assert result["measurement_event_id"] == "me-001"
-        assert result["measure_id"] == "phq9"
-        assert result["measure_version"] == "1.0.0"
-        assert result["subject_id"] == "user-123"
-        assert result["timestamp"] == "2025-12-03T12:00:00Z"
-        assert result["binding_id"] == "intake_01"
-        assert result["binding_version"] == "1.0.0"
-        assert result["correlation_id"] == "corr-001"
-        assert "processed_at" in result
+        # idem_key is submission:measure_code
+        assert obs_row["idem_key"] == "canon-key-1:phq9"
+        assert obs_row["observation_id"] == "me-001"  # Reuses final-form's UUID
+        assert obs_row["measurement_event_id"] == "canon-key-1"  # FK
+        assert obs_row["subject_id"] == "user-123"
+        assert obs_row["measure_code"] == "phq9"
+        assert obs_row["measure_version"] == "1.0.0"
+        assert obs_row["value_numeric"] == 15.0  # Total score extracted
+        assert obs_row["value_text"] is None
+        assert obs_row["unit"] == "score"
+        assert obs_row["severity_code"] == "moderate"  # Mapped from label
+        assert obs_row["severity_label"] == "Moderate depression"
+        assert obs_row["correlation_id"] == "corr-001"
 
-    def test_observation_to_storage_item(self, processor):
-        """_observation_to_storage correctly transforms item Observation."""
-        obs = MockObservation(
-            observation_id="obs-001",
-            measure_id="phq9",
-            code="q1",
-            kind="item",
-            value=2,
-            value_type="integer",
-            raw_answer="A little bit",
-            position=1,
-            missing=False,
+        # Components is a JSON array of all items/scales
+        components = json.loads(obs_row["components"])
+        assert len(components) == 3
+        assert components[0]["code"] == "phq9_item1"
+        assert components[0]["kind"] == "item"
+        assert components[0]["value"] == 2
+        assert components[2]["code"] == "phq9_total"
+        assert components[2]["kind"] == "scale"
+        assert components[2]["value"] == 15
+        assert components[2]["label"] == "Moderate depression"
+
+    def test_extract_total_score(self, processor):
+        """_extract_total_score finds the _total scale observation."""
+        event = MockMeasurementEvent(
+            observations=[
+                MockObservation(code="phq9_item1", kind="item", value=2),
+                MockObservation(code="phq9_total", kind="scale", value=15),
+            ]
         )
 
-        result = processor._observation_to_storage(
-            obs=obs,
-            measurement_idem_key="me-key:phq9:measurement",
-            correlation_id="corr-001",
+        total = processor._extract_total_score(event)
+        assert total == 15.0
+
+    def test_extract_total_score_not_found(self, processor):
+        """_extract_total_score returns None if no _total."""
+        event = MockMeasurementEvent(
+            observations=[
+                MockObservation(code="phq9_item1", kind="item", value=2),
+            ]
         )
 
-        assert result["idem_key"] == "me-key:phq9:measurement:obs:q1"
-        assert result["measurement_idem_key"] == "me-key:phq9:measurement"
-        assert result["observation_id"] == "obs-001"
-        assert result["measure_id"] == "phq9"
-        assert result["code"] == "q1"
-        assert result["kind"] == "item"
-        assert result["value"] == 2
-        assert result["value_type"] == "integer"
-        assert result["raw_answer"] == "A little bit"
-        assert result["position"] == 1
-        assert result["missing"] is False
-        assert result["correlation_id"] == "corr-001"
+        total = processor._extract_total_score(event)
+        assert total is None
 
-    def test_observation_to_storage_scale(self, processor):
-        """_observation_to_storage correctly transforms scale Observation."""
-        obs = MockObservation(
-            observation_id="obs-scale",
-            measure_id="phq9",
-            code="total",
-            kind="scale",
-            value=15.0,
-            value_type="float",
-            label="moderate",
-            raw_answer=None,
-            position=None,
-            missing=False,
+    def test_extract_severity(self, processor):
+        """_extract_severity gets label from _total scale."""
+        event = MockMeasurementEvent(
+            observations=[
+                MockObservation(code="phq9_total", kind="scale", value=15, label="Moderate depression"),
+            ]
         )
 
-        result = processor._observation_to_storage(
-            obs=obs,
-            measurement_idem_key="me-key:phq9:measurement",
-            correlation_id="corr-001",
-        )
+        severity = processor._extract_severity(event)
+        assert severity == "Moderate depression"
 
-        assert result["idem_key"] == "me-key:phq9:measurement:obs:total"
-        assert result["code"] == "total"
-        assert result["kind"] == "scale"
-        assert result["value"] == 15.0
-        assert result["label"] == "moderate"
-        assert result["raw_answer"] is None
-        assert result["position"] is None
+    def test_severity_label_to_code(self, processor):
+        """_severity_label_to_code maps labels to codes."""
+        assert processor._severity_label_to_code("Minimal depression") == "none"
+        assert processor._severity_label_to_code("Mild depression") == "mild"
+        assert processor._severity_label_to_code("Moderate depression") == "moderate"
+        assert processor._severity_label_to_code("Moderately severe depression") == "moderate_severe"
+        assert processor._severity_label_to_code("Severe depression") == "severe"
+        assert processor._severity_label_to_code(None) is None
+        assert processor._severity_label_to_code("Unknown") is None
 
     def test_create_pipeline_called_with_config(self, processor):
         """_create_pipeline creates Pipeline with correct config."""

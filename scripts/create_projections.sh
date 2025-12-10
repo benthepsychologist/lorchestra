@@ -35,6 +35,7 @@ run_job create_proj_sessions
 run_job create_proj_transcripts
 run_job create_proj_clinical_documents
 run_job create_proj_form_responses
+run_job create_proj_contact_events
 
 echo ""
 echo "=== Views Created ==="

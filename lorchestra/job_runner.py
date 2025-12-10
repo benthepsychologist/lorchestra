@@ -18,7 +18,6 @@ Usage:
 
 import json
 import logging
-import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -467,6 +466,10 @@ class BigQueryStorageClient:
         This enables incremental processing - only new or updated canonical
         records are returned, avoiding re-processing the entire table.
 
+        New schema (FHIR-aligned):
+        - measurement_events now has 1 row per form submission
+        - Join on measurement_events.canonical_object_id = canonical_objects.idem_key
+
         Args:
             canonical_schema: Filter by canonical schema
             filters: Additional filters (column or payload fields)
@@ -480,7 +483,7 @@ class BigQueryStorageClient:
         measurement_base = measurement_table
         measurement_table_name = self._table_name(measurement_base)
         measurement_dataset = self._dataset_for_table(measurement_base)
-        
+
         filters = filters or {}
 
         # Build WHERE clause conditions
@@ -513,23 +516,21 @@ class BigQueryStorageClient:
                     params.append(bigquery.ScalarQueryParameter(param_name, "STRING", str(value)))
 
         # Incremental condition: never formed OR re-canonized since last formation
-        conditions.append("(m.canonical_idem_key IS NULL OR c.canonicalized_at > m.processed_at)")
+        # New schema uses canonical_object_id instead of canonical_idem_key
+        conditions.append("(m.canonical_object_id IS NULL OR c.canonicalized_at > m.processed_at)")
 
         where_clause = " AND ".join(conditions) if conditions else "1=1"
         limit_clause = f"LIMIT {limit}" if limit else ""
 
         # LEFT JOIN to find canonical records without measurement events or with stale events
-        # Use a subquery to get the MAX(processed_at) per canonical_idem_key to handle
-        # multiple measurement events per canonical record
+        # New schema: measurement_events.canonical_object_id = canonical_objects.idem_key
+        # Now 1:1 relationship (1 measurement_event per canonical form_response)
         query = f"""
             SELECT c.idem_key, c.source_system, c.connection_name, c.object_type,
                    c.canonical_schema, c.transform_ref, c.payload, c.correlation_id
             FROM `{canonical_dataset}.{canonical_table}` c
-            LEFT JOIN (
-                SELECT canonical_idem_key, MAX(processed_at) as processed_at
-                FROM `{measurement_dataset}.{measurement_table_name}`
-                GROUP BY canonical_idem_key
-            ) m ON c.idem_key = m.canonical_idem_key
+            LEFT JOIN `{measurement_dataset}.{measurement_table_name}` m
+                ON c.idem_key = m.canonical_object_id
             WHERE {where_clause}
             {limit_clause}
         """
@@ -622,6 +623,13 @@ class BigQueryStorageClient:
 
         Inserts new rows or updates existing rows based on idem_key.
         This provides idempotent writes for re-processing.
+
+        New schema (FHIR-aligned):
+        - 1 row per form submission (the measurement event)
+        - Columns: idem_key, measurement_event_id, subject_id, subject_contact_id,
+                   event_type, event_subtype, occurred_at, received_at, source_system,
+                   source_entity, source_id, canonical_object_id, form_id, binding_id,
+                   binding_version, metadata, correlation_id, processed_at, created_at
         """
         if not measurements:
             return 0
@@ -639,25 +647,50 @@ class BigQueryStorageClient:
             # Build source data as a query with UNION ALL
             source_rows = []
             for m in batch:
-                # Escape single quotes
+                # Escape single quotes and special chars
                 def esc(v):
-                    return str(v).replace("'", "\\'") if v is not None else ""
+                    if v is None:
+                        return ""
+                    return str(v).replace("\\", "\\\\").replace("'", "\\'")
+
+                # Handle nullable fields - cast NULL to STRING for BigQuery
+                subject_contact_id = m.get("subject_contact_id")
+                subject_contact_id_sql = f"'{esc(subject_contact_id)}'" if subject_contact_id else "CAST(NULL AS STRING)"
+
+                # Handle timestamps
+                occurred_at = m.get("occurred_at")
+                occurred_at_sql = f"TIMESTAMP('{esc(occurred_at)}')" if occurred_at else "NULL"
+
+                received_at = m.get("received_at")
+                received_at_sql = f"TIMESTAMP('{esc(received_at)}')" if received_at else "CURRENT_TIMESTAMP()"
+
+                processed_at = m.get("processed_at")
+                processed_at_sql = f"TIMESTAMP('{esc(processed_at)}')" if processed_at else "CURRENT_TIMESTAMP()"
+
+                # Handle JSON metadata
+                metadata = m.get("metadata", "{}")
+                metadata_sql = f"PARSE_JSON('{esc(metadata)}')" if metadata else "PARSE_JSON('{}')"
 
                 source_rows.append(f"""
                     SELECT
                         '{esc(m["idem_key"])}' as idem_key,
-                        '{esc(m.get("canonical_idem_key", ""))}' as canonical_idem_key,
                         '{esc(m.get("measurement_event_id", ""))}' as measurement_event_id,
-                        '{esc(m.get("measure_id", ""))}' as measure_id,
-                        '{esc(m.get("measure_version", ""))}' as measure_version,
                         '{esc(m.get("subject_id", ""))}' as subject_id,
-                        '{esc(m.get("timestamp", ""))}' as timestamp,
+                        {subject_contact_id_sql} as subject_contact_id,
+                        '{esc(m.get("event_type", "form"))}' as event_type,
+                        '{esc(m.get("event_subtype", ""))}' as event_subtype,
+                        {occurred_at_sql} as occurred_at,
+                        {received_at_sql} as received_at,
+                        '{esc(m.get("source_system", ""))}' as source_system,
+                        '{esc(m.get("source_entity", ""))}' as source_entity,
+                        '{esc(m.get("source_id", ""))}' as source_id,
+                        '{esc(m.get("canonical_object_id", ""))}' as canonical_object_id,
+                        '{esc(m.get("form_id", ""))}' as form_id,
                         '{esc(m.get("binding_id", ""))}' as binding_id,
                         '{esc(m.get("binding_version", ""))}' as binding_version,
-                        '{esc(m.get("form_id", ""))}' as form_id,
-                        '{esc(m.get("form_submission_id", ""))}' as form_submission_id,
-                        TIMESTAMP('{esc(m.get("processed_at", ""))}') as processed_at,
+                        {metadata_sql} as metadata,
                         '{esc(m.get("correlation_id") or correlation_id)}' as correlation_id,
+                        {processed_at_sql} as processed_at,
                         CURRENT_TIMESTAMP() as created_at
                 """)
 
@@ -669,25 +702,32 @@ class BigQueryStorageClient:
                 ON T.idem_key = S.idem_key
                 WHEN MATCHED THEN
                     UPDATE SET
-                        canonical_idem_key = S.canonical_idem_key,
                         measurement_event_id = S.measurement_event_id,
-                        measure_id = S.measure_id,
-                        measure_version = S.measure_version,
                         subject_id = S.subject_id,
-                        timestamp = S.timestamp,
+                        subject_contact_id = S.subject_contact_id,
+                        event_type = S.event_type,
+                        event_subtype = S.event_subtype,
+                        occurred_at = S.occurred_at,
+                        received_at = S.received_at,
+                        source_system = S.source_system,
+                        source_entity = S.source_entity,
+                        source_id = S.source_id,
+                        canonical_object_id = S.canonical_object_id,
+                        form_id = S.form_id,
                         binding_id = S.binding_id,
                         binding_version = S.binding_version,
-                        form_id = S.form_id,
-                        form_submission_id = S.form_submission_id,
-                        processed_at = S.processed_at,
-                        correlation_id = S.correlation_id
+                        metadata = S.metadata,
+                        correlation_id = S.correlation_id,
+                        processed_at = S.processed_at
                 WHEN NOT MATCHED THEN
-                    INSERT (idem_key, canonical_idem_key, measurement_event_id, measure_id,
-                            measure_version, subject_id, timestamp, binding_id, binding_version,
-                            form_id, form_submission_id, processed_at, correlation_id, created_at)
-                    VALUES (S.idem_key, S.canonical_idem_key, S.measurement_event_id, S.measure_id,
-                            S.measure_version, S.subject_id, S.timestamp, S.binding_id, S.binding_version,
-                            S.form_id, S.form_submission_id, S.processed_at, S.correlation_id, S.created_at)
+                    INSERT (idem_key, measurement_event_id, subject_id, subject_contact_id,
+                            event_type, event_subtype, occurred_at, received_at, source_system,
+                            source_entity, source_id, canonical_object_id, form_id, binding_id,
+                            binding_version, metadata, correlation_id, processed_at, created_at)
+                    VALUES (S.idem_key, S.measurement_event_id, S.subject_id, S.subject_contact_id,
+                            S.event_type, S.event_subtype, S.occurred_at, S.received_at, S.source_system,
+                            S.source_entity, S.source_id, S.canonical_object_id, S.form_id, S.binding_id,
+                            S.binding_version, S.metadata, S.correlation_id, S.processed_at, S.created_at)
             """
 
             result = self.bq_client.query(merge_query).result()
@@ -700,12 +740,21 @@ class BigQueryStorageClient:
         observations: list[dict[str, Any]],
         table: str,
         correlation_id: str,
-        batch_size: int = 500,
+        batch_size: int = 50,
     ) -> int:
         """Upsert observations using MERGE by idem_key.
 
         Inserts new rows or updates existing rows based on idem_key.
         This provides idempotent writes for re-processing.
+
+        New schema (FHIR-aligned):
+        - 1 row per scored construct (PHQ-9, GAD-7, etc.) with components JSON array
+        - Columns: idem_key, observation_id, measurement_event_id, subject_id,
+                   measure_code, measure_version, value_numeric, value_text, unit,
+                   severity_code, severity_label, components, metadata, correlation_id,
+                   processed_at, created_at
+
+        Note: batch_size is small (50) because components JSON can be large.
         """
         if not observations:
             return 0
@@ -723,43 +772,57 @@ class BigQueryStorageClient:
             # Build source data as a query with UNION ALL
             source_rows = []
             for o in batch:
-
-                # Escape single quotes
+                # Escape single quotes and special chars
                 def esc(v):
-                    return str(v).replace("'", "\\'") if v is not None else ""
+                    if v is None:
+                        return ""
+                    return str(v).replace("\\", "\\\\").replace("'", "\\'")
 
                 # Handle numeric value - could be int, float, or null
-                value = o.get("value")
-                if value is None:
-                    value_sql = "NULL"
-                elif isinstance(value, (int, float)):
-                    value_sql = str(value)
+                value_numeric = o.get("value_numeric")
+                if value_numeric is None:
+                    value_numeric_sql = "NULL"
                 else:
-                    value_sql = f"'{esc(value)}'"
+                    value_numeric_sql = str(float(value_numeric))
 
-                # Handle position (nullable int)
-                position = o.get("position")
-                position_sql = str(position) if position is not None else "NULL"
+                # Handle nullable string fields - cast NULL to STRING for BigQuery
+                value_text = o.get("value_text")
+                value_text_sql = f"'{esc(value_text)}'" if value_text else "CAST(NULL AS STRING)"
 
-                # Handle missing (boolean)
-                missing = o.get("missing", False)
-                missing_sql = "TRUE" if missing else "FALSE"
+                severity_code = o.get("severity_code")
+                severity_code_sql = f"'{esc(severity_code)}'" if severity_code else "CAST(NULL AS STRING)"
+
+                severity_label = o.get("severity_label")
+                severity_label_sql = f"'{esc(severity_label)}'" if severity_label else "CAST(NULL AS STRING)"
+
+                # Handle JSON fields
+                components = o.get("components", "[]")
+                components_sql = f"PARSE_JSON('{esc(components)}')" if components else "PARSE_JSON('[]')"
+
+                metadata = o.get("metadata", "{}")
+                metadata_sql = f"PARSE_JSON('{esc(metadata)}')" if metadata else "PARSE_JSON('{}')"
+
+                # Handle timestamps
+                processed_at = o.get("processed_at")
+                processed_at_sql = f"TIMESTAMP('{esc(processed_at)}')" if processed_at else "CURRENT_TIMESTAMP()"
 
                 source_rows.append(f"""
                     SELECT
                         '{esc(o["idem_key"])}' as idem_key,
-                        '{esc(o.get("measurement_idem_key", ""))}' as measurement_idem_key,
                         '{esc(o.get("observation_id", ""))}' as observation_id,
-                        '{esc(o.get("measure_id", ""))}' as measure_id,
-                        '{esc(o.get("code", ""))}' as code,
-                        '{esc(o.get("kind", ""))}' as kind,
-                        {value_sql} as value,
-                        '{esc(o.get("value_type", ""))}' as value_type,
-                        {f"'{esc(o.get('label'))}'" if o.get('label') else 'NULL'} as label,
-                        {f"'{esc(o.get('raw_answer'))}'" if o.get('raw_answer') else 'NULL'} as raw_answer,
-                        {position_sql} as position,
-                        {missing_sql} as missing,
+                        '{esc(o.get("measurement_event_id", ""))}' as measurement_event_id,
+                        '{esc(o.get("subject_id", ""))}' as subject_id,
+                        '{esc(o.get("measure_code", ""))}' as measure_code,
+                        '{esc(o.get("measure_version", ""))}' as measure_version,
+                        {value_numeric_sql} as value_numeric,
+                        {value_text_sql} as value_text,
+                        '{esc(o.get("unit", "score"))}' as unit,
+                        {severity_code_sql} as severity_code,
+                        {severity_label_sql} as severity_label,
+                        {components_sql} as components,
+                        {metadata_sql} as metadata,
                         '{esc(o.get("correlation_id") or correlation_id)}' as correlation_id,
+                        {processed_at_sql} as processed_at,
                         CURRENT_TIMESTAMP() as created_at
                 """)
 
@@ -771,23 +834,29 @@ class BigQueryStorageClient:
                 ON T.idem_key = S.idem_key
                 WHEN MATCHED THEN
                     UPDATE SET
-                        measurement_idem_key = S.measurement_idem_key,
                         observation_id = S.observation_id,
-                        measure_id = S.measure_id,
-                        code = S.code,
-                        kind = S.kind,
-                        value = S.value,
-                        value_type = S.value_type,
-                        label = S.label,
-                        raw_answer = S.raw_answer,
-                        position = S.position,
-                        missing = S.missing,
-                        correlation_id = S.correlation_id
+                        measurement_event_id = S.measurement_event_id,
+                        subject_id = S.subject_id,
+                        measure_code = S.measure_code,
+                        measure_version = S.measure_version,
+                        value_numeric = S.value_numeric,
+                        value_text = S.value_text,
+                        unit = S.unit,
+                        severity_code = S.severity_code,
+                        severity_label = S.severity_label,
+                        components = S.components,
+                        metadata = S.metadata,
+                        correlation_id = S.correlation_id,
+                        processed_at = S.processed_at
                 WHEN NOT MATCHED THEN
-                    INSERT (idem_key, measurement_idem_key, observation_id, measure_id, code, kind,
-                            value, value_type, label, raw_answer, position, missing, correlation_id, created_at)
-                    VALUES (S.idem_key, S.measurement_idem_key, S.observation_id, S.measure_id, S.code, S.kind,
-                            S.value, S.value_type, S.label, S.raw_answer, S.position, S.missing, S.correlation_id, S.created_at)
+                    INSERT (idem_key, observation_id, measurement_event_id, subject_id,
+                            measure_code, measure_version, value_numeric, value_text, unit,
+                            severity_code, severity_label, components, metadata, correlation_id,
+                            processed_at, created_at)
+                    VALUES (S.idem_key, S.observation_id, S.measurement_event_id, S.subject_id,
+                            S.measure_code, S.measure_version, S.value_numeric, S.value_text, S.unit,
+                            S.severity_code, S.severity_label, S.components, S.metadata, S.correlation_id,
+                            S.processed_at, S.created_at)
             """
 
             result = self.bq_client.query(merge_query).result()
@@ -832,6 +901,101 @@ class BigQueryStorageClient:
         result = self.bq_client.query(sql).result()
         return [dict(row) for row in result]
 
+    def get_canonical_by_idem_key(
+        self,
+        idem_key: str,
+    ) -> dict[str, Any] | None:
+        """Get a canonical object by its idem_key.
+
+        Args:
+            idem_key: The idem_key to look up
+
+        Returns:
+            Dict with canonical object data, or None if not found
+        """
+        canonical_base = "canonical_objects"
+        canonical_table = self._table_name(canonical_base)
+        canonical_dataset = self._dataset_for_table(canonical_base)
+
+        query = f"""
+            SELECT idem_key, source_system, connection_name, object_type,
+                   canonical_schema, transform_ref, payload, correlation_id
+            FROM `{canonical_dataset}.{canonical_table}`
+            WHERE idem_key = @idem_key
+            LIMIT 1
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("idem_key", "STRING", idem_key)
+            ]
+        )
+        result = self.bq_client.query(query, job_config=job_config).result()
+
+        for row in result:
+            return dict(row)
+        return None
+
+    def query_measurement_events_for_scoring(
+        self,
+        measurement_table: str = "measurement_events",
+        observation_table: str = "observations",
+        binding_id: str | None = None,
+        limit: int | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """Query measurement_events that don't have observations yet.
+
+        Returns measurement_events where:
+        - No observations exist for that measurement_event_id
+        - Optionally filtered by binding_id
+
+        Args:
+            measurement_table: Name of measurement_events table
+            observation_table: Name of observations table
+            binding_id: Optional filter by binding_id
+            limit: Max records to return
+        """
+        me_base = measurement_table
+        me_table = self._table_name(me_base)
+        me_dataset = self._dataset_for_table(me_base)
+
+        obs_base = observation_table
+        obs_table = self._table_name(obs_base)
+        obs_dataset = self._dataset_for_table(obs_base)
+
+        conditions = []
+        params = []
+
+        # Only get measurement_events without observations
+        conditions.append("o.measurement_event_id IS NULL")
+
+        if binding_id:
+            conditions.append("m.binding_id = @binding_id")
+            params.append(bigquery.ScalarQueryParameter("binding_id", "STRING", binding_id))
+
+        where_clause = " AND ".join(conditions)
+        limit_clause = f"LIMIT {limit}" if limit else ""
+
+        query = f"""
+            SELECT m.idem_key, m.measurement_event_id, m.subject_id, m.event_type,
+                   m.event_subtype, m.occurred_at, m.source_system, m.source_entity,
+                   m.source_id, m.canonical_object_id, m.form_id, m.binding_id,
+                   m.binding_version, m.correlation_id
+            FROM `{me_dataset}.{me_table}` m
+            LEFT JOIN (
+                SELECT DISTINCT measurement_event_id
+                FROM `{obs_dataset}.{obs_table}`
+            ) o ON m.measurement_event_id = o.measurement_event_id
+            WHERE {where_clause}
+            {limit_clause}
+        """
+
+        job_config = bigquery.QueryJobConfig(query_parameters=params)
+        result = self.bq_client.query(query, job_config=job_config).result()
+
+        for row in result:
+            yield dict(row)
+
 
 class BigQueryEventClient:
     """EventClient implementation backed by BigQuery.
@@ -872,6 +1036,9 @@ class BigQueryEventClient:
 def load_job_definition(job_id: str, definitions_dir: Path | None = None) -> dict[str, Any]:
     """Load a job definition from JSON file.
 
+    Searches for {job_id}.json in the definitions directory and all subdirectories.
+    Subdirectories are organized by processor type (ingest/, canonize/, projection/, etc.)
+
     Args:
         job_id: Job identifier (e.g., "gmail_ingest_acct1")
         definitions_dir: Directory containing job definitions (defaults to jobs/definitions/)
@@ -884,10 +1051,20 @@ def load_job_definition(job_id: str, definitions_dir: Path | None = None) -> dic
         json.JSONDecodeError: If job definition is invalid JSON
     """
     definitions_dir = definitions_dir or DEFINITIONS_DIR
-    def_path = definitions_dir / f"{job_id}.json"
+    filename = f"{job_id}.json"
 
-    if not def_path.exists():
-        raise FileNotFoundError(f"Job definition not found: {def_path}")
+    # First check root directory
+    def_path = definitions_dir / filename
+    if def_path.exists():
+        pass  # Use this path
+    else:
+        # Search subdirectories
+        found = list(definitions_dir.glob(f"**/{filename}"))
+        if not found:
+            raise FileNotFoundError(f"Job definition not found: {def_path} (also searched subdirectories)")
+        if len(found) > 1:
+            raise ValueError(f"Multiple job definitions found for {job_id}: {found}")
+        def_path = found[0]
 
     with open(def_path) as f:
         job_def = json.load(f)
@@ -996,7 +1173,7 @@ def run_job(
         # Import processors to ensure registration
         import lorchestra.processors.ingest  # noqa: F401
         import lorchestra.processors.canonize  # noqa: F401
-        import lorchestra.processors.final_form  # noqa: F401
+        import lorchestra.processors.formation  # noqa: F401
         import lorchestra.processors.projection  # noqa: F401
 
         # Get processor and run

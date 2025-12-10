@@ -1,0 +1,81 @@
+aip_id: AIP-lorchestra-2025-12-10-001
+context:
+  background: ''
+  constraints: []
+created: '2025-12-09T20:00:00+00:00'
+meta:
+  created_at: '2025-12-09T20:00:00+00:00'
+  created_by: benthepsychologist
+objective:
+  acceptance_criteria:
+  - '`measurement_events` table has 1 row per form submission'
+  - '`observations` table has 1 row per scored measure with `components` JSON array'
+  - All existing form data repopulated correctly
+  - '`proj_contact_events` updated to use new schema'
+  - CI green (lint + unit tests)
+  - 'Counts verified: ~232 measurement_events, ~1,108 observations (unique submission × measure)'
+  goal: Fix measurement_events and observations tables to use correct FHIR-aligned grain (1 row per submission,
+    not 1 row per measure)
+orchestrator_contract:
+  artifacts_dir: .aip_artifacts/AIP-lorchestra-2025-12-10-001
+  logging: jsonl
+  state_machine:
+    events:
+    - run_step
+    - await_gate
+    - approve
+    - reject
+    - retry
+    - escalate
+    - complete
+    states:
+    - pending
+    - running
+    - awaiting_human
+    - failed
+    - succeeded
+    - rolled_back
+plan:
+- description: Drop Existing Tables
+  kind: code
+  role: coding_agent
+  step_id: step-001
+- description: Update FinalFormProcessor
+  kind: code
+  role: coding_agent
+  step_id: step-002
+- description: Update job_runner Upsert Methods
+  kind: code
+  role: coding_agent
+  step_id: step-003
+- description: Update Incremental Query
+  kind: code
+  role: coding_agent
+  step_id: step-004
+- description: Update Tests
+  kind: code
+  role: coding_agent
+  step_id: step-005
+- description: Rerun Final-Form Jobs
+  kind: code
+  role: coding_agent
+  step_id: step-006
+- description: Update proj_contact_events
+  kind: code
+  role: coding_agent
+  step_id: step-007
+- description: Verify Counts
+  kind: code
+  role: coding_agent
+  step_id: step-008
+project_slug: lorchestra
+repo:
+  default_branch: main
+  url: git@github.com:benthepsychologist/lorchestra.git
+  working_branch: fix/measurement-schema
+spec_version: 1.0.0
+tier: C
+title: final-form Processing V2 - Fix Data Model
+updated: '2025-12-09T20:00:00+00:00'
+version: '0.1'
+

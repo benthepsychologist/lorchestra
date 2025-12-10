@@ -10,8 +10,19 @@ This processor handles all final_form jobs by:
 
 The final-form library is a pure transform engine - it returns results,
 this processor handles all IO and event emission.
+
+Data Model (FHIR-aligned):
+- measurement_events: 1 row per form submission (the measurement event)
+- observations: 1 row per scored construct (PHQ-9, GAD-7) with components JSON array
+- components: JSON array within observations containing items and scales
+
+Mapping from final-form:
+- final-form MeasurementEvent → our observation (1 per scored measure)
+- final-form Observation → our components (items/scales within a measure)
+- form submission → our measurement_event (1 per submission)
 """
 
+import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -19,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from final_form.pipeline import Pipeline, PipelineConfig, ProcessingResult
-from final_form.core.models import MeasurementEvent, Observation
+from final_form.core.models import MeasurementEvent
 
 from lorchestra.processors.base import (
     EventClient,
@@ -182,23 +193,33 @@ class FinalFormProcessor:
                         if hasattr(diag, "warnings"):
                             total_diagnostics_warnings += len(diag.warnings)
 
-                    # Transform each MeasurementEvent to storage format
-                    for event in result.events:
-                        m_row = self._measurement_event_to_storage(
-                            event=event,
-                            canonical_idem_key=record["idem_key"],
-                            correlation_id=record.get("correlation_id") or context.run_id,
-                        )
-                        measurement_rows.append(m_row)
+                    # FHIR-aligned data model:
+                    # - ONE measurement_event per form submission
+                    # - ONE observation per scored measure (final-form MeasurementEvent)
+                    # - Components array within each observation
 
-                        # Transform observations for this measurement
-                        for obs in event.observations:
-                            o_row = self._observation_to_storage(
-                                obs=obs,
-                                measurement_idem_key=m_row["idem_key"],
-                                correlation_id=m_row["correlation_id"],
+                    correlation_id = record.get("correlation_id") or context.run_id
+
+                    # Create ONE measurement_event for this submission
+                    if result.events:
+                        me_row = self._submission_to_measurement_event(
+                            record=record,
+                            payload=payload,
+                            form_response=form_response,
+                            result=result,
+                            correlation_id=correlation_id,
+                        )
+                        measurement_rows.append(me_row)
+
+                        # Create ONE observation per scored measure (final-form MeasurementEvent)
+                        for event in result.events:
+                            obs_row = self._measure_to_observation(
+                                event=event,
+                                measurement_event_idem_key=me_row["idem_key"],
+                                measurement_event_id=me_row["measurement_event_id"],
+                                correlation_id=correlation_id,
                             )
-                            observation_rows.append(o_row)
+                            observation_rows.append(obs_row)
 
                 except Exception as e:
                     failed_records.append({
@@ -217,18 +238,15 @@ class FinalFormProcessor:
             )
 
             # Upsert results (idempotent by idem_key)
+            # IMPORTANT: Write observations FIRST, then measurement_events.
+            # This ensures that if observations fail, measurement_events don't exist,
+            # so the incremental query will pick up those records on re-run.
+            # (measurement_events existence is what the incremental query checks)
             measurements_upserted = 0
             observations_upserted = 0
 
             if not context.dry_run:
-                if measurement_rows:
-                    measurements_upserted = storage_client.upsert_measurements(
-                        measurements=measurement_rows,
-                        table=measurement_table,
-                        correlation_id=context.run_id,
-                    )
-                    logger.info(f"Upserted {measurements_upserted} measurement events")
-
+                # Write observations FIRST (if this fails, measurement_events won't be written)
                 if observation_rows:
                     observations_upserted = storage_client.upsert_observations(
                         observations=observation_rows,
@@ -236,6 +254,15 @@ class FinalFormProcessor:
                         correlation_id=context.run_id,
                     )
                     logger.info(f"Upserted {observations_upserted} observations")
+
+                # Write measurement_events LAST (marks records as "formed" for incremental query)
+                if measurement_rows:
+                    measurements_upserted = storage_client.upsert_measurements(
+                        measurements=measurement_rows,
+                        table=measurement_table,
+                        correlation_id=context.run_id,
+                    )
+                    logger.info(f"Upserted {measurements_upserted} measurement events")
             else:
                 logger.info(
                     f"[DRY-RUN] Would upsert {len(measurement_rows)} measurements, "
@@ -396,75 +423,167 @@ class FinalFormProcessor:
             "items": items,
         }
 
-    def _measurement_event_to_storage(
+    def _submission_to_measurement_event(
+        self,
+        record: dict[str, Any],
+        payload: dict[str, Any],
+        form_response: dict[str, Any],
+        result: ProcessingResult,
+        correlation_id: str,
+    ) -> dict[str, Any]:
+        """Create ONE measurement_event row for the form submission.
+
+        In FHIR terms, this is like a DiagnosticReport - the container for
+        all observations from a single measurement event (form submission).
+
+        Args:
+            record: The canonical_objects record
+            payload: The JSON payload from the record
+            form_response: The form_response dict we built for final-form
+            result: The ProcessingResult from final-form
+            correlation_id: Correlation ID for tracing
+
+        Returns:
+            Dict ready for storage upsert
+        """
+        # Use canonical idem_key directly - 1 per submission
+        idem_key = record["idem_key"]
+
+        # Get binding info from first event (all events share same submission)
+        first_event = result.events[0] if result.events else None
+
+        now = datetime.now(timezone.utc).isoformat()
+
+        return {
+            "idem_key": idem_key,
+            "measurement_event_id": idem_key,  # Same as idem_key for submissions
+            "subject_id": form_response.get("subject_id"),
+            "subject_contact_id": None,  # Will be populated by future projection
+            "event_type": "form",
+            "event_subtype": first_event.source.binding_id if first_event else None,
+            "occurred_at": form_response.get("timestamp"),
+            "received_at": now,
+            "source_system": "google_forms",
+            "source_entity": "form_response",
+            "source_id": form_response.get("form_submission_id"),
+            "canonical_object_id": record["idem_key"],
+            "form_id": form_response.get("form_id"),
+            "binding_id": first_event.source.binding_id if first_event else None,
+            "binding_version": first_event.source.binding_version if first_event else None,
+            "metadata": json.dumps({}),
+            "correlation_id": correlation_id,
+            "processed_at": now,
+            "created_at": now,
+        }
+
+    def _measure_to_observation(
         self,
         event: MeasurementEvent,
-        canonical_idem_key: str,
+        measurement_event_idem_key: str,
+        measurement_event_id: str,
         correlation_id: str,
     ) -> dict[str, Any]:
-        """Transform MeasurementEvent to storage row format.
+        """Create ONE observation row per scored measure, with components array.
+
+        In FHIR terms, this is like an Observation with components.
+        What final-form calls a MeasurementEvent is actually an Observation
+        (the scored result of a measure like PHQ-9).
 
         Args:
-            event: The MeasurementEvent from final-form
-            canonical_idem_key: The source canonical object's idem_key
+            event: The MeasurementEvent from final-form (which is our observation)
+            measurement_event_idem_key: The parent measurement_event's idem_key
+            measurement_event_id: The parent measurement_event's ID
             correlation_id: Correlation ID for tracing
 
         Returns:
             Dict ready for storage upsert
         """
-        # Build idempotent key: {canonical_idem_key}:{measure_id}:measurement
-        idem_key = f"{canonical_idem_key}:{event.measure_id}:measurement"
+        # Build idempotent key: {measurement_event_idem_key}:{measure_code}
+        idem_key = f"{measurement_event_idem_key}:{event.measure_id}"
+
+        # Build components array from event.observations (items and scales)
+        components = []
+        for obs in event.observations:
+            components.append({
+                "code": obs.code,
+                "kind": obs.kind,
+                "value": obs.value,
+                "value_type": obs.value_type,
+                "label": obs.label,
+                "raw_answer": obs.raw_answer,
+                "position": obs.position,
+                "missing": obs.missing,
+            })
+
+        # Extract total score from _total scale observation
+        total_score = self._extract_total_score(event)
+
+        # Extract severity from scale observations
+        severity_label = self._extract_severity(event)
+        severity_code = self._severity_label_to_code(severity_label) if severity_label else None
+
+        now = datetime.now(timezone.utc).isoformat()
 
         return {
             "idem_key": idem_key,
-            "canonical_idem_key": canonical_idem_key,
-            "measurement_event_id": event.measurement_event_id,
-            "measure_id": event.measure_id,
-            "measure_version": event.measure_version,
+            "observation_id": event.measurement_event_id,  # Reuse final-form's UUID
+            "measurement_event_id": measurement_event_id,
             "subject_id": event.subject_id,
-            "timestamp": event.timestamp,
-            "binding_id": event.source.binding_id,
-            "binding_version": event.source.binding_version,
-            "form_id": event.source.form_id,
-            "form_submission_id": event.source.form_submission_id,
-            "processed_at": datetime.now(timezone.utc).isoformat(),
+            "measure_code": event.measure_id,
+            "measure_version": event.measure_version,
+            "value_numeric": total_score,
+            "value_text": None,  # For future qualitative results
+            "unit": "score",
+            "severity_code": severity_code,
+            "severity_label": severity_label,
+            "components": json.dumps(components),
+            "metadata": json.dumps({}),
             "correlation_id": correlation_id,
+            "processed_at": now,
+            "created_at": now,
         }
 
-    def _observation_to_storage(
-        self,
-        obs: Observation,
-        measurement_idem_key: str,
-        correlation_id: str,
-    ) -> dict[str, Any]:
-        """Transform Observation to storage row format.
+    def _extract_total_score(self, event: MeasurementEvent) -> float | None:
+        """Extract the total score from a MeasurementEvent.
 
-        Args:
-            obs: The Observation from final-form
-            measurement_idem_key: The parent measurement's idem_key
-            correlation_id: Correlation ID for tracing
-
-        Returns:
-            Dict ready for storage upsert
+        Looks for observations with code ending in '_total' and kind='scale'.
         """
-        # Build idempotent key: {measurement_idem_key}:obs:{code}
-        idem_key = f"{measurement_idem_key}:obs:{obs.code}"
+        for obs in event.observations:
+            if obs.kind == "scale" and obs.code.endswith("_total"):
+                if obs.value is not None:
+                    try:
+                        return float(obs.value)
+                    except (TypeError, ValueError):
+                        pass
+        return None
 
-        return {
-            "idem_key": idem_key,
-            "measurement_idem_key": measurement_idem_key,
-            "observation_id": obs.observation_id,
-            "measure_id": obs.measure_id,
-            "code": obs.code,
-            "kind": obs.kind,
-            "value": obs.value,
-            "value_type": obs.value_type,
-            "label": obs.label,
-            "raw_answer": obs.raw_answer,
-            "position": obs.position,
-            "missing": obs.missing,
-            "correlation_id": correlation_id,
-        }
+    def _extract_severity(self, event: MeasurementEvent) -> str | None:
+        """Extract severity label from a MeasurementEvent.
+
+        Looks for observations with code ending in '_total' that have a label.
+        """
+        for obs in event.observations:
+            if obs.kind == "scale" and obs.code.endswith("_total"):
+                if obs.label:
+                    return obs.label
+        return None
+
+    def _severity_label_to_code(self, label: str) -> str | None:
+        """Map severity label to standardized code."""
+        if not label:
+            return None
+        label_lower = label.lower()
+        if "none" in label_lower or "minimal" in label_lower:
+            return "none"
+        elif "mild" in label_lower:
+            return "mild"
+        elif "moderate" in label_lower:
+            if "severe" in label_lower:
+                return "moderate_severe"
+            return "moderate"
+        elif "severe" in label_lower:
+            return "severe"
+        return None
 
 
 # Register with global registry
