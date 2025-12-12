@@ -8,5 +8,6 @@ user:
   default_owner: benthepsychologist
   default_tier: C
 current:
-  spec: .specwright/specs/pipeline-composite-jobs.md
-  aip: /workspace/lorchestra/.specwright/aips/pipeline-composite-jobs.yaml
+  spec: .specwright/specs/contact-events.md
+  aip: /workspace/lorchestra/.specwright/aips/contact-events.yaml
+  

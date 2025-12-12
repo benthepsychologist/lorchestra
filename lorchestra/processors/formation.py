@@ -29,8 +29,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from final_form.pipeline import Pipeline, PipelineConfig, ProcessingResult
-from final_form.core.models import MeasurementEvent
+from finalform.pipeline import Pipeline, PipelineConfig, ProcessingResult
+from finalform.core.models import MeasurementEvent
 
 from lorchestra.processors.base import (
     EventClient,
@@ -42,8 +42,8 @@ from lorchestra.processors.base import (
 logger = logging.getLogger(__name__)
 
 # Default registry paths
-DEFAULT_MEASURE_REGISTRY = Path("/workspace/final-form/measure-registry")
-DEFAULT_BINDING_REGISTRY = Path("/workspace/final-form/form-binding-registry")
+DEFAULT_MEASURE_REGISTRY = Path("/workspace/finalform/measure-registry")
+DEFAULT_BINDING_REGISTRY = Path("/workspace/finalform/form-binding-registry")
 
 
 class FinalFormProcessor:

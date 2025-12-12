@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 from typing import Any, Iterator
 
 from lorchestra.processors.base import JobContext, UpsertResult
-from lorchestra.processors.final_form import FinalFormProcessor
+from lorchestra.processors.formation import FinalFormProcessor
 
 
 class MockSource:
@@ -599,7 +599,7 @@ class TestFinalFormProcessorRegistration:
         from lorchestra.processors import registry
 
         # Import to trigger registration
-        import lorchestra.processors.final_form  # noqa: F401
+        import lorchestra.processors.formation  # noqa: F401
 
         processor = registry.get("final_form")
         assert isinstance(processor, FinalFormProcessor)
@@ -785,8 +785,8 @@ class TestFinalFormProcessorHelpers:
         """_create_pipeline creates Pipeline with correct config."""
         from pathlib import Path
 
-        with patch("lorchestra.processors.final_form.Pipeline") as MockPipelineCls:
-            with patch("lorchestra.processors.final_form.PipelineConfig") as MockConfigCls:
+        with patch("lorchestra.processors.formation.Pipeline") as MockPipelineCls:
+            with patch("lorchestra.processors.formation.PipelineConfig") as MockConfigCls:
                 MockConfigCls.return_value = MagicMock()
                 MockPipelineCls.return_value = MockPipeline()
 

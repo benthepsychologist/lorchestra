@@ -458,7 +458,6 @@ class CanonizeProcessor:
         import subprocess
         import tempfile
         import os
-        from pathlib import Path
 
         registry_root = config.canonizer_registry_root or "/workspace/lorchestra/.canonizer/registry"
         registry_path = str(registry_root)

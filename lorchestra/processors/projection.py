@@ -445,8 +445,8 @@ class FileProjectionProcessor:
 # =============================================================================
 
 # Default registry paths for final-form
-DEFAULT_MEASURE_REGISTRY = Path("/workspace/final-form/measure-registry")
-DEFAULT_BINDING_REGISTRY = Path("/workspace/final-form/form-binding-registry")
+DEFAULT_MEASURE_REGISTRY = Path("/workspace/finalform/measure-registry")
+DEFAULT_BINDING_REGISTRY = Path("/workspace/finalform/form-binding-registry")
 
 
 class MeasurementEventProjection:
@@ -671,7 +671,7 @@ class ObservationProjection:
     ) -> None:
         """Execute an observation projection job."""
         # Import final-form here to avoid import errors if not installed
-        from final_form.pipeline import Pipeline, PipelineConfig, ProcessingResult  # noqa: F401
+        from finalform.pipeline import Pipeline, PipelineConfig, ProcessingResult  # noqa: F401
 
         job_id = job_spec["job_id"]
         source = job_spec["source"]

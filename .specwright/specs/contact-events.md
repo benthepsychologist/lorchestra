@@ -1,5 +1,5 @@
 ---
-version: "0.1"
+version: "0.2"
 tier: C
 title: Contact Events Projection
 owner: benthepsychologist
@@ -8,7 +8,7 @@ labels: [projection, events, operational-ledger]
 project_slug: lorchestra
 spec_version: 1.0.0
 created: 2025-12-09T19:37:43.907616+00:00
-updated: 2025-12-09T19:37:43.907616+00:00
+updated: 2025-12-12T14:00:00.000000+00:00
 orchestrator_contract: "standard"
 repo:
   working_branch: "feat/contact-events"
@@ -48,12 +48,95 @@ This table answers one question efficiently:
 
 ## Acceptance Criteria
 
-- [ ] `proj_contact_events` BQ view/table created
-- [ ] Row-per-event grain from all source systems
-- [ ] Sync job copies to SQLite `contact_events` table
-- [ ] Daily pipeline includes rebuild
+- [x] `proj_contact_events` BQ view created
+- [x] measurement_events (forms) source included
+- [x] clinical_sessions source included
+- [ ] emails source included (gmail + exchange)
+- [ ] invoices source included (stripe)
+- [ ] payments source included (stripe)
+- [ ] refunds source included (stripe)
+- [ ] Therapy filter uses client_type_code, not label
+- [x] Sync job copies to SQLite `contact_events` table
+- [x] Daily pipeline includes rebuild
 - [ ] CI green (lint + unit)
-- [ ] **Validation check:** At least one client's full activity history can be reconstructed correctly from `proj_contact_events` (forms + sessions) and matches raw canonicals end-to-end
+- [ ] **Validation check:** At least one client's full activity history can be reconstructed correctly from `proj_contact_events` and matches raw canonicals end-to-end
+
+## Data Inventory
+
+Current data available in `canonical_objects` for projection:
+
+| Source | Object Type | Schema | Count | Status |
+|--------|-------------|--------|-------|--------|
+| measurement_events | form | (separate table) | ~235 | ✅ In projection |
+| dataverse | session | clinical_session/2-0-0 | 832 | ✅ In projection |
+| gmail | email | email_jmap_lite/1-0-0 | 6,085 | ⬚ Pending |
+| exchange | email | email_jmap_lite/1-0-0 | 4,372 | ⬚ Pending |
+| stripe | invoice | invoice/1-0-0 | 549 | ⬚ Pending |
+| stripe | payment_intent | payment/1-0-0 | 6,712 | ⬚ Pending |
+| stripe | refund | refund/1-0-0 | 55 | ⬚ Pending |
+
+**Not included (identity, not events):**
+- dataverse/contact (642) - identity table, used for lookups via `proj_clients`
+- stripe/customer (296) - identity table, used for lookups only
+
+## Identity Surface: proj_clients
+
+Contact resolution uses `proj_clients` (already exists in `projections.py`):
+
+```sql
+-- proj_clients provides identity for lookups
+SELECT client_id, email, first_name, last_name, client_type, client_type_code
+FROM proj_clients
+```
+
+**Important:** `proj_clients` currently filters on `client_type_label = 'Therapy'`. This MUST be changed to use `client_type_code`.
+
+### Local SQLite Mirror
+
+`proj_clients` MUST sync to local SQLite as `clients` table:
+
+```json
+{
+  "job_id": "sync_proj_clients",
+  "job_type": "sync_sqlite",
+  "source": { "projection": "proj_clients" },
+  "sink": {
+    "sqlite_path": "~/clinical-vault/local.db",
+    "table": "clients"
+  }
+}
+```
+
+This ensures local scripts (like `send_forms.sh`) can query clients without hitting BigQuery.
+
+### Therapy Client Filtering
+
+**Problem:** Labels are mutable/localized. `client_type_label = 'Therapy'` will break.
+
+**Solution:** Filter by `client_type_code` which is stable:
+
+```
+Current client_type_code values:
+  '1'     = Therapy (111 contacts)
+  '2'     = Coaching (2)
+  '3'     = Consulting (3)
+  '1,3,6' = Multi-type including Therapy (1)
+  NULL    = No type (525)
+```
+
+**Filter rule (deterministic, no substring):**
+```sql
+-- Handles single value and comma-separated multi-value
+WHERE '1' IN UNNEST(SPLIT(JSON_VALUE(payload, '$.client_type_code'), ','))
+```
+
+This correctly matches `'1'` and `'1,3,6'` without false positives from substring matching.
+
+**SQLite equivalent (for local queries):**
+```sql
+WHERE (',' || client_type_code || ',') LIKE '%,1,%'
+   OR client_type_code = '1'
+```
 
 ## Context
 
@@ -61,8 +144,8 @@ This table answers one question efficiently:
 
 | Table | Purpose |
 |-------|---------|
-| `contacts` | Identity + governance + assignment |
-| `contact_events` | Temporal reality |
+| `proj_clients` | Identity + governance (used for lookups) |
+| `proj_contact_events` | Temporal reality (the activity ledger) |
 
 **They must never collapse into one another.**
 
@@ -71,6 +154,8 @@ This table answers one question efficiently:
 **One row = one client-relevant event**
 
 Not one per form type, not one per client per day—true atomic events.
+
+**Critical:** Forms source from `measurement_events` (submission-grain), NOT from `observations`. Observations are results, not events.
 
 ## Schema
 
@@ -81,47 +166,59 @@ Not one per form type, not one per client per day—true atomic events.
 | `contact_id` | Primary join key (Dataverse/internal ID) - **authoritative when present** |
 | `contact_email` | Secondary fallback join key - for backfill joins, foreign-system reconciliation, disaster recovery |
 
-### Event Classification (Minimal, Non-Dumb)
+### Event Classification
 
 | Column | Purpose | Examples |
 |--------|---------|----------|
-| `event_type` | Coarse channel bucket | `form`, `session`, `email`, `message`, `system` |
-| `event_name` | Human-meaningful subtype | `PHQ-9`, `Weekly Check-in`, `Session Completed`, `Form Reminder Sent` |
-| `event_source` | Domain-level source (human/business concept) | `google_form`, `dataverse`, `respond_io`, `outlook`, `life_cli` |
+| `event_type` | Coarse channel bucket | `form`, `session`, `email`, `invoice`, `payment`, `refund` |
+| `event_name` | Human-meaningful subtype | `intake_01`, `followup`, `Scheduled`, `open`, `succeeded` |
+| `event_source` | Domain-level source | `google_forms`, `dataverse`, `gmail`, `exchange`, `stripe` |
 
 These three together define the semantic identity of the event.
 
 **event_source vs source_system distinction:**
-- `event_source` = domain-level, human-meaningful origin. "Where did this come from as a concept?" Used in queries and business logic.
-- `source_system` = pipeline-level origin. "Which canonical table produced this row?" Used for idempotency and debugging.
+- `event_source` = domain-level, human-meaningful origin. Used in queries and business logic.
+- `source_system` = pipeline-level origin. Used for idempotency and debugging.
 
 ### Time Model
 
 | Column | Purpose |
 |--------|---------|
 | `event_timestamp` | When the event actually occurred (UTC) |
-| `ingested_at` | (Optional, later) When pipeline observed it |
 
 All timestamps normalized to UTC. No exceptions.
 
 ### Provenance & Idempotency
 
-| Column | Purpose | Examples |
-|--------|---------|----------|
-| `source_system` | Pipeline-level origin table | `measurement_events`, `canonical.clinical_sessions`, `canonical.email_events` |
-| `source_record_id` | Stable unique identifier from the source | `measurement_event_id`, `session_id`, `email_event_id` |
-| `event_fingerprint` | (Optional) Hash for deep dedupe later | |
+| Column | Purpose |
+|--------|---------|
+| `source_system` | Stable enum identifying the pipeline source |
+| `source_record_id` | Stable unique identifier from that source |
 
-**source_record_id contract:**
-- MUST be a stable, unique identifier in the canonical source that represents one logical event
-- MUST NOT change across pipeline reruns for the same logical event
-- Typically maps to: `measurement_event_id`, `session_id`, `idem_key`, or similar
+**source_system enum (stable forever):**
+```
+measurement_events    -- form submissions
+dataverse_sessions    -- clinical sessions
+email_gmail          -- gmail emails
+email_exchange       -- exchange/outlook emails
+stripe_invoice       -- stripe invoices
+stripe_payment       -- stripe payments
+stripe_refund        -- stripe refunds
+```
+
+These values are part of the idem key and MUST NOT change.
 
 **Idem rule:**
 ```
 (source_system, source_record_id) is the idempotency key.
-Any upsert operation will overwrite the existing row with matching (source_system, source_record_id).
 ```
+
+### Optional Columns (add if needed)
+
+| Column | Purpose | When to add |
+|--------|---------|-------------|
+| `event_id` | `SHA256(source_system + ':' + source_record_id)` | If you need stable synthetic IDs |
+| `event_direction` | `inbound` / `outbound` (for emails) | If direction queries become common |
 
 ### Payload Strategy
 
@@ -153,25 +250,44 @@ payload
 
 ## Write Semantics
 
-### NOW (Phase 1)
+### NOW (Phase 1) - View + Sync
 
-- Full rebuild
-- `CREATE OR REPLACE TABLE`
-- UNION from:
-  - `measurement_events` (forms)
-  - `clinical_sessions` (sessions)
-  - `emails` (when available)
-  - `messages` (if applicable)
+- `proj_contact_events` is a **VIEW** (not a table)
+- `CREATE OR REPLACE VIEW` in `projections.py`
+- `create_proj_contact_events` job runs daily (idempotent view rebuild)
+- `sync_proj_contact_events` job runs daily (full replace to SQLite)
 
-Idempotency achieved structurally by overwrite.
+UNION from all available sources:
+- `measurement_events` (forms) ✅ implemented
+- `dataverse_sessions` (sessions) ✅ implemented
+- `email_gmail` ⬚ pending
+- `email_exchange` ⬚ pending
+- `stripe_invoice` ⬚ pending
+- `stripe_payment` ⬚ pending
+- `stripe_refund` ⬚ pending
 
-### SOON (Phase 2)
+Idempotency achieved structurally by view rebuild + full replace sync.
 
-- Per-source append/upsert
-- Idem key: `(source_system, source_record_id)`
-- Overwrite on conflict, not skip
+### LATER (Phase 2) - Materialized Table
 
-Aligns with: **"idem by overwrite, not skip"**
+When performance requires it, add materialization:
+
+```json
+{
+  "job_id": "materialize_contact_events",
+  "job_type": "materialize_projection",
+  "source": {
+    "view": "proj_contact_events"
+  },
+  "sink": {
+    "table": "mat_contact_events"
+  }
+}
+```
+
+Implementation: `CREATE OR REPLACE TABLE mat_contact_events AS SELECT * FROM proj_contact_events`
+
+This is a **future stub** - not wired yet. The view approach is sufficient for current scale (~20k events).
 
 ## What This Table Is Optimized For
 
@@ -185,165 +301,234 @@ Aligns with: **"idem by overwrite, not skip"**
 
 ## What This Table Is NOT Responsible For
 
-- Scoring
+- Scoring (that's `observations`)
 - Compliance state
 - Engagement classification
 - Escalation thresholds
 - CRM lifecycle flags
 
-All of that belongs in:
-- Queries against this table
-- Or optional `contact_activity_state` later (aggregation layer)
+All of that belongs in queries against this table or optional aggregation layers.
 
-## Plan
+## Source Mappings
 
-### Step 1: Define Source Mappings
+### measurement_events → contact_events (forms)
 
-Map each source canonical to `contact_events` schema:
+**Source:** `measurement_events` table (submission-grain, NOT observations)
 
-**measurement_events → contact_events:**
 ```
-contact_id      ← (lookup from contacts by subject_id email)
-contact_email   ← subject_id
-event_type      ← 'form'
-event_name      ← measure_id (e.g., 'phq9', 'gad7')
-event_source    ← 'google_form' (or binding_id source)
-event_timestamp ← timestamp
-source_system   ← 'measurement_events'
+contact_id       ← proj_clients.client_id (join on LOWER(subject_id) = LOWER(email))
+contact_email    ← subject_id
+event_type       ← 'form'
+event_name       ← event_subtype (binding_id: intake_01, followup, etc.)
+event_source     ← 'google_forms'
+event_timestamp  ← occurred_at
+source_system    ← 'measurement_events'
 source_record_id ← measurement_event_id
-payload         ← JSON with measure_version, binding_id, form_id, etc.
+payload          ← JSON: {binding_id, binding_version, form_id, canonical_object_id}
 ```
 
-**clinical_sessions → contact_events:**
-```
-contact_id      ← contact_id
-contact_email   ← (lookup from contacts)
-event_type      ← 'session'
-event_name      ← status (e.g., 'Session Completed', 'Session Cancelled')
-event_source    ← 'dataverse'
-event_timestamp ← started_at if available, else ended_at, else created_at
-source_system   ← 'canonical.clinical_sessions'
-source_record_id ← session_id
-payload         ← JSON with session_num, idem_key, etc.
-```
+**Critical:** `event_name` is `binding_id` (e.g., "followup"), NOT `measure_id` (e.g., "phq9"). One submission = one event. Measures go in payload if needed.
 
-**emails → contact_events:** (future)
+### dataverse_sessions → contact_events (sessions)
+
+**Source:** `canonical_objects` where schema = `clinical_session/2-0-0`
+
 ```
-contact_id      ← (lookup by email address)
-contact_email   ← sender/recipient email
-event_type      ← 'email'
-event_name      ← direction + subject snippet
-event_source    ← 'gmail' | 'outlook'
-event_timestamp ← sent_at
-source_system   ← 'canonical.email_events'
-source_record_id ← email_event_id
-payload         ← JSON with thread_id, labels, etc.
+contact_id       ← session.contact_id (direct, authoritative)
+contact_email    ← proj_clients.email (lookup by contact_id)
+event_type       ← 'session'
+event_name       ← status (Scheduled, Completed, Cancelled, etc.)
+event_source     ← 'dataverse'
+event_timestamp  ← COALESCE(started_at, ended_at)
+source_system    ← 'dataverse_sessions'
+source_record_id ← session_id  -- THE idempotency key (stable business identifier)
+payload          ← JSON: {session_num}
 ```
 
-### Contact Resolution Rules
+**Note:** `session_id` is the stable business identifier from Dataverse. Use it directly as `source_record_id`, not `idem_key` (which is a pipeline artifact).
 
-When resolving `contact_id` from an email address:
+### email_gmail / email_exchange → contact_events (emails)
 
-1. **Exact match required:** The email must match exactly one contact in `contacts` (case-insensitive).
-2. **No match:** If `subject_id` / email does not match any contact, `contact_id` is NULL. The row is still inserted (orphan event). Logged as warning.
-3. **Multiple matches:** If email matches multiple contacts, the mapping fails. Logged as error. Row is skipped until disambiguation is resolved upstream.
-4. **contact_id in source:** If the source canonical already has `contact_id`, it MUST be used directly and MUST exist in `contacts`. Mismatch is an error.
+**Source:** `canonical_objects` where schema = `email_jmap_lite/1-0-0`
 
-### Step 2: Add SQL Projection
+```
+contact_id       ← proj_clients.client_id (join on contact_email)
+contact_email    ← (see direction logic)
+event_type       ← 'email'
+event_name       ← direction + ': ' + SUBSTR(subject, 1, 50)  -- e.g., "outbound: Weekly check-in"
+event_source     ← source_system ('gmail' or 'exchange')
+event_timestamp  ← TIMESTAMP(sentAt)
+source_system    ← 'email_gmail' or 'email_exchange'
+source_record_id ← JSON_VALUE(payload, '$.id')
+payload          ← JSON: {subject, threadId}
+```
 
-**Files to touch:**
-- `lorchestra/sql/projections.py`
+**Direction encoded in event_name** (not payload) for queryability:
+- `event_name LIKE 'outbound:%'` → emails sent to client
+- `event_name LIKE 'inbound:%'` → emails received from client
 
-This will be a UNION ALL of mapped sources, starting with:
-1. measurement_events (forms)
-2. clinical_sessions
+**Direction logic:**
 
-### Step 3: Create Job Definitions
+My email addresses (canonical set):
+```sql
+-- Hardcoded for now, move to config later
+('ben@mensiomentalhealth.com', 'ben@benthepsychologist.com', 'benthepsychologist@gmail.com')
+```
 
-1. `create_proj_contact_events.json` - create/replace the view/table
-2. `sync_proj_contact_events.json` - sync to SQLite
+```sql
+CASE
+  WHEN LOWER(JSON_VALUE(payload, '$.from[0].email')) IN (MY_EMAILS) THEN 'outbound'
+  ELSE 'inbound'
+END AS direction
+```
 
-### Step 4: Update Pipeline Scripts
+**Contact email resolution:**
+- outbound → `to[0].email` (first recipient)
+- inbound → `from[0].email` (sender)
+- If contact_email doesn't match any `proj_clients.email` → `contact_id = NULL`, keep as orphan event
 
-- `scripts/create_projections.sh` - add creation job
-- `scripts/daily_projection.sh` - add sync job
+### stripe_invoice → contact_events (invoices)
 
-### Step 5: Usage Queries
+**Source:** `canonical_objects` where schema = `invoice/1-0-0`
+
+```
+contact_id       ← proj_clients.client_id (join on LOWER(customer_email))
+contact_email    ← customer_email
+event_type       ← 'invoice'
+event_name       ← status (open, paid, void, uncollectible)
+event_source     ← 'stripe'
+event_timestamp  ← TIMESTAMP(event_time)
+source_system    ← 'stripe_invoice'
+source_record_id ← invoice_id
+payload          ← JSON: {invoice_number, amount_due, currency, description}
+```
+
+### stripe_payment → contact_events (payments)
+
+**Source:** `canonical_objects` where schema = `payment/1-0-0`
+
+```
+contact_id       ← (lookup via customer_id → stripe_customer → email → proj_clients)
+contact_email    ← (from customer lookup, may be NULL)
+event_type       ← 'payment'
+event_name       ← status (succeeded, failed, canceled)
+event_source     ← 'stripe'
+event_timestamp  ← TIMESTAMP(event_time)
+source_system    ← 'stripe_payment'
+source_record_id ← payment_id
+payload          ← JSON: {amount, currency, payment_method_type}
+```
+
+### stripe_refund → contact_events (refunds)
+
+**Source:** `canonical_objects` where schema = `refund/1-0-0`
+
+```
+contact_id       ← (lookup via associated payment/invoice)
+contact_email    ← (from associated record)
+event_type       ← 'refund'
+event_name       ← status (succeeded, failed, pending)
+event_source     ← 'stripe'
+event_timestamp  ← TIMESTAMP(event_time)
+source_system    ← 'stripe_refund'
+source_record_id ← refund_id
+payload          ← JSON: {amount, currency, reason}
+```
+
+## Contact Resolution Rules
+
+1. **Direct contact_id:** If source has `contact_id` (e.g., sessions), use it directly.
+2. **Email lookup:** Join to `proj_clients` on email (case-insensitive).
+3. **No match:** `contact_id = NULL`. Event is still inserted (orphan). Queryable for diagnostics.
+4. **Ambiguous:** If logic can't determine contact, set `contact_id = NULL`. Don't guess.
+
+## Implementation Plan
+
+### Step 1: Fix proj_clients therapy filter
+
+Change from:
+```sql
+WHERE ... AND JSON_VALUE(payload, '$.client_type_label') = 'Therapy'
+```
+
+To:
+```sql
+WHERE ... AND '1' IN UNNEST(SPLIT(JSON_VALUE(payload, '$.client_type_code'), ','))
+```
+
+### Step 2: Update proj_contact_events SQL
+
+In `lorchestra/sql/projections.py`, update `PROJ_CONTACT_EVENTS`:
+
+1. Fix therapy filter (use `client_type_code`)
+2. Fix `source_system` values (use stable enums)
+3. Add email source (UNION ALL)
+4. Add stripe sources (UNION ALL)
+
+### Step 3: Test view creation
+
+```bash
+lorchestra run view_proj_contact_events --dry-run
+lorchestra run view_proj_contact_events
+```
+
+### Step 4: Verify sync
+
+```bash
+lorchestra run sync_proj_contact_events
+sqlite3 ~/clinical-vault/local.db "SELECT event_type, COUNT(*) FROM contact_events GROUP BY 1"
+```
+
+## Usage Queries
 
 **Who needs a form (no form in X days):**
 ```sql
 -- SQLite
-SELECT c.contact_id, c.email, c.first_name,
+SELECT c.client_id, c.email, c.first_name,
        MAX(e.event_timestamp) as last_form
-FROM contacts c
+FROM clients c
 LEFT JOIN contact_events e
-  ON c.contact_id = e.contact_id
+  ON c.client_id = e.contact_id
   AND e.event_type = 'form'
-GROUP BY c.contact_id, c.email, c.first_name
+WHERE ((',' || c.client_type_code || ',') LIKE '%,1,%' OR c.client_type_code = '1')
+GROUP BY c.client_id, c.email, c.first_name
 HAVING last_form IS NULL
    OR last_form < DATETIME('now', '-14 days')
 ```
 
+**Who was emailed recently (for idempotent form reminders):**
 ```sql
--- BigQuery
-SELECT c.contact_id, c.email, c.first_name,
-       MAX(e.event_timestamp) as last_form
-FROM proj_clients c
-LEFT JOIN proj_contact_events e
-  ON c.client_id = e.contact_id
-  AND e.event_type = 'form'
-GROUP BY c.contact_id, c.email, c.first_name
-HAVING last_form IS NULL
-   OR last_form < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 14 DAY)
+-- SQLite - clients NOT emailed in last 2 weeks
+SELECT c.client_id, c.first_name, c.last_name, c.email
+FROM clients c
+WHERE ((',' || c.client_type_code || ',') LIKE '%,1,%' OR c.client_type_code = '1')
+  AND c.email IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM contact_events e
+    WHERE LOWER(e.contact_email) = LOWER(c.email)
+      AND e.event_type = 'email'
+      AND e.event_name LIKE 'outbound:%'
+      AND e.event_timestamp > DATETIME('now', '-14 days')
+  )
 ```
 
 **Client activity timeline:**
 ```sql
--- SQLite / BigQuery (dialect-neutral)
 SELECT event_timestamp, event_type, event_name, event_source
 FROM contact_events
 WHERE contact_id = ?
 ORDER BY event_timestamp DESC
 ```
 
-**Channel activity summary:**
-```sql
--- SQLite
-SELECT
-  contact_id,
-  SUM(CASE WHEN event_type = 'form' THEN 1 ELSE 0 END) as form_count,
-  SUM(CASE WHEN event_type = 'session' THEN 1 ELSE 0 END) as session_count,
-  SUM(CASE WHEN event_type = 'email' THEN 1 ELSE 0 END) as email_count,
-  MAX(event_timestamp) as last_activity
-FROM contact_events
-GROUP BY contact_id
-```
-
-```sql
--- BigQuery
-SELECT
-  contact_id,
-  COUNTIF(event_type = 'form') as form_count,
-  COUNTIF(event_type = 'session') as session_count,
-  COUNTIF(event_type = 'email') as email_count,
-  MAX(event_timestamp) as last_activity
-FROM proj_contact_events
-GROUP BY contact_id
-```
-
 ## Testing
 
 - Unit test for each source mapping transformation
 - Verify UNION produces correct grain (no duplicates)
-- Verify idem_key → source_record_id mapping is unique
+- Verify source_system values match enum
 - Sync to SQLite produces expected schema
-
-## Models & Tools
-
-**Tools:** bash, pytest, ruff, bq
+- Spot-check: pick one client, verify their timeline matches raw sources
 
 ## Repository
 
 **Branch:** `feat/contact-events`
-
 **Merge Strategy:** squash
