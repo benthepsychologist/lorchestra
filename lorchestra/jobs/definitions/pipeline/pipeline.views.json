@@ -1,0 +1,19 @@
+{
+  "job_id": "pipeline.views",
+  "job_type": "composite",
+  "description": "Run all view creation jobs (one-time setup, not daily)",
+  "stages": [
+    {
+      "name": "create_views",
+      "jobs": [
+        "view_proj_clients",
+        "view_proj_sessions",
+        "view_proj_transcripts",
+        "view_proj_clinical_documents",
+        "view_proj_form_responses",
+        "view_proj_contact_events"
+      ]
+    }
+  ],
+  "stop_on_failure": false
+}

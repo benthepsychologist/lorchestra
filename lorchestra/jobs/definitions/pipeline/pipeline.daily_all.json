@@ -1,0 +1,24 @@
+{
+  "job_id": "pipeline.daily_all",
+  "job_type": "composite",
+  "description": "Run full daily pipeline: ingest → canonize → formation → project",
+  "stages": [
+    {
+      "name": "pipeline.ingest",
+      "jobs": ["pipeline.ingest"]
+    },
+    {
+      "name": "pipeline.canonize",
+      "jobs": ["pipeline.canonize"]
+    },
+    {
+      "name": "pipeline.formation",
+      "jobs": ["pipeline.formation"]
+    },
+    {
+      "name": "pipeline.project",
+      "jobs": ["pipeline.project"]
+    }
+  ],
+  "stop_on_failure": true
+}

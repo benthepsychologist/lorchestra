@@ -59,6 +59,7 @@ SELECT
 FROM `{project}.{dataset}.canonical_objects`
 WHERE canonical_schema = 'iglu:org.canonical/contact/jsonschema/2-0-0'
   AND JSON_VALUE(payload, '$.client_type_label') = 'Therapy'
+  AND JSON_VALUE(payload, '$.lifecycleStage') = 'active'
 """
 
 # =============================================================================
@@ -157,6 +158,7 @@ LEFT JOIN (
     FROM `{project}.{dataset}.canonical_objects`
     WHERE canonical_schema = 'iglu:org.canonical/contact/jsonschema/2-0-0'
       AND JSON_VALUE(payload, '$.client_type_label') = 'Therapy'
+      AND JSON_VALUE(payload, '$.lifecycleStage') = 'active'
 ) c ON LOWER(m.subject_id) = c.email
 
 UNION ALL
@@ -198,6 +200,7 @@ LEFT JOIN (
     FROM `{project}.{dataset}.canonical_objects`
     WHERE canonical_schema = 'iglu:org.canonical/contact/jsonschema/2-0-0'
       AND JSON_VALUE(payload, '$.client_type_label') = 'Therapy'
+      AND JSON_VALUE(payload, '$.lifecycleStage') = 'active'
 ) c ON s.client_id = c.client_id
 """
 

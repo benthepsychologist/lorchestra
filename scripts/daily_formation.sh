@@ -1,4 +1,16 @@
 #!/bin/bash
+# DEPRECATED: This script is replaced by lorchestra composite jobs.
+# Use: lorchestra run pipeline.formation
+# Or:  life pipeline formation (after life-cli integration)
+#
+# This script will be removed in a future release.
+# See: /workspace/lorchestra/.specwright/specs/pipeline-composite-jobs.md
+#
+# ============================================================
+# LEGACY SCRIPT - DO NOT ADD NEW JOBS HERE
+# The composite job definitions are now the source of truth.
+# ============================================================
+#
 # Daily formation pipeline - projects canonical form responses to measurement_events and observations
 #
 # This is a two-stage projection pipeline:

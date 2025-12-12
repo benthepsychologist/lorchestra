@@ -8,5 +8,5 @@ user:
   default_owner: benthepsychologist
   default_tier: C
 current:
-  spec: .specwright/specs/final-form-processing-v2.md
-  aip: /workspace/lorchestra/.specwright/aips/final-form-processing-v2.yaml
+  spec: .specwright/specs/pipeline-composite-jobs.md
+  aip: /workspace/lorchestra/.specwright/aips/pipeline-composite-jobs.yaml

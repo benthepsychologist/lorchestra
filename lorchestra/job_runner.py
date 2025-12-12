@@ -1175,6 +1175,7 @@ def run_job(
         import lorchestra.processors.canonize  # noqa: F401
         import lorchestra.processors.formation  # noqa: F401
         import lorchestra.processors.projection  # noqa: F401
+        import lorchestra.processors.composite  # noqa: F401
 
         # Get processor and run
         processor = registry.get(job_type)

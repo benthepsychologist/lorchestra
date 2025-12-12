@@ -1,0 +1,45 @@
+{
+  "job_id": "pipeline.ingest",
+  "job_type": "composite",
+  "description": "Run all ingestion and validation jobs",
+  "stages": [
+    {
+      "name": "ingestion",
+      "jobs": [
+        "ingest_gmail_acct1",
+        "ingest_gmail_acct2",
+        "ingest_gmail_acct3",
+        "ingest_exchange_ben_mensio",
+        "ingest_exchange_booking_mensio",
+        "ingest_exchange_info_mensio",
+        "ingest_dataverse_contacts",
+        "ingest_dataverse_sessions",
+        "ingest_dataverse_reports",
+        "ingest_stripe_customers",
+        "ingest_stripe_invoices",
+        "ingest_stripe_payment_intents",
+        "ingest_stripe_refunds",
+        "ingest_google_forms_intake_01",
+        "ingest_google_forms_intake_02",
+        "ingest_google_forms_followup",
+        "ingest_google_forms_ipip120"
+      ]
+    },
+    {
+      "name": "validation",
+      "jobs": [
+        "validate_gmail_source",
+        "validate_exchange_source",
+        "validate_google_forms_source",
+        "validate_dataverse_contacts",
+        "validate_dataverse_sessions",
+        "validate_dataverse_reports",
+        "validate_stripe_customers",
+        "validate_stripe_invoices",
+        "validate_stripe_payment_intents",
+        "validate_stripe_refunds"
+      ]
+    }
+  ],
+  "stop_on_failure": false
+}
