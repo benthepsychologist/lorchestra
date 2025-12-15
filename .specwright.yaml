@@ -5,9 +5,8 @@ paths:
 repo:
   default_branch: main
 user:
-  default_owner: benthepsychologist
-  default_tier: C
+  default_owner: null
+  default_tier: null
 current:
-  spec: .specwright/specs/contact-events.md
-  aip: /workspace/lorchestra/.specwright/aips/contact-events.yaml
-  
+  spec: .specwright/specs/email-body-projection.md
+  aip: /workspace/lorchestra/.specwright/aips/email-body-projection.yaml

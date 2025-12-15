@@ -1,0 +1,81 @@
+aip_id: AIP-lorchestra-2025-12-15-001
+context:
+  background: 'The current `proj_contact_events` projection extracts emails but only includes:
+
+    - `subject` - email subject line
+
+    - `thread_id` - for threading
+
+
+    The canonical `email_jmap_lite` schema contains full email body:
+
+    - `body.text` - plain text body
+
+    - `body.html` - HTML body
+
+
+    For notification idempotency, we need to check if a client has already been sent a specific type of
+    message (e.g., questionnaire reminder) within a time window. Subject line alone is insufficient -
+    we need body text to match content patterns.'
+  constraints: []
+created: '2025-12-15T21:00:00+00:00'
+meta:
+  created_at: '2025-12-15T21:00:00+00:00'
+  created_by: benthepsychologist
+objective:
+  acceptance_criteria:
+  - '`PROJ_CONTACT_EVENTS` SQL includes `body_text` (derived from canonical `body.text`) in the payload
+    JSON for email sources'
+  - SQLite `contact_events` table schema includes body text (via payload JSON)
+  - Body text is truncated to reasonable size (first 4000 chars) to avoid SQLite bloat
+  - Gmail and Exchange email sources both include body
+  - Existing functionality unchanged (event_type, event_name, timestamps all preserved)
+  - CI green (ruff + pytest)
+  goal: Add email body text to contact_events projection for idempotent notification checks
+orchestrator_contract:
+  artifacts_dir: .aip_artifacts/AIP-lorchestra-2025-12-15-001
+  logging: jsonl
+  state_machine:
+    events:
+    - run_step
+    - await_gate
+    - approve
+    - reject
+    - retry
+    - escalate
+    - complete
+    states:
+    - pending
+    - running
+    - awaiting_human
+    - failed
+    - succeeded
+    - rolled_back
+plan:
+- description: Update PROJ_CONTACT_EVENTS SQL
+  kind: code
+  role: coding_agent
+  step_id: step-001
+- description: Recreate BQ Views
+  kind: code
+  role: coding_agent
+  step_id: step-002
+- description: Sync to SQLite
+  kind: code
+  role: coding_agent
+  step_id: step-003
+- description: Verify body_text in BQ and SQLite
+  kind: code
+  role: coding_agent
+  step_id: step-004
+project_slug: lorchestra
+repo:
+  default_branch: main
+  url: git@github.com:benthepsychologist/lorchestra.git
+  working_branch: feat/email-body-projection
+spec_version: 1.0.0
+tier: C
+title: Email Body in Contact Events Projection
+updated: '2025-12-15T21:00:00+00:00'
+version: '0.1'
+
