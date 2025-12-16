@@ -39,6 +39,8 @@ env/
 # Logs
 logs/
 *.log
+runs/
+.aip_artifacts/
 
 # OS
 .DS_Store
