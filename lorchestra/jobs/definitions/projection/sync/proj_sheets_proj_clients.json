@@ -1,0 +1,13 @@
+{
+  "job_id": "proj_sheets_proj_clients",
+  "job_type": "projectionist",
+  "projection_name": "sheets",
+  "sheets_service_factory": "gorch.sheets.factories:build_sheets_write_service",
+  "sheets_service_factory_args": {"account": "gdrive"},
+  "projection_config": {
+    "query": "SELECT * FROM `${PROJECT}.${DATASET_CANONICAL}.proj_clients`",
+    "spreadsheet_id": "YOUR_SPREADSHEET_ID",
+    "sheet_name": "clients",
+    "strategy": "replace"
+  }
+}

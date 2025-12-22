@@ -1,0 +1,203 @@
+aip_id: AIP-lorchestra-2025-12-19-001
+context:
+  background: 'We have `sync_sqlite` for local SQLite sync. Now we need the same pattern for Google Sheets
+    dashboards.
+
+
+    The key difference: Sheets projection uses **projectionist** for semantics:
+
+    - `plan()` generates a deterministic, hashable plan with all values materialized
+
+    - `apply()` executes the plan via injected services
+
+
+    This gives us dry-run, auditability, and replay for free.'
+  constraints:
+  - No Google API code in lorchestra or projectionist
+  - Auth via existing `gdrive` authctl account (has Sheets scope)
+  - Job JSON is the registry (spreadsheet_id in job definition, not config file)
+  - Projectionist remains environment-agnostic (no env vars, no hardcoded IDs)
+  - New processor is additive; legacy processors remain unchanged in this spec
+created: '2025-12-19T13:55:54.757497+00:00'
+meta:
+  created_at: '2025-12-19T13:55:54.757497+00:00'
+  created_by: benthepsychologist
+objective:
+  acceptance_criteria:
+  - '`projectionist` job type registered and working'
+  - Uses projectionist `SheetsProjection` for plan/apply semantics
+  - Uses storacle `SheetsWriteService` wrapping gorch.SheetsClient (lorchestra must not import gorch)
+  - Job definition uses source/sink structure similar to `sync_sqlite`, plus explicit projectionist projection
+    name
+  - 'Events logged: `sheets_projection.started`, `sheets_projection.completed`, `sheets_projection.failed`'
+  - Auth via existing `gdrive` authctl account
+  - CI green (ruff + pytest)
+  - Unit tests with mocked services
+  goal: Add a new ProjectionistProcessor job type that projects BQ views to Google Sheets via projectionist
+orchestrator_contract:
+  artifacts_dir: .aip_artifacts/AIP-lorchestra-2025-12-19-001
+  logging: jsonl
+  state_machine:
+    events:
+    - run_step
+    - await_gate
+    - approve
+    - reject
+    - retry
+    - escalate
+    - complete
+    states:
+    - pending
+    - running
+    - awaiting_human
+    - failed
+    - succeeded
+    - rolled_back
+plan:
+- allowed_paths:
+  - src/gorch/sheets/client.py
+  - tests/test_sheets_client.py
+  description: Extend gorch.SheetsClient
+  gate_ref: 'G1: gorch Ready'
+  kind: code
+  outputs:
+  - src/gorch/sheets/client.py
+  - tests/test_sheets_client.py
+  prompt: "Add `clear_and_update()` method to `gorch/src/gorch/sheets/client.py`:\n```python\ndef clear_and_update(\n\
+    \    self,\n    spreadsheet_id: str,\n    sheet_name: str,\n    values: list[list[Any]],\n    *,\n\
+    \    value_input_option: str = \"RAW\",\n) -> int:\n    \"\"\"Clear sheet and write new values (replace\
+    \ strategy).\n    Args:\n        spreadsheet_id: The spreadsheet ID.\n        sheet_name: The sheet/tab\
+    \ name.\n        values: 2D list of values (header row is values[0]).\n        value_input_option:\
+    \ How to interpret input.\n    Returns:\n        Number of data rows written (excludes header).\n\
+    \    \"\"\"\n    self.clear_values(spreadsheet_id, sheet_name)\n    self.update_values(spreadsheet_id,\
+    \ f\"{sheet_name}!A1\", values, value_input_option=value_input_option)\n    return len(values) - 1\
+    \ if values else 0\n```"
+  role: agentic
+  step_id: step-001
+  verification_commands:
+  - ruff check src/
+  - pytest tests/test_sheets_client.py -v
+- allowed_paths:
+  - src/storacle/clients/__init__.py
+  - src/storacle/clients/sheets.py
+  - src/storacle/__init__.py
+  - pyproject.toml
+  - tests/test_sheets_service.py
+  description: Add SheetsWriteService to storacle
+  gate_ref: 'G2: storacle Ready'
+  kind: code
+  outputs:
+  - src/storacle/clients/sheets.py
+  - tests/test_sheets_service.py
+  prompt: "Create `storacle/src/storacle/clients/sheets.py`:\n```python\n\"\"\"Sheets write service wrapping\
+    \ gorch.SheetsClient.\"\"\"\nfrom typing import Any, Literal\nfrom gorch import SheetsClient\nclass\
+    \ SheetsWriteService:\n    \"\"\"Service adapter implementing projectionist's SheetsWriteService protocol.\n\
+    \    Wraps gorch.SheetsClient to provide the write_table interface.\n    \"\"\"\n    def __init__(self,\
+    \ sheets_client: SheetsClient):\n        self._client = sheets_client\n    def write_table(\n    \
+    \    self,\n        *,\n        spreadsheet_id: str,\n        sheet_name: str,\n        values: list[list[Any]],\n\
+    \        strategy: Literal[\"replace\", \"append\"],\n    ) -> int:\n        \"\"\"Write a table to\
+    \ a sheet.\n        Args:\n            spreadsheet_id: The Google Sheets spreadsheet ID.\n       \
+    \     sheet_name: The name of the sheet/tab.\n            values: 2D list of values, header row is\
+    \ values[0].\n            strategy: \"replace\" clears and rewrites; \"append\" adds rows.\n     \
+    \   Returns:\n            Number of rows written.\n        \"\"\"\n        if strategy == \"replace\"\
+    :\n            return self._client.clear_and_update(spreadsheet_id, sheet_name, values)\n        else:\
+    \  # append\n            # IMPORTANT: projectionist includes a header row at values[0].\n        \
+    \    # In append mode we skip the header to avoid duplicating it on each run.\n            data_rows\
+    \ = values[1:] if values else []\n            if not data_rows:\n                return 0\n      \
+    \      self._client.append_values(\n                spreadsheet_id,\n                f\"{sheet_name}!A1\"\
+    ,\n                data_rows,\n            )\n            return len(data_rows)\n    @classmethod\n\
+    \    def from_authctl(cls, account: str = \"gdrive\") -> \"SheetsWriteService\":\n        \"\"\"Create\
+    \ service using authctl for authentication.\n        Args:\n            account: authctl account name\
+    \ (default: gdrive)\n        \"\"\"\n        client = SheetsClient.from_authctl(account)\n       \
+    \ return cls(client)\n```\nExport from `storacle/clients/__init__.py` (and optionally re-export from\
+    \ `storacle/__init__.py`).\nAdd `gorch` as dependency in `storacle/pyproject.toml`."
+  role: agentic
+  step_id: step-002
+  verification_commands:
+  - ruff check src/
+  - pytest tests/test_sheets_service.py -v
+- allowed_paths:
+  - lorchestra/lorchestra/processors/projectionist.py
+  - lorchestra/lorchestra/processors/__init__.py
+  - lorchestra/lorchestra/jobs/definitions/projection/sync/
+  - pyproject.toml
+  - tests/test_sheets_projection_processor.py
+  description: Implement ProjectionistProcessor (sheets enabled)
+  gate_ref: 'G3: lorchestra Ready'
+  kind: code
+  outputs:
+  - lorchestra/lorchestra/processors/projectionist.py
+  - lorchestra/lorchestra/jobs/definitions/projection/sync/proj_sheets_proj_clients.json
+  - tests/test_sheets_projection_processor.py
+  prompt: "Create `lorchestra/lorchestra/processors/projectionist.py`:\n```python\n\"\"\"Projectionist\
+    \ processor: orchestrator glue for projectionist projections.\nThis is the new, additive processor\
+    \ that will replace legacy projection processors job-by-job.\n\"\"\"\nimport logging\nfrom typing\
+    \ import Any, Iterator\nfrom projectionist.context import ProjectionContext\nfrom projectionist.projections\
+    \ import SheetsProjection\nfrom storacle.clients.sheets import SheetsWriteService\nfrom lorchestra.processors\
+    \ import registry\nfrom lorchestra.processors.base import EventClient, JobContext, StorageClient\n\
+    logger = logging.getLogger(__name__)\nclass BqQueryServiceAdapter:\n    \"\"\"Adapter wrapping StorageClient\
+    \ as projectionist BqQueryService.\"\"\"\n    def __init__(self, storage_client: StorageClient):\n\
+    \        self._storage = storage_client\n    def query(\n        self, sql: str, params: dict[str,\
+    \ Any] | None = None\n    ) -> Iterator[dict[str, Any]]:\n        rows = self._storage.query_to_dataframe(sql)\n\
+    \        yield from rows\nclass ProjectionServicesImpl:\n    \"\"\"Concrete implementation of ProjectionServices\
+    \ for lorchestra.\"\"\"\n    def __init__(\n        self,\n        bq_service: BqQueryServiceAdapter,\n\
+    \        sheets_service: SheetsWriteService,\n    ):\n        self._bq = bq_service\n        self._sheets\
+    \ = sheets_service\n    @property\n    def bq(self) -> BqQueryServiceAdapter:\n        return self._bq\n\
+    \    @property\n    def sheets(self) -> SheetsWriteService:\n        return self._sheets\nclass ProjectionistProcessor:\n\
+    \    \"\"\"Run projectionist projections based on job JSON.\"\"\"\n    def run(\n        self,\n \
+    \       job_spec: dict[str, Any],\n        context: JobContext,\n        storage_client: StorageClient,\n\
+    \        event_client: EventClient,\n    ) -> None:\n        source = job_spec[\"source\"]\n     \
+    \   sink = job_spec[\"sink\"]\n        projection_spec = job_spec.get(\"projection\", {})\n      \
+    \  projection_name = projection_spec.get(\"name\")\n        if projection_name != \"sheets\":\n  \
+    \          raise ValueError(\n                f\"Unsupported projectionist projection: {projection_name}.\
+    \ TODO: add mapping.\"\n            )\n        proj_name = source[\"projection\"]\n        source_system\
+    \ = job_spec.get(\"source_system\", \"lorchestra\")\n        # Build fully qualified query\n     \
+    \   project = context.config.project\n        dataset = context.config.dataset_canonical\n       \
+    \ query = f\"SELECT * FROM `{project}.{dataset}.{proj_name}`\"\n        # Log start\n        event_client.log_event(\n\
+    \            event_type=\"sheets_projection.started\",\n            source_system=source_system,\n\
+    \            correlation_id=context.run_id,\n            status=\"success\",\n            payload={\n\
+    \                \"projection_name\": proj_name,\n                \"spreadsheet_id\": sink[\"spreadsheet_id\"\
+    ],\n                \"sheet_name\": sink[\"sheet_name\"],\n            },\n        )\n        try:\n\
+    \            # Build services\n            bq_service = BqQueryServiceAdapter(storage_client)\n  \
+    \          # IMPORTANT: keep gorch/authctl usage out of lorchestra; storacle owns the adapter.\n \
+    \           sheets_service = SheetsWriteService.from_authctl(\"gdrive\")\n            services = ProjectionServicesImpl(bq_service,\
+    \ sheets_service)\n            # Build context\n            ctx = ProjectionContext(\n           \
+    \     dry_run=context.dry_run,\n                run_id=context.run_id,\n                config={\n\
+    \                    \"query\": query,\n                    \"spreadsheet_id\": sink[\"spreadsheet_id\"\
+    ],\n                    \"sheet_name\": sink[\"sheet_name\"],\n                    \"strategy\": sink.get(\"\
+    strategy\", \"replace\"),\n                },\n            )\n            # Plan + Apply\n       \
+    \     projection = SheetsProjection()\n            plan = projection.plan(services, ctx)\n       \
+    \     result = projection.apply(plan, services, ctx)\n            # Log completion\n            event_client.log_event(\n\
+    \                event_type=\"sheets_projection.completed\",\n                source_system=source_system,\n\
+    \                correlation_id=context.run_id,\n                status=\"success\",\n           \
+    \     payload={\n                    \"projection_name\": proj_name,\n                    \"plan_id\"\
+    : result.plan_id,\n                    \"rows_affected\": result.rows_affected,\n                \
+    \    \"duration_seconds\": result.duration_seconds,\n                    \"dry_run\": result.dry_run,\n\
+    \                },\n            )\n        except Exception as e:\n            event_client.log_event(\n\
+    \                event_type=\"sheets_projection.failed\",\n                source_system=source_system,\n\
+    \                correlation_id=context.run_id,\n                status=\"failed\",\n            \
+    \    error_message=str(e),\n                payload={\"projection_name\": proj_name},\n          \
+    \  )\n            raise\nregistry.register(\"projectionist\", ProjectionistProcessor())\n```\nAdd\
+    \ job definition:\n```json\n// lorchestra/lorchestra/jobs/definitions/projection/sync/proj_sheets_proj_clients.json\n\
+    {\n    \"job_id\": \"proj_sheets_proj_clients\",\n    \"job_type\": \"projectionist\",\n    \"projection\"\
+    : {\n        \"name\": \"sheets\"\n    },\n  \"source\": {\n    \"projection\": \"proj_clients\"\n\
+    \  },\n  \"sink\": {\n        \"kind\": \"sheets\",\n    \"spreadsheet_id\": \"YOUR_SPREADSHEET_ID\"\
+    ,\n    \"sheet_name\": \"clients\",\n    \"strategy\": \"replace\"\n  }\n}\n```\nAdd dependencies\
+    \ to `lorchestra/pyproject.toml`:\n- `projectionist`\n- `storacle`"
+  role: agentic
+  step_id: step-003
+  verification_commands:
+  - ruff check lorchestra/
+  - pytest tests/test_sheets_projection_processor.py -v
+  - lorchestra run proj_sheets_proj_clients --dry-run
+project_slug: lorchestra
+repo:
+  default_branch: main
+  url: git@github.com:benthepsychologist/lorchestra.git
+  working_branch: feat/sheets-projector-job
+spec_version: 1.0.0
+tier: B
+title: Sheets Projection Job (via ProjectionistProcessor)
+updated: '2025-12-19T13:55:54.757543+00:00'
+version: '0.1'
+

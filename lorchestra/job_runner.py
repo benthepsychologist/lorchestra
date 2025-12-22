@@ -16,6 +16,7 @@ Usage:
     run_job("gmail_ingest_acct1", dry_run=True)
 """
 
+import importlib
 import json
 import logging
 import uuid
@@ -25,13 +26,79 @@ from typing import Any, Callable, Iterator
 
 from google.cloud import bigquery
 
+from lorchestra.config import LorchestraConfig
 from lorchestra.processors import registry
 from lorchestra.processors.base import JobContext, UpsertResult
 from lorchestra.stack_clients import event_client as ec
-# Type import locally to avoid circulars if necessary, or just use Any if lazy
-from lorchestra.config import LorchestraConfig
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# SECURE FACTORY LOADER
+# =============================================================================
+
+# Allowlist for service factory modules - security restriction
+# Only exact matches or submodules allowed (prefix + ".")
+# Add new modules only when needed - don't pre-authorize
+ALLOWED_FACTORY_MODULES = [
+    "gorch.sheets.factories",
+]
+
+
+def _is_allowed_module(module_path: str) -> bool:
+    """Check if module is in allowlist (exact match or submodule)."""
+    for allowed in ALLOWED_FACTORY_MODULES:
+        if module_path == allowed or module_path.startswith(allowed + "."):
+            return True
+    return False
+
+
+def load_service_factory(factory_path: str) -> Callable[..., Any]:
+    """Load a service factory by dotted path string.
+
+    Only allows factories from allowlisted modules (exact match or submodules).
+
+    Args:
+        factory_path: e.g. "gorch.sheets.factories:build_sheets_write_service"
+
+    Returns:
+        The callable factory function
+
+    Raises:
+        ValueError: If path not in allowlist or malformed
+        ImportError: If module not found
+        AttributeError: If function not found in module
+        TypeError: If attribute is not callable
+    """
+    if ":" not in factory_path:
+        raise ValueError(f"Factory path must be 'module:function', got: {factory_path}")
+
+    module_path, func_name = factory_path.rsplit(":", 1)
+
+    # Security: restrict to allowed modules (exact or submodule)
+    if not _is_allowed_module(module_path):
+        raise ValueError(
+            f"Factory module '{module_path}' not in allowlist. "
+            f"Allowed: {ALLOWED_FACTORY_MODULES}"
+        )
+
+    try:
+        module = importlib.import_module(module_path)
+    except ImportError as e:
+        raise ImportError(f"Cannot import factory module '{module_path}': {e}") from e
+
+    try:
+        factory = getattr(module, func_name)
+    except AttributeError as e:
+        raise AttributeError(
+            f"Factory function '{func_name}' not found in '{module_path}': {e}"
+        ) from e
+
+    if not callable(factory):
+        raise TypeError(f"{factory_path} is not callable")
+
+    return factory
 
 # Default job definitions directory
 DEFINITIONS_DIR = Path(__file__).parent / "jobs" / "definitions"
@@ -1176,6 +1243,7 @@ def run_job(
         import lorchestra.processors.formation  # noqa: F401
         import lorchestra.processors.projection  # noqa: F401
         import lorchestra.processors.composite  # noqa: F401
+        import lorchestra.processors.projectionist  # noqa: F401
 
         # Get processor and run
         processor = registry.get(job_type)

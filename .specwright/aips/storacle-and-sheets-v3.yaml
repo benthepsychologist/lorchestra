@@ -1,0 +1,312 @@
+aip_id: AIP-lorchestra-2025-12-22-001
+context:
+  background: 'Part 2 of sheets-projector-job created a gorch-level write service + factory to enforce
+    "lorchestra must not import gorch". This worked, but it blurred responsibilities:
+
+
+    - **gorch** should be low-level API wrappers only
+
+    - **storacle** should implement write-time semantics and integration wiring
+
+    - **lorchestra** should orchestrate and load factories by string, never import vendor clients
+
+
+    More importantly, projectionist was trending toward a “leaky orchestrator” that both *planned* and
+    *executed* I/O.
+
+
+    The updated architecture is:
+
+
+    - projectionist emits a **standard semver Storacle Plan** (contract shape)
+
+    - storacle executes the plan (dispatch + semantics)
+
+    - lorchestra orchestrates execution (events, retries, dry-run)'
+  constraints:
+  - projectionist emits plans; it does not run vendor I/O
+  - projectionist must not import `storacle` or `gorch`
+  - projectionist must not call any `build_*_service` factories
+  - storacle executes plans; it does not decide *what* to query
+  - lorchestra orchestrates; it does not import vendor clients
+  - lorchestra must not inspect `ops[*].method` (treat plan as opaque)
+  - storacle `SheetsWriteService` stays auth-agnostic (constructor takes client)
+  - Auth wiring happens only in top-level functions inside storacle (e.g., factories used by `rpc.execute_plan`);
+    lorchestra never calls these directly
+  - Import `SheetsClient` from `gorch.sheets.client` directly, not `from gorch`
+  - gorch never imports upward (no storacle/projectionist imports)
+  - No `SheetsWriteService.from_authctl()` will be introduced
+created: '2025-12-22T10:17:31.507864+00:00'
+meta:
+  created_at: '2025-12-22T10:17:31.507864+00:00'
+  created_by: benthepsychologist
+objective:
+  acceptance_criteria:
+  - 'A standard, semver’d **Storacle Plan** contract exists:'
+  - '**Projectionist emits** this contract shape:'
+  - '**Storacle expects/executes** this contract shape:'
+  - 'Lorchestra orchestrates end-to-end:'
+  - 'Storacle response contract:'
+  - 'gorch sheets is client-only:'
+  - 'Layer boundary checks:'
+  - CI green (ruff + pytest across relevant packages)
+  - '`lorchestra run proj_sheets_proj_clients --dry-run` passes'
+  goal: 'Align Sheets projection around a semver IO plan: projectionist emits, storacle executes, lorchestra
+    orchestrates'
+orchestrator_contract:
+  artifacts_dir: .aip_artifacts/AIP-lorchestra-2025-12-22-001
+  logging: jsonl
+  state_machine:
+    events:
+    - run_step
+    - await_gate
+    - approve
+    - reject
+    - retry
+    - escalate
+    - complete
+    states:
+    - pending
+    - running
+    - awaiting_human
+    - failed
+    - succeeded
+    - rolled_back
+plan:
+- description: Update the spec contract text [S0]
+  kind: code
+  prompt: "Lock in the IO plan shape and versioning described below so implementation cannot drift.\n\
+    #### IO Plan Shape (recommended)\nIn-memory representation may be a dict/dataclass/pydantic model,\
+    \ but must serialize to JSON.\n```json\n{\n    \"plan_version\": \"storacle.plan/1.0.0\",\n    \"\
+    plan_id\": \"sha256:abc123...\",\n    \"meta\": {\n        \"source\": \"projectionist\",\n      \
+    \  \"job_id\": \"proj_sheets_proj_clients\",\n        \"created_at\": \"2025-12-22T13:00:00Z\"\n \
+    \   },\n    \"jsonrpc\": \"2.0\",\n    \"ops\": [\n        {\n            \"jsonrpc\": \"2.0\",\n\
+    \            \"id\": \"sheets-1\",\n            \"method\": \"sheets.write_table\",\n            \"\
+    params\": {\n                \"spreadsheet_id\": \"abc\",\n                \"sheet_name\": \"clients\"\
+    ,\n                \"values\": [[\"id\", \"name\"], [1, \"Alice\"]],\n                \"strategy\"\
+    : \"replace\"\n            }\n        }\n    ]\n}\n```\n**Notes:**\n- `plan_version` is semver’d;\
+    \ changes follow normal semver rules.\n- Ops use JSON-RPC 2.0 request semantics (`method` + `params`\
+    \ + `id`).\n- `method` is the dispatch key.\n- `plan_id` is required for auditability and future idempotence.\n\
+    - projectionist is responsible for emitting `values` correctly; storacle is responsible for applying\
+    \ `strategy` semantics.\nNo JSONL is introduced as part of this spec."
+  role: prompting_agent
+  step_id: step-000
+- allowed_paths:
+  - /workspace/storacle/src/storacle/**
+  - /workspace/storacle/tests/**
+  description: Add IO executor to storacle
+  gate_ref: 'G1: storacle'
+  kind: code
+  prompt: 'Implement an IO executor in storacle:
+
+    - A single entrypoint such as `storacle.rpc.execute_plan(plan: dict, *, dry_run: bool = False) ->
+    list[dict]`
+
+    - Returns a list of JSON-RPC 2.0 response objects (one per op in `plan.ops`)
+
+    - Dispatch by JSON-RPC `method` string
+
+    - Implement `sheets.write_table` (uses internal SheetsWriteService)
+
+    - Auth wiring happens inside storacle (e.g., factory internally gets account from plan.meta or config)
+
+    - Ensure `dry_run=True` validates but does not call vendor APIs
+
+    This executor should work with the standard semver contract described in Step 0.'
+  role: agentic
+  step_id: step-001
+  verification_commands:
+  - cd /workspace/storacle && ruff check src/
+  - cd /workspace/storacle && pytest tests/ -v -k "io or sheets"
+- allowed_paths:
+  - /workspace/storacle/src/storacle/clients/sheets.py
+  - /workspace/storacle/tests/**
+  description: Implement Sheets write semantics in storacle
+  gate_ref: 'G2: storacle'
+  kind: code
+  prompt: 'Update `/workspace/storacle/src/storacle/clients/sheets.py`:
+
+    1. Ensure vendor client import is direct:
+
+    ```python
+
+    from gorch.sheets.client import SheetsClient  # Direct import, not from gorch
+
+    ```
+
+    2. `SheetsWriteService` implements write-time semantics:
+
+    - `strategy="replace"` → clear then write (idempotent)
+
+    - `strategy="append"` → append only data rows (skip header)
+
+    3. Auth wiring (internal to storacle):
+
+    - How storacle gets an authenticated SheetsWriteService is an implementation detail (factory, DI,
+    config)
+
+    - One approach: a factory like `build_sheets_write_service(account)` that calls `SheetsClient.from_authctl(account)`
+
+    - This is internal to storacle; lorchestra does not call it
+
+    Add tests in `/workspace/storacle/tests/`:
+
+    - `write_table(..., strategy="append")` skips header
+
+    - `write_table(..., strategy="replace")` is idempotent'
+  role: agentic
+  step_id: step-002
+  verification_commands:
+  - cd /workspace/storacle && ruff check src/
+  - cd /workspace/storacle && pytest tests/ -v -k sheets
+- allowed_paths:
+  - /workspace/projectionist/**
+  description: Update projectionist to emit IO plan
+  gate_ref: 'G3: projectionist'
+  kind: code
+  prompt: 'Refactor projectionist so that Sheets projection is a *plan producer*:
+
+    - Public entrypoint: `build_plan(ctx, config) -> dict` returns a `storacle.plan/1.0.0` plan (JSON
+    object)
+
+    - The plan contains ops with `jsonrpc: "2.0"`, `method: "sheets.write_table"`, and `params` including
+    `values` + `strategy`
+
+    - Projectionist does not execute I/O; no Sheets API calls
+
+    - Do not add or keep `apply()` methods in projectionist
+
+    - Projectionist must not import `storacle` or `gorch`
+
+    **Test requirements:**
+
+    - Assert `build_plan(...)` returns a dict matching the plan schema (plan_version, jsonrpc, ops)
+
+    - Assert ops[0].method == "sheets.write_table" and params contain expected values/strategy
+
+    - No factory imports, no IO mocking'
+  role: agentic
+  step_id: step-003
+  verification_commands:
+  - cd /workspace/projectionist && ruff check .
+  - cd /workspace/projectionist && pytest -v -k sheets
+- allowed_paths:
+  - /workspace/lorchestra/lorchestra/processors/projectionist.py (or wherever the Sheets processor lives)
+  - /workspace/lorchestra/lorchestra/jobs/definitions/projection/sync/proj_sheets_proj_clients.json
+  - /workspace/lorchestra/tests/test_sheets_projection_processor.py
+  description: Update lorchestra to orchestrate via RPC-only
+  gate_ref: 'G4: lorchestra'
+  kind: code
+  prompt: "Update the Sheets projection processor to follow the new RPC-only flow:\n1. **Processor flow:**\n\
+    ```python\n# Pseudocode\nplan = projectionist.build_plan(ctx, config)\nemit_event(\"sheets_projection.started\"\
+    , plan_id=plan[\"plan_id\"])\ntry:\n    responses = storacle.rpc.execute_plan(plan, dry_run=ctx.dry_run)\n\
+    \    emit_event(\"sheets_projection.completed\", plan_id=plan[\"plan_id\"], responses=responses)\n\
+    except Exception as e:\n    emit_event(\"sheets_projection.failed\", plan_id=plan[\"plan_id\"], error=str(e))\n\
+    ```\n2. **Remove factory loading for Sheets path:**\n- Remove `sheets_service_factory` and `sheets_service_factory_args`\
+    \ from `/workspace/lorchestra/lorchestra/jobs/definitions/projection/sync/proj_sheets_proj_clients.json`\n\
+    - Processor does not call `load_service_factory` for this job\n3. **Hard constraints:**\n- Lorchestra\
+    \ must not branch on `method == \"sheets.write_table\"` (treat plan as opaque)\n- Lorchestra must\
+    \ not call `SheetsWriteService` or any Sheets adapter directly\n- Lorchestra may import `storacle.rpc.execute_plan`\
+    \ only\n**Test requirements:**\nUpdate `/workspace/lorchestra/tests/test_sheets_projection_processor.py`:\n\
+    - Patch `storacle.rpc.execute_plan` (not factory loaders)\n- Assert it gets called once with the plan\
+    \ dict returned by projectionist and `dry_run` flag\n- Assert events emitted based on mocked RPC responses:\n\
+    \  - `sheets_projection.started` with plan_id\n  - `sheets_projection.completed` with plan_id + responses\
+    \ (success case)\n  - `sheets_projection.failed` with plan_id + error (failure case)\nNote: `load_service_factory`\
+    \ and allowlist tests remain for other jobs that still use factory loading; they are not removed,\
+    \ just not used for the Sheets projection path"
+  role: agentic
+  step_id: step-004
+  verification_commands:
+  - cd /workspace/lorchestra && ruff check lorchestra/
+  - cd /workspace/lorchestra && pytest tests/test_job_runner.py tests/test_sheets_projection_processor.py
+    -v
+- description: 'Clean up gorch [G5: gorch]'
+  kind: code
+  prompt: 'Delete from gorch (now unused):
+
+    - `/workspace/gorch/src/gorch/sheets/services.py`
+
+    - `/workspace/gorch/src/gorch/sheets/factories.py`
+
+    - `/workspace/gorch/tests/test_sheets_services.py`
+
+    - `/workspace/gorch/tests/test_sheets_factories.py`
+
+    Update `/workspace/gorch/src/gorch/sheets/__init__.py`:
+
+    ```python
+
+    """Google Sheets client module."""
+
+    from gorch.sheets.client import SheetsClient
+
+    __all__ = ["SheetsClient"]
+
+    ```
+
+    (Remove `GorchSheetsWriteService` export)
+
+    Reinstall gorch in lorchestra''s venv to pick up deleted modules:
+
+    ```bash
+
+    cd /workspace/lorchestra && uv pip install -e /workspace/gorch
+
+    ```'
+  role: agentic
+  step_id: step-005
+  verification_commands:
+  - cd /workspace/gorch && ruff check src/
+  - cd /workspace/gorch && pytest tests/test_sheets_client.py -v
+  - grep -rn "gorch\.sheets\.services\|gorch\.sheets\.factories" /workspace --include="*.py" --include="*.json"
+    --include="*.md" | grep -v __pycache__ && exit 1 || echo "Clean"
+- description: 'Integration test [G6: Integration]'
+  kind: code
+  prompt: 'Run full verification:
+
+    ```bash
+
+    # Ruff on all packages
+
+    cd /workspace/gorch && ruff check src/
+
+    cd /workspace/storacle && ruff check src/
+
+    cd /workspace/lorchestra && ruff check lorchestra/
+
+    # All tests
+
+    cd /workspace/gorch && pytest tests/ -v
+
+    cd /workspace/storacle && pytest tests/ -v
+
+    cd /workspace/lorchestra && pytest tests/ -v
+
+    # No direct gorch imports in lorchestra SOURCE (runtime imports through storacle are allowed)
+
+    grep -rn "from gorch\|import gorch" /workspace/lorchestra/lorchestra/ --include="*.py" | grep -v __pycache__
+    && exit 1 || echo "Clean: no direct gorch imports"
+
+    # Verify old factory paths are gone everywhere
+
+    grep -rn "gorch\.sheets\.factories\|gorch\.sheets\.services" /workspace --include="*.py" --include="*.json"
+    --include="*.md" | grep -v __pycache__ && exit 1 || echo "Clean: old paths removed"
+
+    # Dry-run
+
+    cd /workspace/lorchestra && lorchestra run proj_sheets_proj_clients --dry-run
+
+    ```'
+  role: coding_agent
+  step_id: step-006
+project_slug: lorchestra
+repo:
+  default_branch: main
+  url: git@github.com:benthepsychologist/lorchestra.git
+  working_branch: feat/storacle-and-sheets-v3
+spec_version: 1.0.0
+tier: B
+title: Align Sheets Projection Around a Semver Storacle Plan
+updated: '2025-12-22T10:17:31.507864+00:00'
+version: '0.1'
+

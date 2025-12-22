@@ -7,12 +7,146 @@ from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 from lorchestra.job_runner import (
+    ALLOWED_FACTORY_MODULES,
     BigQueryStorageClient,
     BigQueryEventClient,
+    _is_allowed_module,
     load_job_definition,
+    load_service_factory,
     run_job,
 )
 from lorchestra.processors.base import JobContext
+
+
+# =============================================================================
+# FACTORY LOADER TESTS
+# =============================================================================
+
+
+class TestIsAllowedModule:
+    """Tests for _is_allowed_module helper."""
+
+    def test_exact_match_allowed(self):
+        """Exact match of allowed module returns True."""
+        assert _is_allowed_module("gorch.sheets.factories") is True
+
+    def test_submodule_allowed(self):
+        """Submodule of allowed module returns True."""
+        assert _is_allowed_module("gorch.sheets.factories.submodule") is True
+
+    def test_unrelated_module_rejected(self):
+        """Unrelated module returns False."""
+        assert _is_allowed_module("os") is False
+        assert _is_allowed_module("subprocess") is False
+        assert _is_allowed_module("evil.module") is False
+
+    def test_partial_prefix_rejected(self):
+        """Partial prefix that doesn't match full module name rejected."""
+        # "gorch.sheets.factorie" is NOT a prefix match for "gorch.sheets.factories"
+        assert _is_allowed_module("gorch.sheets.factorie") is False
+        # "gorch.sheets" is NOT in the allowlist
+        assert _is_allowed_module("gorch.sheets") is False
+
+    def test_parent_module_rejected(self):
+        """Parent module of allowed is rejected (can't import gorch directly)."""
+        assert _is_allowed_module("gorch") is False
+
+
+class TestLoadServiceFactory:
+    """Tests for load_service_factory function."""
+
+    def test_valid_factory_path_loads_function(self):
+        """Valid factory path from allowlist loads and returns callable."""
+        # Use mock to avoid actual gorch import
+        with patch("importlib.import_module") as mock_import:
+            mock_module = MagicMock()
+            mock_factory = MagicMock()
+            mock_module.build_sheets_write_service = mock_factory
+            mock_import.return_value = mock_module
+
+            factory = load_service_factory("gorch.sheets.factories:build_sheets_write_service")
+
+            mock_import.assert_called_once_with("gorch.sheets.factories")
+            assert factory is mock_factory
+
+    def test_missing_colon_raises_value_error(self):
+        """Factory path without colon raises ValueError."""
+        with pytest.raises(ValueError, match="must be 'module:function'"):
+            load_service_factory("gorch.sheets.factories.build_sheets_write_service")
+
+    def test_non_allowed_module_raises_value_error(self):
+        """Non-allowlisted module raises ValueError."""
+        with pytest.raises(ValueError, match="not in allowlist"):
+            load_service_factory("os:system")
+
+        with pytest.raises(ValueError, match="not in allowlist"):
+            load_service_factory("subprocess:run")
+
+        with pytest.raises(ValueError, match="not in allowlist"):
+            load_service_factory("evil.module:bad_function")
+
+    def test_import_error_propagates(self):
+        """ImportError from missing module propagates with context."""
+        with patch("importlib.import_module") as mock_import:
+            mock_import.side_effect = ImportError("No module named 'gorch'")
+
+            with pytest.raises(ImportError, match="Cannot import factory module"):
+                load_service_factory("gorch.sheets.factories:build_sheets_write_service")
+
+    def test_missing_function_raises_attribute_error(self):
+        """Missing function in module raises AttributeError."""
+        with patch("importlib.import_module") as mock_import:
+            mock_module = MagicMock(spec=[])  # Empty spec, no attributes
+            mock_import.return_value = mock_module
+
+            with pytest.raises(AttributeError, match="not found in"):
+                load_service_factory("gorch.sheets.factories:nonexistent_function")
+
+    def test_non_callable_raises_type_error(self):
+        """Non-callable attribute raises TypeError."""
+        with patch("importlib.import_module") as mock_import:
+            mock_module = MagicMock()
+            mock_module.not_a_function = "just a string"
+            mock_import.return_value = mock_module
+
+            with pytest.raises(TypeError, match="is not callable"):
+                load_service_factory("gorch.sheets.factories:not_a_function")
+
+    def test_submodule_allowed(self):
+        """Submodule of allowed module is allowed."""
+        with patch("importlib.import_module") as mock_import:
+            mock_module = MagicMock()
+            mock_factory = MagicMock()
+            mock_module.custom_factory = mock_factory
+            mock_import.return_value = mock_module
+
+            factory = load_service_factory("gorch.sheets.factories.custom:custom_factory")
+
+            mock_import.assert_called_once_with("gorch.sheets.factories.custom")
+            assert factory is mock_factory
+
+
+class TestAllowlistSecurity:
+    """Security-focused tests for factory loader allowlist."""
+
+    def test_allowlist_is_minimal(self):
+        """Allowlist only contains expected modules."""
+        assert ALLOWED_FACTORY_MODULES == ["gorch.sheets.factories"]
+
+    def test_cannot_load_arbitrary_code(self):
+        """Cannot use factory loader to execute arbitrary code."""
+        dangerous_paths = [
+            "os:system",
+            "subprocess:run",
+            "builtins:eval",
+            "builtins:exec",
+            "__builtins__:eval",
+            "importlib:import_module",
+            "pickle:loads",
+        ]
+        for path in dangerous_paths:
+            with pytest.raises(ValueError, match="not in allowlist"):
+                load_service_factory(path)
 
 
 class TestLoadJobDefinition:

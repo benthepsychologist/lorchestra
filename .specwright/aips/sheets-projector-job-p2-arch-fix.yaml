@@ -1,0 +1,146 @@
+aip_id: AIP-lorchestra-2025-12-19-001
+context:
+  background: Part 1 of sheets-projector-job introduced a ProjectionistProcessor that imported gorch at
+    runtime via a factory function. This violates the architectural constraint that lorchestra must not
+    import gorch.
+  constraints:
+  - gorch must not depend on storacle (no layer inversion)
+  - Factory loader must have allowlist (security)
+  - No hardcoded auth account names in lorchestra
+created: '2025-12-19T16:01:10.028220+00:00'
+meta:
+  created_at: '2025-12-19T16:01:10.028220+00:00'
+  created_by: claude
+objective:
+  acceptance_criteria:
+  - lorchestra has zero gorch imports (`grep -r "from gorch\|import gorch" lorchestra/` returns nothing)
+  - GorchSheetsWriteService in gorch implements write_table() protocol (duck-typed)
+  - load_service_factory() has allowlist restriction (security)
+  - Factory args come from job spec (no hardcoded "gdrive")
+  - All existing tests pass
+  - 'Security regression test: loader rejects non-allowed prefixes'
+  - '`lorchestra run proj_sheets_proj_clients --dry-run` passes (runtime smoke test)'
+  goal: Remove gorch import from lorchestra - enforce clean dependency boundaries
+orchestrator_contract:
+  artifacts_dir: .aip_artifacts/AIP-lorchestra-2025-12-19-001
+  logging: jsonl
+  state_machine:
+    events:
+    - run_step
+    - await_gate
+    - approve
+    - reject
+    - retry
+    - escalate
+    - complete
+    states:
+    - pending
+    - running
+    - awaiting_human
+    - failed
+    - succeeded
+    - rolled_back
+plan:
+- allowed_paths:
+  - /workspace/gorch/src/gorch/sheets/__init__.py
+  - /workspace/gorch/src/gorch/sheets/services.py
+  - /workspace/gorch/src/gorch/sheets/factories.py
+  - /workspace/gorch/tests/test_sheets_services.py
+  - /workspace/gorch/tests/test_sheets_factories.py
+  description: Add GorchSheetsWriteService to gorch
+  gate_ref: 'G1: gorch Ready'
+  kind: code
+  prompt: '**Pre-check:** Confirm `/workspace/gorch/src/gorch/sheets/__init__.py` exists (required for
+    string import). If not, create empty file.
+
+    Create `/workspace/gorch/src/gorch/sheets/services.py` with `GorchSheetsWriteService`:
+
+    - Duck-typed (does not import storacle)
+
+    - Implements write_table(spreadsheet_id, sheet_name, values, strategy)
+
+    - Has from_authctl() class method
+
+    - Wraps SheetsClient.clear_and_update() and append_values()
+
+    Create `/workspace/gorch/src/gorch/sheets/factories.py` with `build_sheets_write_service(account)`:
+
+    - Returns GorchSheetsWriteService.from_authctl(account)
+
+    Note: No updates to gorch/__init__.py exports - string import works without explicit exports.
+
+    **Storacle note:** `storacle.clients.sheets.SheetsWriteService` remains for other contexts (non-gorch
+    clients). Two similar services is acceptable debt; deprecate storacle''s version later if unused.'
+  role: agentic
+  step_id: step-001
+  verification_commands:
+  - cd /workspace/gorch && ruff check src/
+  - cd /workspace/gorch && pytest tests/test_sheets_services.py tests/test_sheets_factories.py -v
+- allowed_paths:
+  - /workspace/lorchestra/lorchestra/job_runner.py
+  - /workspace/lorchestra/lorchestra/processors/projectionist.py
+  - /workspace/lorchestra/lorchestra/jobs/definitions/projection/sync/proj_sheets_proj_clients.json
+  - /workspace/lorchestra/tests/test_sheets_projection_processor.py
+  - /workspace/lorchestra/tests/test_job_runner.py
+  description: Add secure factory loader to lorchestra
+  gate_ref: 'G2: lorchestra Ready'
+  kind: code
+  prompt: "Add to `/workspace/lorchestra/lorchestra/job_runner.py`:\n**Import safety note:** Currently\
+    \ safe - processors imported lazily inside `run_job()`, not at module top-level. If circular import\
+    \ occurs after this change, move loader to `lorchestra/util/factory_loader.py` and import from there.\n\
+    ```python\nimport importlib\n# Allowlist for service factory modules - security restriction\n# Only\
+    \ exact matches or submodules allowed (prefix + \".\")\n# Add new modules only when needed - don't\
+    \ pre-authorize\nALLOWED_FACTORY_MODULES = [\n    \"gorch.sheets.factories\",\n]\ndef _is_allowed_module(module_path:\
+    \ str) -> bool:\n    \"\"\"Check if module is in allowlist (exact match or submodule).\"\"\"\n   \
+    \ for allowed in ALLOWED_FACTORY_MODULES:\n        if module_path == allowed or module_path.startswith(allowed\
+    \ + \".\"):\n            return True\n    return False\ndef load_service_factory(factory_path: str):\n\
+    \    \"\"\"Load a service factory by dotted path string.\n    Only allows factories from allowlisted\
+    \ modules (exact match or submodules).\n    Args:\n        factory_path: e.g. \"gorch.sheets.factories:build_sheets_write_service\"\
+    \n    Raises:\n        ValueError: If path not in allowlist or malformed\n        ImportError: If\
+    \ module not found\n        AttributeError: If function not found in module\n        TypeError: If\
+    \ attribute is not callable\n    \"\"\"\n    if \":\" not in factory_path:\n        raise ValueError(f\"\
+    Factory path must be 'module:function', got: {factory_path}\")\n    module_path, func_name = factory_path.rsplit(\"\
+    :\", 1)\n    # Security: restrict to allowed modules (exact or submodule)\n    if not _is_allowed_module(module_path):\n\
+    \        raise ValueError(\n            f\"Factory module '{module_path}' not in allowlist. \"\n \
+    \           f\"Allowed: {ALLOWED_FACTORY_MODULES}\"\n        )\n    try:\n        module = importlib.import_module(module_path)\n\
+    \    except ImportError as e:\n        raise ImportError(f\"Cannot import factory module '{module_path}':\
+    \ {e}\") from e\n    try:\n        factory = getattr(module, func_name)\n    except AttributeError\
+    \ as e:\n        raise AttributeError(f\"Factory function '{func_name}' not found in '{module_path}':\
+    \ {e}\") from e\n    if not callable(factory):\n        raise TypeError(f\"{factory_path} is not callable\"\
+    )\n    return factory\n```\nUpdate `/workspace/lorchestra/lorchestra/processors/projectionist.py`:\n\
+    - Remove create_sheets_service() function entirely\n- Remove `from storacle.clients.sheets import\
+    \ SheetsWriteService`\n- Add `from lorchestra.job_runner import load_service_factory` at module top\n\
+    - Change sheets_service creation to use factory from job spec\nUpdate job definition `/workspace/lorchestra/lorchestra/jobs/definitions/projection/sync/proj_sheets_proj_clients.json`:\n\
+    - Add sheets_service_factory path\n- Add sheets_service_factory_args"
+  role: agentic
+  step_id: step-002
+  verification_commands:
+  - cd /workspace/lorchestra && ruff check lorchestra/
+  - grep -r "from gorch\|import gorch" /workspace/lorchestra/lorchestra/ && exit 1 || echo "No gorch imports"
+  - cd /workspace/lorchestra && pytest tests/test_sheets_projection_processor.py tests/test_job_runner.py
+    -v
+- description: Integration test
+  gate_ref: 'G3: Integration Complete'
+  kind: code
+  prompt: 'Run full verification:
+
+    - ruff check on all packages (gorch + lorchestra)
+
+    - All tests pass (gorch + lorchestra)
+
+    - Verify no gorch imports in lorchestra
+
+    - Dry-run the job'
+  role: coding_agent
+  step_id: step-003
+project_slug: lorchestra
+repo:
+  default_branch: main
+  url: git@github.com:benthepsychologist/lorchestra.git
+  working_branch: feat/sheets-projector-job-p2-arch-fix
+spec_version: 1.0.0
+tier: B
+title: 'Sheets Projector Job Part 2: Architecture Fix'
+updated: '2025-12-19T16:01:10.028220+00:00'
+version: '0.1'
+

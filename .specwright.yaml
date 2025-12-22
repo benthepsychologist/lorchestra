@@ -8,5 +8,5 @@ user:
   default_owner: null
   default_tier: null
 current:
-  spec: .specwright/specs/email-body-projection.md
-  aip: /workspace/lorchestra/.specwright/aips/email-body-projection.yaml
+  spec: .specwright/specs/storacle-and-sheets-v3.md
+  aip: /workspace/lorchestra/.specwright/aips/storacle-and-sheets-v3.yaml
