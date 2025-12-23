@@ -2,32 +2,54 @@
 
 This is a thin glue layer that:
 1. Builds ProjectionContext from job spec
-2. Instantiates projection by name
-3. Constructs services (BQ adapter + sheets via factory loader)
-4. Calls plan() → apply()
-5. Logs events
+2. Calls projectionist.build_plan() to get a storacle.plan/1.0.0 plan dict
+3. Calls storacle.rpc.execute_plan() to execute the plan
+4. Logs events
 
-NO SQL building, NO column logic, NO sheet formatting, NO retries, NO auth.
-All semantics live in projectionist projections.
+v3 ARCHITECTURE:
+- Projectionist emits plans (dict with ops) - no I/O
+- Storacle executes plans via RPC - handles auth and vendor calls
+- Lorchestra orchestrates (dry_run, events) - treats plan AND responses as opaque
 
-Service construction note:
-The sheets service is loaded via load_service_factory() from job_runner.
-This enforces clean dependency boundaries - lorchestra never imports gorch.
-Factory path and args come from job spec, not hardcoded values.
+Hard constraints (from spec):
+- Lorchestra must NOT branch on ops[*].method (treat plan as opaque)
+- Lorchestra must NOT inspect response result schema (treat responses as opaque)
+- Lorchestra must NOT call SheetsWriteService or any Sheets adapter directly
+- Lorchestra imports storacle.rpc for execute_plan only
 """
 
 import logging
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
-from projectionist import ProjectionResult
 from projectionist.context import ProjectionContext
-from projectionist.projections.sheets import SheetsProjection
+from projectionist.projections.sheets import build_plan as sheets_build_plan
 
-from lorchestra.job_runner import load_service_factory
+from storacle.rpc import execute_plan
+
 from lorchestra.processors import registry
 from lorchestra.processors.base import EventClient, JobContext, StorageClient
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# TYPE DEFINITIONS
+# =============================================================================
+
+# Type alias for build_plan functions
+# Signature: (ctx: ProjectionContext, config: dict, *, bq: BqQueryService) -> dict
+BuildPlanFn = Callable[..., dict[str, Any]]
+
+
+# =============================================================================
+# PROJECTION BUILD_PLAN REGISTRY
+# =============================================================================
+
+# Maps projection_name → build_plan function
+# Each function must have signature: (ctx, config, *, bq) -> plan dict
+PROJECTION_BUILD_PLAN_REGISTRY: dict[str, BuildPlanFn] = {
+    "sheets": sheets_build_plan,
+}
 
 
 # =============================================================================
@@ -53,41 +75,6 @@ class BqQueryServiceAdapter:
         """
         rows = self._storage.query_to_dataframe(sql)
         yield from rows
-
-
-class ProjectionServicesImpl:
-    """Concrete implementation of ProjectionServices for lorchestra.
-
-    Provides bq (query) and sheets (write) capabilities to projections.
-    Sheets service is duck-typed (write_table protocol) - no storacle import.
-    """
-
-    def __init__(
-        self,
-        bq_service: BqQueryServiceAdapter,
-        sheets_service: Any,  # Duck-typed: must have write_table() method
-    ):
-        self._bq = bq_service
-        self._sheets = sheets_service
-
-    @property
-    def bq(self) -> BqQueryServiceAdapter:
-        return self._bq
-
-    @property
-    def sheets(self) -> Any:
-        return self._sheets
-
-
-# =============================================================================
-# PROJECTION REGISTRY
-# =============================================================================
-
-# Maps projection_name → projection class
-# Add new projections here as they're created
-PROJECTION_REGISTRY: dict[str, type] = {
-    "sheets": SheetsProjection,
-}
 
 
 # =============================================================================
@@ -120,27 +107,33 @@ def _resolve_placeholders(value: Any, config: Any) -> Any:
         return value
 
 
-class ProjectionistProcessor:
-    """Run projectionist projections based on job JSON.
+def _has_any_error(responses: list[dict]) -> bool:
+    """Check if any response contains an error (opaque check)."""
+    return any("error" in r for r in responses)
 
-    Job JSON schema:
+
+class ProjectionistProcessor:
+    """Run projectionist projections using storacle RPC.
+
+    Job JSON schema (v3 - RPC-based):
     {
         "job_id": "proj_sheets_clients",
         "job_type": "projectionist",
         "projection_name": "sheets",
-        "sheets_service_factory": "gorch.sheets.factories:build_sheets_write_service",
-        "sheets_service_factory_args": {"account": "gdrive"},
         "projection_config": {
             "query": "SELECT * FROM `${PROJECT}.${DATASET_CANONICAL}.view_name`",
             "spreadsheet_id": "...",
             "sheet_name": "clients",
-            "strategy": "replace"
+            "strategy": "replace",
+            "account": "gdrive"
         }
     }
 
-    Service factories are loaded via load_service_factory() with allowlist.
-    Placeholders ${PROJECT}, ${DATASET_CANONICAL}, etc. are resolved at runtime.
-    This processor is intentionally dumb - all logic lives in projectionist.
+    Flow:
+    1. Look up build_plan function from registry by projection_name
+    2. Build ProjectionContext and call build_plan() to get plan dict
+    3. Call storacle.rpc.execute_plan(plan, dry_run=ctx.dry_run)
+    4. Log events - pass responses through opaquely
     """
 
     def run(
@@ -150,33 +143,28 @@ class ProjectionistProcessor:
         storage_client: StorageClient,
         event_client: EventClient,
     ) -> None:
-        """Execute a projectionist job."""
+        """Execute a projectionist job via storacle RPC."""
         job_id = job_spec.get("job_id", "unknown")
-        projection_name = job_spec["projection_name"]
+        projection_name = job_spec.get("projection_name")
         projection_config_raw = job_spec["projection_config"]
         source_system = job_spec.get("source_system", "lorchestra")
+
+        # Look up build_plan function from registry
+        build_plan_fn = PROJECTION_BUILD_PLAN_REGISTRY.get(projection_name)
+        if build_plan_fn is None:
+            raise ValueError(
+                f"Unknown projection: {projection_name}. "
+                f"Registered: {list(PROJECTION_BUILD_PLAN_REGISTRY.keys())}"
+            )
 
         # Resolve placeholders in config using lorchestra config values
         projection_config = _resolve_placeholders(projection_config_raw, context.config)
 
-        # Look up projection class
-        projection_cls = PROJECTION_REGISTRY.get(projection_name)
-        if projection_cls is None:
-            raise ValueError(
-                f"Unknown projection: {projection_name}. "
-                f"Registered: {list(PROJECTION_REGISTRY.keys())}"
-            )
+        # Add job_id to config for plan metadata
+        projection_config["job_id"] = job_id
 
-        # Build services - sheets service loaded via factory from job spec
+        # Build BQ adapter for projectionist to read data
         bq_service = BqQueryServiceAdapter(storage_client)
-
-        # Load sheets service factory from job spec (enforces allowlist)
-        sheets_factory_path = job_spec["sheets_service_factory"]
-        sheets_factory_args = job_spec.get("sheets_service_factory_args", {})
-        sheets_factory = load_service_factory(sheets_factory_path)
-        sheets_service = sheets_factory(**sheets_factory_args)
-
-        services = ProjectionServicesImpl(bq_service, sheets_service)
 
         # Build context
         ctx = ProjectionContext(
@@ -185,59 +173,67 @@ class ProjectionistProcessor:
             config=projection_config,
         )
 
-        # Instantiate projection
-        projection = projection_cls()
+        # Step 1: Build plan using projectionist
+        # The build_plan function is looked up from registry, not hardcoded
+        plan = build_plan_fn(ctx, projection_config, bq=bq_service)
 
-        # Step 1: Plan (always runs, even in dry_run)
-        plan = projection.plan(services, ctx)
+        plan_id = plan.get("plan_id", "unknown")
 
         # Log started (after plan so we have plan_id)
         event_client.log_event(
-            event_type="sheets_projection.started",
+            event_type="projection.started",
             source_system=source_system,
             correlation_id=context.run_id,
             status="success",
             payload={
                 "job_id": job_id,
                 "projection_name": projection_name,
-                "plan_id": plan.plan_id,
-                "spreadsheet_id": projection_config.get("spreadsheet_id"),
-                "sheet_name": projection_config.get("sheet_name"),
+                "plan_id": plan_id,
                 "dry_run": context.dry_run,
             },
         )
 
         try:
-            # Step 2: Apply
-            result: ProjectionResult = projection.apply(plan, services, ctx)
+            # Step 2: Execute plan via storacle RPC
+            # Lorchestra treats both plan and responses as OPAQUE
+            responses = execute_plan(plan, dry_run=context.dry_run)
 
-            # Log completed
+            # Check for any errors (opaque check - just presence of 'error' key)
+            if _has_any_error(responses):
+                # At least one op failed - raise with count only (not inspecting details)
+                error_count = sum(1 for r in responses if "error" in r)
+                raise RuntimeError(
+                    f"RPC execution failed: {error_count}/{len(responses)} ops returned errors"
+                )
+
+            # Log completed - pass responses through opaquely
+            # We do NOT inspect result schema (no rows_written extraction)
             event_client.log_event(
-                event_type="sheets_projection.completed",
+                event_type="projection.completed",
                 source_system=source_system,
                 correlation_id=context.run_id,
                 status="success",
                 payload={
                     "job_id": job_id,
-                    "projection_name": result.projection_name,
-                    "plan_id": result.plan_id,
-                    "rows_affected": result.rows_affected,
-                    "duration_seconds": result.duration_seconds,
-                    "dry_run": result.dry_run,
+                    "projection_name": projection_name,
+                    "plan_id": plan_id,
+                    "dry_run": context.dry_run,
+                    "ops_count": len(responses),
+                    "responses": responses,  # Pass through opaquely for logging
                 },
             )
 
             logger.info(
                 f"Projection complete: {projection_name} "
-                f"plan_id={result.plan_id[:12]}... "
-                f"rows={result.rows_affected} "
-                f"dry_run={result.dry_run}"
+                f"plan_id={plan_id[:12]}... "
+                f"ops={len(responses)} "
+                f"dry_run={context.dry_run}"
             )
 
         except Exception as e:
             # Log failed
             event_client.log_event(
-                event_type="sheets_projection.failed",
+                event_type="projection.failed",
                 source_system=source_system,
                 correlation_id=context.run_id,
                 status="failed",
@@ -245,7 +241,7 @@ class ProjectionistProcessor:
                 payload={
                     "job_id": job_id,
                     "projection_name": projection_name,
-                    "plan_id": plan.plan_id,
+                    "plan_id": plan_id,
                 },
             )
             raise
