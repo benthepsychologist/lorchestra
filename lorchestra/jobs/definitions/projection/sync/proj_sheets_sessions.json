@@ -1,0 +1,12 @@
+{
+  "job_id": "proj_sheets_sessions",
+  "job_type": "projectionist",
+  "projection_name": "sheets",
+  "projection_config": {
+    "query": "SELECT * FROM `${PROJECT}.${DATASET_CANONICAL}.proj_sessions`",
+    "spreadsheet_id": "1Wf8EyuNR-I-ko5bx0M4L7BXousAqkj3vxN8xP1-aAzo",
+    "sheet_name": "sessions",
+    "strategy": "replace",
+    "account": "acct1"
+  }
+}
