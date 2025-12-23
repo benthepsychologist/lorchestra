@@ -58,6 +58,7 @@ phi-data/
 .pytest_cache/
 .coverage
 htmlcov/
+.ruff_cache/
 
 # Local config overrides
 config/local.yaml
