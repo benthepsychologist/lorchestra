@@ -58,6 +58,7 @@ phi-data/
 .pytest_cache/
 .coverage
 htmlcov/
+.ruff_cache/
 
 # Local config overrides
 config/local.yaml
@@ -77,3 +78,6 @@ google-cloud-cli-linux-x86_64.tar.gz
 # Scripts with secrets (use env vars instead)
 scripts/gmail_*
 scripts/get_gmail_*
+
+# Specwright ephemeral artifacts
+.specwright/tmp/

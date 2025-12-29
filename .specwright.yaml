@@ -1,12 +1,3 @@
-version: '0.1'
-paths:
-  specs: .specwright/specs
-  aips: .specwright/aips
-repo:
-  default_branch: main
-user:
-  default_owner: null
-  default_tier: null
-current:
-  spec: .specwright/specs/storacle-and-sheets-v3.md
-  aip: /workspace/lorchestra/.specwright/aips/storacle-and-sheets-v3.yaml
+version: '0.6'
+governor:
+  path: ~/.local/local-governor
