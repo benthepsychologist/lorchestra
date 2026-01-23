@@ -348,10 +348,10 @@ class BigQueryStorageClient:
         correlation_id: str,
         batch_size: int = 500,
     ) -> dict[str, int]:
-        """Upsert canonical objects using MERGE.
+        """Upsert canonical objects using MERGE via temp table.
 
-        Uses MERGE to insert new records or update existing ones based on idem_key.
-        This ensures no duplicates and allows re-canonization when raw data changes.
+        Uses temp table loading + MERGE pattern (same as raw_objects ingestion)
+        to avoid BigQuery query size limits with large payloads.
 
         Args:
             objects: List of canonical objects to upsert
@@ -371,77 +371,98 @@ class BigQueryStorageClient:
 
         total_inserted = 0
         total_updated = 0
+        run_id = uuid.uuid4().hex[:8]
 
         # Process in batches
-        for i in range(0, len(objects), batch_size):
+        for batch_idx, i in enumerate(range(0, len(objects), batch_size)):
             batch = objects[i:i + batch_size]
+            temp_table_name = f"temp_canonical_{run_id}_{batch_idx}"
+            temp_table_ref = f"{dataset}.{temp_table_name}"
 
-            # Build source data as a query with UNION ALL
-            source_rows = []
-            for obj in batch:
-                payload = json.dumps(obj["payload"]) if isinstance(obj["payload"], dict) else obj["payload"]
-                # Escape special characters in payload for SQL string literal
-                # - Single quotes need to be escaped for SQL
-                # - Newlines/carriage returns need to be escaped for PARSE_JSON
-                # - Backslashes need to be escaped first to avoid double-escaping
-                if payload:
-                    payload_escaped = (
-                        payload
-                        .replace("\\", "\\\\")  # Escape backslashes first
-                        .replace("'", "\\'")    # Escape single quotes for SQL
-                        .replace("\n", "\\n")   # Escape newlines for PARSE_JSON
-                        .replace("\r", "\\r")   # Escape carriage returns
-                    )
-                else:
-                    payload_escaped = ""
+            try:
+                # Prepare rows for temp table
+                now = datetime.now(timezone.utc).isoformat()
+                rows = []
+                for obj in batch:
+                    payload = obj["payload"] if isinstance(obj["payload"], dict) else json.loads(obj["payload"])
+                    rows.append({
+                        "idem_key": obj["idem_key"],
+                        "source_system": obj.get("source_system", ""),
+                        "connection_name": obj.get("connection_name"),
+                        "object_type": obj.get("object_type", ""),
+                        "canonical_schema": obj.get("canonical_schema", ""),
+                        "canonical_format": obj.get("canonical_format", ""),
+                        "transform_ref": obj.get("transform_ref", ""),
+                        "correlation_id": obj.get("correlation_id") or correlation_id,
+                        "payload": payload,
+                        "canonicalized_at": now,
+                        "created_at": now,
+                    })
 
-                source_rows.append(f"""
-                    SELECT
-                        '{obj["idem_key"]}' as idem_key,
-                        '{obj.get("source_system", "")}' as source_system,
-                        {f"'{obj.get('connection_name')}'" if obj.get('connection_name') else 'NULL'} as connection_name,
-                        '{obj.get("object_type", "")}' as object_type,
-                        '{obj.get("canonical_schema", "")}' as canonical_schema,
-                        '{obj.get("canonical_format", "")}' as canonical_format,
-                        '{obj.get("transform_ref", "")}' as transform_ref,
-                        '{obj.get("correlation_id") or correlation_id}' as correlation_id,
-                        PARSE_JSON('{payload_escaped}') as payload,
-                        CURRENT_TIMESTAMP() as canonicalized_at,
-                        CURRENT_TIMESTAMP() as created_at
-                """)
+                # Load to temp table with schema matching canonical_objects
+                schema_fields = [
+                    bigquery.SchemaField("idem_key", "STRING", mode="REQUIRED"),
+                    bigquery.SchemaField("source_system", "STRING", mode="REQUIRED"),
+                    bigquery.SchemaField("connection_name", "STRING", mode="NULLABLE"),
+                    bigquery.SchemaField("object_type", "STRING", mode="REQUIRED"),
+                    bigquery.SchemaField("canonical_schema", "STRING", mode="REQUIRED"),
+                    bigquery.SchemaField("canonical_format", "STRING", mode="NULLABLE"),
+                    bigquery.SchemaField("transform_ref", "STRING", mode="NULLABLE"),
+                    bigquery.SchemaField("correlation_id", "STRING", mode="NULLABLE"),
+                    bigquery.SchemaField("payload", "JSON", mode="REQUIRED"),
+                    bigquery.SchemaField("canonicalized_at", "TIMESTAMP", mode="REQUIRED"),
+                    bigquery.SchemaField("created_at", "TIMESTAMP", mode="REQUIRED"),
+                ]
 
-            source_query = " UNION ALL ".join(source_rows)
+                job_config = bigquery.LoadJobConfig(
+                    schema=schema_fields,
+                    write_disposition="WRITE_TRUNCATE",
+                )
 
-            merge_query = f"""
-                MERGE `{table_ref}` T
-                USING ({source_query}) S
-                ON T.idem_key = S.idem_key
-                WHEN MATCHED THEN
-                    UPDATE SET
-                        source_system = S.source_system,
-                        connection_name = S.connection_name,
-                        object_type = S.object_type,
-                        canonical_schema = S.canonical_schema,
-                        canonical_format = S.canonical_format,
-                        transform_ref = S.transform_ref,
-                        correlation_id = S.correlation_id,
-                        payload = S.payload,
-                        canonicalized_at = S.canonicalized_at
-                WHEN NOT MATCHED THEN
-                    INSERT (idem_key, source_system, connection_name, object_type,
-                            canonical_schema, canonical_format, transform_ref,
-                            correlation_id, payload, canonicalized_at, created_at)
-                    VALUES (S.idem_key, S.source_system, S.connection_name, S.object_type,
-                            S.canonical_schema, S.canonical_format, S.transform_ref,
-                            S.correlation_id, S.payload, S.canonicalized_at, S.created_at)
-            """
+                load_job = self.bq_client.load_table_from_json(
+                    rows,
+                    temp_table_ref,
+                    job_config=job_config,
+                )
+                load_job.result()  # Wait for load to complete
 
-            result = self.bq_client.query(merge_query).result()
+                # MERGE from temp table to canonical_objects
+                merge_query = f"""
+                    MERGE `{table_ref}` T
+                    USING `{temp_table_ref}` S
+                    ON T.idem_key = S.idem_key
+                    WHEN MATCHED THEN
+                        UPDATE SET
+                            source_system = S.source_system,
+                            connection_name = S.connection_name,
+                            object_type = S.object_type,
+                            canonical_schema = S.canonical_schema,
+                            canonical_format = S.canonical_format,
+                            transform_ref = S.transform_ref,
+                            correlation_id = S.correlation_id,
+                            payload = S.payload,
+                            canonicalized_at = S.canonicalized_at
+                    WHEN NOT MATCHED THEN
+                        INSERT (idem_key, source_system, connection_name, object_type,
+                                canonical_schema, canonical_format, transform_ref,
+                                correlation_id, payload, canonicalized_at, created_at)
+                        VALUES (S.idem_key, S.source_system, S.connection_name, S.object_type,
+                                S.canonical_schema, S.canonical_format, S.transform_ref,
+                                S.correlation_id, S.payload, S.canonicalized_at, S.created_at)
+                """
 
-            # BigQuery MERGE returns num_dml_affected_rows for total affected
-            # We can't distinguish inserts from updates in the result, so we estimate
-            affected = result.num_dml_affected_rows or 0
-            total_inserted += affected  # Approximate - includes updates
+                result = self.bq_client.query(merge_query).result()
+
+                # BigQuery MERGE returns num_dml_affected_rows for total affected
+                affected = result.num_dml_affected_rows or 0
+                total_inserted += affected  # Approximate - includes updates
+
+            finally:
+                # Cleanup temp table
+                try:
+                    self.bq_client.delete_table(temp_table_ref, not_found_ok=True)
+                except Exception:
+                    pass  # Ignore cleanup errors
 
         return {"inserted": total_inserted, "updated": total_updated}
 

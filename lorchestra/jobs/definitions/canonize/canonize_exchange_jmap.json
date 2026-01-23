@@ -12,9 +12,9 @@
     "mode": "full",
     "schema_in": "iglu:com.microsoft/exchange_email/jsonschema/1-0-2",
     "schema_out": "iglu:org.canonical/email_jmap_lite/jsonschema/1-0-0",
-    "transform_ref": "email/exchange_to_jmap_lite@1.0.0"
+    "transform_ref": "email/exchange_to_jmap_lite@1.1.0"
   },
   "options": {
-    "limit": 100
+    "limit": 1000
   }
 }
