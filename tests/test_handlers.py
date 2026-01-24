@@ -24,6 +24,7 @@ from lorchestra.handlers import (
     NoOpStoracleClient,
 )
 from lorchestra.handlers.compute import ComputeClient, NoOpComputeClient
+from lorchestra.handlers.data_plane import QUERY_OP_ALLOWLIST, MAX_QUERY_LIMIT
 from lorchestra.schemas import StepManifest, Op
 
 
@@ -32,7 +33,7 @@ from lorchestra.schemas import StepManifest, Op
 # -----------------------------------------------------------------------------
 
 
-def _make_query_manifest() -> StepManifest:
+def _make_query_manifest(limit: int = 100) -> StepManifest:
     """Create a query.raw_objects manifest for testing."""
     return StepManifest.from_op(
         run_id="01TEST00000000000000000000",
@@ -41,6 +42,7 @@ def _make_query_manifest() -> StepManifest:
         resolved_params={
             "source_system": "test",
             "object_type": "test_obj",
+            "limit": limit,  # Required for bounded cost
         },
         idempotency_key="test:test_query",
     )
@@ -260,6 +262,75 @@ class TestDataPlaneHandler:
 
         with pytest.raises(ValueError, match="Unsupported data_plane op"):
             handler.execute(manifest)
+
+    def test_query_requires_limit(self):
+        """Query operations (except query.last_sync) require a limit parameter."""
+        client = NoOpStoracleClient()
+        handler = DataPlaneHandler(client)
+        # Create manifest without limit
+        manifest = StepManifest.from_op(
+            run_id="01TEST00000000000000000000",
+            step_id="test_query_no_limit",
+            op=Op.QUERY_RAW_OBJECTS,
+            resolved_params={
+                "source_system": "test",
+                "object_type": "test_obj",
+                # No limit specified
+            },
+            idempotency_key="test:no_limit",
+        )
+
+        with pytest.raises(ValueError, match="requires a 'limit' parameter"):
+            handler.execute(manifest)
+
+    def test_query_limit_max_enforced(self):
+        """Query limit cannot exceed MAX_QUERY_LIMIT (1000)."""
+        client = NoOpStoracleClient()
+        handler = DataPlaneHandler(client)
+        manifest = _make_query_manifest(limit=MAX_QUERY_LIMIT + 1)
+
+        with pytest.raises(ValueError, match="exceeds maximum allowed"):
+            handler.execute(manifest)
+
+    def test_query_limit_at_max_allowed(self):
+        """Query with limit at MAX_QUERY_LIMIT should succeed."""
+        client = NoOpStoracleClient()
+        handler = DataPlaneHandler(client)
+        manifest = _make_query_manifest(limit=MAX_QUERY_LIMIT)
+
+        # Should not raise
+        result = handler.execute(manifest)
+        assert result["count"] == 0  # NoOp returns empty
+
+    def test_query_last_sync_no_limit_required(self):
+        """query.last_sync does not require a limit parameter."""
+        client = NoOpStoracleClient()
+        handler = DataPlaneHandler(client)
+        manifest = StepManifest.from_op(
+            run_id="01TEST00000000000000000000",
+            step_id="test_last_sync",
+            op=Op.QUERY_LAST_SYNC,
+            resolved_params={
+                "source_system": "test",
+                "connection_name": "conn",
+                "object_type": "obj",
+                # No limit needed
+            },
+            idempotency_key="test:last_sync",
+        )
+
+        # Should not raise
+        result = handler.execute(manifest)
+        assert result["last_sync"] is None  # NoOp returns None
+
+    def test_query_allowlist_contains_expected_ops(self):
+        """Verify the query allowlist contains the expected operations."""
+        expected = {Op.QUERY_RAW_OBJECTS, Op.QUERY_CANONICAL_OBJECTS, Op.QUERY_LAST_SYNC}
+        assert QUERY_OP_ALLOWLIST == expected
+
+    def test_max_query_limit_is_1000(self):
+        """Verify MAX_QUERY_LIMIT is 1000 per e005 spec."""
+        assert MAX_QUERY_LIMIT == 1000
 
 
 # -----------------------------------------------------------------------------

@@ -63,7 +63,7 @@ class StepDef:
     op: Op
     params: dict[str, Any] = field(default_factory=dict)
     phase_id: Optional[str] = None
-    timeout_s: Optional[int] = None
+    timeout_s: int = 300  # Default 300s per e005 spec
     continue_on_error: bool = False
     if_: Optional[str] = None
     idempotency: Optional[IdempotencyConfig] = None
@@ -149,7 +149,7 @@ class JobDef:
                     "op": s.op.value,
                     "params": s.params,
                     **({"phase_id": s.phase_id} if s.phase_id else {}),
-                    **({"timeout_s": s.timeout_s} if s.timeout_s else {}),
+                    "timeout_s": s.timeout_s,  # Always include (default 300s)
                     **({"continue_on_error": s.continue_on_error} if s.continue_on_error else {}),
                     **({"if": s.if_} if s.if_ else {}),
                     **({"idempotency": {
@@ -183,7 +183,7 @@ class JobDef:
                 op=Op.from_string(step_data["op"]),
                 params=step_data.get("params", {}),
                 phase_id=step_data.get("phase_id"),
-                timeout_s=step_data.get("timeout_s"),
+                timeout_s=step_data.get("timeout_s", 300),  # Default 300s per e005 spec
                 continue_on_error=step_data.get("continue_on_error", False),
                 if_=step_data.get("if"),
                 idempotency=idempotency,

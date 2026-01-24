@@ -172,7 +172,7 @@ class TestStepDef:
         assert step.op == Op.QUERY_RAW_OBJECTS
         assert step.params == {}
         assert step.phase_id is None
-        assert step.timeout_s is None
+        assert step.timeout_s == 300  # Default per e005 spec
         assert step.continue_on_error is False
         assert step.if_ is None
         assert step.idempotency is None

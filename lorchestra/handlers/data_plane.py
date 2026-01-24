@@ -8,6 +8,10 @@ Handles all data-plane operations:
 
 These operations are delegated to a StoracleClient implementation,
 keeping the orchestration layer free of storage implementation details.
+
+Defense-in-depth:
+- Query operations are restricted to an allowlist (enforced here, not just in storacle)
+- Query operations require a limit parameter (max 1000) for bounded cost
 """
 
 from typing import Any
@@ -15,6 +19,18 @@ from typing import Any
 from lorchestra.handlers.base import Handler
 from lorchestra.handlers.storacle_client import StoracleClient
 from lorchestra.schemas import StepManifest, Op
+
+
+# Query operation allowlist - defense-in-depth (per e005 spec)
+# lorchestra enforces this before dispatch, not relying solely on storacle
+QUERY_OP_ALLOWLIST = frozenset({
+    Op.QUERY_RAW_OBJECTS,
+    Op.QUERY_CANONICAL_OBJECTS,
+    Op.QUERY_LAST_SYNC,
+})
+
+# Maximum limit for query operations (bounded cost)
+MAX_QUERY_LIMIT = 1000
 
 
 class DataPlaneHandler(Handler):
@@ -39,6 +55,10 @@ class DataPlaneHandler(Handler):
 
         Dispatches to the appropriate StoracleClient method based on the Op.
 
+        Defense-in-depth:
+        - Query operations are validated against an allowlist
+        - Query operations require a limit parameter (max 1000)
+
         Args:
             manifest: The StepManifest containing operation details
 
@@ -47,9 +67,15 @@ class DataPlaneHandler(Handler):
 
         Raises:
             ValueError: If the operation is not a data-plane operation
+            ValueError: If a query op is not in the allowlist
+            ValueError: If a query op exceeds the max limit
         """
         op = manifest.op
         params = manifest.resolved_params
+
+        # Defense-in-depth: Enforce query op allowlist
+        if op.is_query_op():
+            self._validate_query_op(op, params)
 
         # Query operations
         if op == Op.QUERY_RAW_OBJECTS:
@@ -78,6 +104,44 @@ class DataPlaneHandler(Handler):
             return self._assert_unique(params)
 
         raise ValueError(f"Unsupported data_plane op: {op.value}")
+
+    def _validate_query_op(self, op: Op, params: dict[str, Any]) -> None:
+        """
+        Validate query operation against allowlist and bounded cost rules.
+
+        Defense-in-depth per e005 spec:
+        - Query ops must be in the allowlist (query.raw_objects, query.canonical_objects, query.last_sync)
+        - Query ops (except query.last_sync) require a limit parameter (max 1000)
+
+        Args:
+            op: The query operation
+            params: The operation parameters
+
+        Raises:
+            ValueError: If the op is not in the allowlist
+            ValueError: If limit is missing or exceeds MAX_QUERY_LIMIT
+        """
+        # Check allowlist
+        if op not in QUERY_OP_ALLOWLIST:
+            raise ValueError(
+                f"Query operation '{op.value}' is not in the allowlist. "
+                f"Allowed: {[o.value for o in QUERY_OP_ALLOWLIST]}"
+            )
+
+        # Check bounded cost (limit required, max 1000)
+        # query.last_sync is exempt as it returns a single value, not a result set
+        if op != Op.QUERY_LAST_SYNC:
+            limit = params.get("limit")
+            if limit is None:
+                raise ValueError(
+                    f"Query operation '{op.value}' requires a 'limit' parameter for bounded cost. "
+                    f"Maximum allowed: {MAX_QUERY_LIMIT}"
+                )
+            if limit > MAX_QUERY_LIMIT:
+                raise ValueError(
+                    f"Query limit {limit} exceeds maximum allowed ({MAX_QUERY_LIMIT}). "
+                    f"Use pagination for larger result sets."
+                )
 
     # -------------------------------------------------------------------------
     # Query Operations
