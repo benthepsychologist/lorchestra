@@ -480,5 +480,224 @@ def sql_adhoc(ctx, query: str | None):
     run_sql_query(sql, config=config)
 
 
+# =============================================================================
+# Executor Commands - V2 orchestration engine (e005-02)
+# =============================================================================
+
+@main.group("exec")
+def exec_group():
+    """V2 executor commands for JobDef orchestration.
+
+    These commands use the new orchestration layer:
+    JobDef -> JobInstance -> RunRecord -> StepManifest
+    """
+    pass
+
+
+@exec_group.command("compile")
+@click.argument("job_id")
+@click.option("--ctx", "ctx_json", default="{}", help="Context JSON for @ctx.* resolution")
+@click.option("--payload", "payload_json", default="{}", help="Payload JSON for @payload.* resolution")
+@click.option("--output", "-o", type=click.Path(), help="Output path for JobInstance JSON")
+@click.pass_context
+def exec_compile(ctx, job_id: str, ctx_json: str, payload_json: str, output: str = None):
+    """Compile a JobDef into a JobInstance.
+
+    Resolves @ctx.* and @payload.* references and evaluates if conditions.
+
+    Examples:
+
+        lorchestra exec compile my_job
+
+        lorchestra exec compile my_job --ctx '{"env": "prod"}'
+
+        lorchestra exec compile my_job -o instance.json
+    """
+    import json
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
+    from spec.lorchestra import JobRegistry, Compiler
+
+    # Parse context and payload
+    try:
+        compile_ctx = json.loads(ctx_json)
+    except json.JSONDecodeError as e:
+        click.echo(f"Invalid --ctx JSON: {e}", err=True)
+        raise SystemExit(1)
+
+    try:
+        payload = json.loads(payload_json)
+    except json.JSONDecodeError as e:
+        click.echo(f"Invalid --payload JSON: {e}", err=True)
+        raise SystemExit(1)
+
+    # Load and compile
+    try:
+        registry = JobRegistry(DEFINITIONS_DIR)
+        compiler = Compiler(registry)
+        instance = compiler.compile(job_id, ctx=compile_ctx, payload=payload)
+    except Exception as e:
+        click.echo(f"Compilation failed: {e}", err=True)
+        raise SystemExit(1)
+
+    # Output
+    instance_dict = instance.to_dict()
+    if output:
+        with open(output, "w") as f:
+            json.dump(instance_dict, f, indent=2)
+        click.echo(f"JobInstance written to: {output}")
+    else:
+        click.echo(json.dumps(instance_dict, indent=2))
+
+
+@exec_group.command("run")
+@click.argument("job_id")
+@click.option("--ctx", "ctx_json", default="{}", help="Context JSON for @ctx.* resolution")
+@click.option("--payload", "payload_json", default="{}", help="Payload JSON for @payload.* resolution")
+@click.option("--envelope", "envelope_json", default="{}", help="Runtime envelope JSON for @run.* resolution")
+@click.option("--dry-run", is_flag=True, help="Execute with no-op backends (no actual I/O)")
+@click.option("--store-dir", type=click.Path(), help="Directory for run artifacts (default: in-memory)")
+@click.pass_context
+def exec_run(ctx, job_id: str, ctx_json: str, payload_json: str, envelope_json: str,
+             dry_run: bool, store_dir: str = None):
+    """Compile and execute a JobDef.
+
+    Compiles the JobDef with context/payload, then executes using the executor engine.
+
+    Examples:
+
+        lorchestra exec run my_job
+
+        lorchestra exec run my_job --ctx '{"env": "prod"}' --envelope '{"id": 123}'
+
+        lorchestra exec run my_job --dry-run
+
+        lorchestra exec run my_job --store-dir ./runs
+    """
+    import json
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
+    from spec.lorchestra import JobRegistry, Compiler, Executor, RunStore
+    from spec.lorchestra.run_store import InMemoryRunStore, FileRunStore
+
+    # Parse JSON inputs
+    try:
+        compile_ctx = json.loads(ctx_json)
+    except json.JSONDecodeError as e:
+        click.echo(f"Invalid --ctx JSON: {e}", err=True)
+        raise SystemExit(1)
+
+    try:
+        payload = json.loads(payload_json)
+    except json.JSONDecodeError as e:
+        click.echo(f"Invalid --payload JSON: {e}", err=True)
+        raise SystemExit(1)
+
+    try:
+        envelope = json.loads(envelope_json)
+    except json.JSONDecodeError as e:
+        click.echo(f"Invalid --envelope JSON: {e}", err=True)
+        raise SystemExit(1)
+
+    # Create store
+    if store_dir:
+        store = FileRunStore(Path(store_dir))
+    else:
+        store = InMemoryRunStore()
+
+    # Load, compile, and execute
+    try:
+        registry = JobRegistry(DEFINITIONS_DIR)
+        compiler = Compiler(registry)
+        instance = compiler.compile(job_id, ctx=compile_ctx, payload=payload)
+
+        click.echo(f"Compiled job: {instance.job_id} v{instance.job_version}")
+        click.echo(f"  Steps: {len(instance.steps)} ({len(instance.get_executable_steps())} executable)")
+        click.echo(f"  Hash:  {instance.job_def_sha256[:16]}...")
+        click.echo()
+
+        if dry_run:
+            click.echo("=== DRY RUN MODE === (no-op backends)")
+            click.echo()
+
+        executor = Executor(store=store)
+        result = executor.execute(instance, envelope=envelope)
+
+        # Display results
+        click.echo(f"Run ID: {result.run_id}")
+        click.echo(f"Status: {'SUCCESS' if result.success else 'FAILED'}")
+        click.echo()
+
+        click.echo("Step Outcomes:")
+        for outcome in result.attempt.step_outcomes:
+            status_symbol = {
+                "completed": click.style("✓", fg="green"),
+                "failed": click.style("✗", fg="red"),
+                "skipped": click.style("-", fg="yellow"),
+                "pending": click.style("○", fg="white"),
+                "running": click.style("…", fg="blue"),
+            }.get(outcome.status.value, "?")
+
+            duration = f" ({outcome.duration_ms}ms)" if outcome.duration_ms else ""
+            click.echo(f"  {status_symbol} {outcome.step_id}{duration}")
+
+            if outcome.error:
+                click.echo(f"      Error: {outcome.error.get('message', 'Unknown error')}")
+
+        if not result.success:
+            raise SystemExit(1)
+
+    except Exception as e:
+        click.echo(f"Execution failed: {e}", err=True)
+        raise SystemExit(1)
+
+
+@exec_group.command("status")
+@click.argument("run_id")
+@click.option("--store-dir", type=click.Path(exists=True), required=True, help="Run artifacts directory")
+def exec_status(run_id: str, store_dir: str):
+    """Show status of a run.
+
+    Displays the run record and latest attempt status.
+
+    Example:
+
+        lorchestra exec status 01HXYZ123ABC --store-dir ./runs
+    """
+    import json
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
+    from spec.lorchestra.run_store import FileRunStore
+
+    store = FileRunStore(Path(store_dir))
+
+    # Get run record
+    run = store.get_run(run_id)
+    if run is None:
+        click.echo(f"Run not found: {run_id}", err=True)
+        raise SystemExit(1)
+
+    click.echo(f"Run: {run.run_id}")
+    click.echo(f"  Job ID:     {run.job_id}")
+    click.echo(f"  Job Hash:   {run.job_def_sha256[:16]}...")
+    click.echo(f"  Started:    {run.started_at}")
+    click.echo(f"  Envelope:   {json.dumps(run.envelope)}")
+    click.echo()
+
+    # Get latest attempt
+    attempt = store.get_latest_attempt(run_id)
+    if attempt:
+        click.echo(f"Latest Attempt: #{attempt.attempt_n}")
+        click.echo(f"  Status:   {attempt.status.value}")
+        click.echo(f"  Started:  {attempt.started_at}")
+        if attempt.completed_at:
+            click.echo(f"  Completed: {attempt.completed_at}")
+            click.echo(f"  Duration: {attempt.duration_ms}ms")
+        click.echo(f"  Steps:    {len(attempt.step_outcomes)}")
+
+
 if __name__ == "__main__":
     main()

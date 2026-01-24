@@ -1,4 +1,13 @@
+import sys
+from pathlib import Path
+
 import pytest
+
+# Add src directory to path for spec.lorchestra imports
+src_path = Path(__file__).parent.parent / "src"
+if str(src_path) not in sys.path:
+    sys.path.insert(0, str(src_path))
+
 from lorchestra.config import LorchestraConfig
 
 @pytest.fixture
