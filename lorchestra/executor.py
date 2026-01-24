@@ -2,7 +2,7 @@
 Executor - Step dispatch and execution engine.
 
 The Executor implements:
-- Step dispatch to appropriate backends (data_plane, compute, orchestration)
+- Step dispatch to appropriate handlers (data_plane, compute, orchestration)
 - Reference resolution (@run.* refs from previous step outputs)
 - Idempotency key computation
 - Retry logic with continue_on_error semantics
@@ -15,17 +15,24 @@ Execution flow:
    a. Resolve @run.* references from previous outputs
    b. Compute idempotency key
    c. Create StepManifest
-   d. Dispatch to backend
+   d. Dispatch to handler via HandlerRegistry
    e. Record StepOutcome
 4. Update AttemptRecord with final status
+
+Handler Architecture (e005-03):
+- HandlerRegistry dispatches StepManifests to appropriate handlers
+- DataPlaneHandler: query.*, write.*, assert.* (via StoracleClient)
+- ComputeHandler: compute.* (via ComputeClient)
+- OrchestrationHandler: job.* (via lorchestra itself)
 """
 
 import hashlib
 import json
 import re
+import warnings
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, TYPE_CHECKING
 
 from lorchestra.schemas import (
     JobDef,
@@ -43,6 +50,9 @@ from lorchestra.schemas import (
 from .registry import JobRegistry
 from .compiler import Compiler, compile_job
 from .run_store import RunStore, InMemoryRunStore, FileRunStore, DEFAULT_RUN_PATH
+
+if TYPE_CHECKING:
+    from lorchestra.handlers import HandlerRegistry
 
 
 # Reference pattern for @run.* references
@@ -261,27 +271,37 @@ class Executor:
     Execution engine for JobInstances.
 
     The Executor handles:
-    - Step dispatch to backends
+    - Step dispatch to handlers via HandlerRegistry
     - Reference resolution
     - Idempotency
     - Retry logic
     - Attempt tracking
 
-    Usage:
+    Usage (recommended - with HandlerRegistry):
+        from lorchestra.handlers import HandlerRegistry, DataPlaneHandler
+
+        registry = HandlerRegistry()
+        registry.register("data_plane", DataPlaneHandler(storacle_client))
+
+        executor = Executor(
+            store=InMemoryRunStore(),
+            handlers=registry,
+        )
+        result = executor.execute(instance, envelope={"key": "value"})
+
+    Usage (legacy - with backends dict, deprecated):
         executor = Executor(
             store=InMemoryRunStore(),
             backends={
-                "data_plane": DataPlaneBackend(...),
-                "compute": ComputeBackend(...),
-                "orchestration": OrchestrationBackend(...),
+                "data_plane": SomeBackend(),
             },
         )
-        result = executor.execute(instance, envelope={"key": "value"})
     """
 
     def __init__(
         self,
         store: RunStore,
+        handlers: Optional["HandlerRegistry"] = None,
         backends: Optional[dict[str, Backend]] = None,
         max_attempts: int = 1,
     ):
@@ -290,16 +310,39 @@ class Executor:
 
         Args:
             store: RunStore for persisting execution artifacts
-            backends: Dictionary mapping backend names to Backend implementations
+            handlers: HandlerRegistry for step dispatch (recommended)
+            backends: (Deprecated) Dictionary mapping backend names to Backend implementations.
+                     Use `handlers` parameter instead.
             max_attempts: Maximum number of retry attempts (default: 1, no retries)
         """
         self._store = store
-        self._backends = backends or {
-            "data_plane": NoOpBackend(),
-            "compute": NoOpBackend(),
-            "orchestration": NoOpBackend(),
-        }
         self._max_attempts = max_attempts
+
+        # Handle handlers vs backends (with backwards compatibility)
+        if handlers is not None:
+            self._handlers = handlers
+            self._backends = None
+            if backends is not None:
+                warnings.warn(
+                    "Both 'handlers' and 'backends' provided. 'backends' will be ignored. "
+                    "The 'backends' parameter is deprecated; use 'handlers' instead.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+        elif backends is not None:
+            # Legacy mode: wrap backends in a compatibility layer
+            warnings.warn(
+                "The 'backends' parameter is deprecated. Use 'handlers' with HandlerRegistry instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self._backends = backends
+            self._handlers = None
+        else:
+            # Default: create noop handler registry
+            from lorchestra.handlers import HandlerRegistry
+            self._handlers = HandlerRegistry.create_noop()
+            self._backends = None
 
     def execute(
         self,
@@ -508,20 +551,57 @@ class Executor:
         # Store manifest
         manifest_ref = self._store.store_manifest(manifest)
 
-        # Get backend and execute
-        backend = self._backends.get(step.op.backend)
-        if backend is None:
-            raise ExecutionError(
-                step.step_id,
-                f"No backend configured for '{step.op.backend}'",
-            )
-
-        output = backend.execute(manifest)
+        # Dispatch to handler or backend
+        output = self._dispatch_manifest(manifest, step)
 
         # Store output
         output_ref = self._store.store_output(run_id, step.step_id, output)
 
         return output, manifest_ref, output_ref
+
+    def _dispatch_manifest(
+        self,
+        manifest: StepManifest,
+        step: JobStepInstance,
+    ) -> dict[str, Any]:
+        """
+        Dispatch a manifest to the appropriate handler or backend.
+
+        Args:
+            manifest: The StepManifest to execute
+            step: The step instance (for error reporting)
+
+        Returns:
+            The execution result
+
+        Raises:
+            ExecutionError: If no handler/backend is configured for the backend type
+        """
+        # Use handlers (new pattern) if available
+        if self._handlers is not None:
+            try:
+                return self._handlers.dispatch(manifest)
+            except KeyError as e:
+                raise ExecutionError(
+                    step.step_id,
+                    f"No handler configured for '{manifest.backend}': {e}",
+                ) from e
+
+        # Fall back to legacy backends dict
+        if self._backends is not None:
+            backend = self._backends.get(step.op.backend)
+            if backend is None:
+                raise ExecutionError(
+                    step.step_id,
+                    f"No backend configured for '{step.op.backend}'",
+                )
+            return backend.execute(manifest)
+
+        # Should not reach here
+        raise ExecutionError(
+            step.step_id,
+            "No handlers or backends configured",
+        )
 
 
 def execute_job(
@@ -530,6 +610,7 @@ def execute_job(
     payload: Optional[dict[str, Any]] = None,
     envelope: Optional[dict[str, Any]] = None,
     store: Optional[RunStore] = None,
+    handlers: Optional["HandlerRegistry"] = None,
     backends: Optional[dict[str, Backend]] = None,
 ) -> ExecutionResult:
     """
@@ -543,7 +624,8 @@ def execute_job(
         payload: Payload for compilation (@payload.* resolution)
         envelope: Runtime envelope (@run.envelope.* resolution)
         store: Optional RunStore (defaults to InMemoryRunStore)
-        backends: Optional backend configurations
+        handlers: Optional HandlerRegistry for step dispatch (recommended)
+        backends: (Deprecated) Optional backend configurations. Use handlers instead.
 
     Returns:
         ExecutionResult with run details and status
@@ -553,7 +635,7 @@ def execute_job(
 
     # Execute
     store = store or InMemoryRunStore()
-    executor = Executor(store=store, backends=backends)
+    executor = Executor(store=store, handlers=handlers, backends=backends)
     return executor.execute(instance, envelope=envelope)
 
 
@@ -569,7 +651,8 @@ def execute(envelope: dict[str, Any]) -> ExecutionResult:
         payload: dict - Payload for @payload.* resolution (optional)
         registry: JobRegistry - Registry to load job from (optional)
         store: RunStore - Store for run artifacts (optional, defaults to FileRunStore)
-        backends: dict[str, Backend] - Backend implementations (optional)
+        handlers: HandlerRegistry - Handler registry for step dispatch (optional, recommended)
+        backends: dict[str, Backend] - (Deprecated) Backend implementations (optional)
 
     Args:
         envelope: Execution envelope containing job_id and optional parameters
@@ -605,7 +688,8 @@ def execute(envelope: dict[str, Any]) -> ExecutionResult:
     if store is None:
         store = FileRunStore(DEFAULT_RUN_PATH)
 
-    # Get backends
+    # Get handlers (recommended) or backends (deprecated)
+    handlers = envelope.get("handlers")
     backends = envelope.get("backends")
 
     # Execute using internal function
@@ -615,5 +699,6 @@ def execute(envelope: dict[str, Any]) -> ExecutionResult:
         payload=payload,
         envelope=envelope,
         store=store,
+        handlers=handlers,
         backends=backends,
     )
