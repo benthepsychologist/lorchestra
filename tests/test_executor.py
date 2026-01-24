@@ -1,4 +1,4 @@
-"""Tests for src/spec/lorchestra executor module.
+"""Tests for lorchestra executor module.
 
 Tests the complete executor lifecycle:
 JobDef -> JobInstance -> RunRecord -> StepManifest -> AttemptRecord
@@ -25,15 +25,16 @@ from lorchestra.schemas import (
     CompileError,
 )
 
-from spec.lorchestra.registry import JobRegistry, JobNotFoundError, JobValidationError
-from spec.lorchestra.compiler import Compiler, compile_job, _resolve_value, _evaluate_condition
-from spec.lorchestra.run_store import InMemoryRunStore, FileRunStore, generate_ulid
-from spec.lorchestra.executor import (
+from lorchestra.registry import JobRegistry, JobNotFoundError, JobValidationError
+from lorchestra.compiler import Compiler, compile_job, _resolve_value, _evaluate_condition
+from lorchestra.run_store import InMemoryRunStore, FileRunStore, generate_ulid
+from lorchestra.executor import (
     Executor,
     ExecutionResult,
     ExecutionError,
     NoOpBackend,
     execute,
+    execute_job,
     _resolve_run_refs,
     _compute_idempotency_key,
 )
@@ -715,19 +716,19 @@ class TestExecutor:
         assert transform_call.resolved_params["input"] == [{"id": 1}, {"id": 2}]
 
 
-class TestExecuteConvenienceFunction:
-    """Tests for the execute() convenience function."""
+class TestExecuteJobFunction:
+    """Tests for the execute_job() function (internal API)."""
 
-    def test_execute_compiles_and_runs(self, simple_job_def):
-        """execute() compiles and executes in one call."""
-        result = execute(simple_job_def, backends=_make_mock_backends())
+    def test_execute_job_compiles_and_runs(self, simple_job_def):
+        """execute_job() compiles and executes in one call."""
+        result = execute_job(simple_job_def, backends=_make_mock_backends())
 
         assert result.success
         assert result.run_record.job_id == "test_job"
 
-    def test_execute_with_context(self, job_with_conditions):
-        """execute() accepts ctx and payload."""
-        result = execute(
+    def test_execute_job_with_context(self, job_with_conditions):
+        """execute_job() accepts ctx and payload."""
+        result = execute_job(
             job_with_conditions,
             ctx={"source": "api", "env": "prod"},
             payload={"enabled": True},
@@ -739,9 +740,9 @@ class TestExecuteConvenienceFunction:
         completed = [o for o in result.attempt.step_outcomes if o.status == StepStatus.COMPLETED]
         assert len(completed) == 3
 
-    def test_execute_with_envelope(self, simple_job_def):
-        """execute() passes envelope to runtime."""
-        result = execute(
+    def test_execute_job_with_envelope(self, simple_job_def):
+        """execute_job() passes envelope to runtime."""
+        result = execute_job(
             simple_job_def,
             envelope={"run_context": "test"},
             backends=_make_mock_backends(),

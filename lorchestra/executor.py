@@ -42,7 +42,7 @@ from lorchestra.schemas import (
 
 from .registry import JobRegistry
 from .compiler import Compiler, compile_job
-from .run_store import RunStore, InMemoryRunStore
+from .run_store import RunStore, InMemoryRunStore, FileRunStore, DEFAULT_RUN_PATH
 
 
 # Reference pattern for @run.* references
@@ -524,7 +524,7 @@ class Executor:
         return output, manifest_ref, output_ref
 
 
-def execute(
+def execute_job(
     job_def: JobDef,
     ctx: Optional[dict[str, Any]] = None,
     payload: Optional[dict[str, Any]] = None,
@@ -533,7 +533,9 @@ def execute(
     backends: Optional[dict[str, Backend]] = None,
 ) -> ExecutionResult:
     """
-    Convenience function to compile and execute a job.
+    Compile and execute a job from a JobDef.
+
+    This is the internal implementation. For the public API, use execute(envelope).
 
     Args:
         job_def: The job definition to execute
@@ -553,3 +555,65 @@ def execute(
     store = store or InMemoryRunStore()
     executor = Executor(store=store, backends=backends)
     return executor.execute(instance, envelope=envelope)
+
+
+def execute(envelope: dict[str, Any]) -> ExecutionResult:
+    """
+    Execute a job from an envelope.
+
+    This is the primary public API for lorchestra execution.
+
+    Envelope schema:
+        job_id: str - The job identifier to load and execute
+        ctx: dict - Context for @ctx.* resolution (optional)
+        payload: dict - Payload for @payload.* resolution (optional)
+        registry: JobRegistry - Registry to load job from (optional)
+        store: RunStore - Store for run artifacts (optional, defaults to FileRunStore)
+        backends: dict[str, Backend] - Backend implementations (optional)
+
+    Args:
+        envelope: Execution envelope containing job_id and optional parameters
+
+    Returns:
+        ExecutionResult with run details and status
+
+    Raises:
+        KeyError: If job_id is not in envelope
+        JobNotFoundError: If job_id is not found in registry
+    """
+    # Extract required fields
+    job_id = envelope["job_id"]
+
+    # Extract optional fields
+    ctx = envelope.get("ctx", {})
+    payload = envelope.get("payload", {})
+
+    # Get or create registry
+    registry = envelope.get("registry")
+    if registry is None:
+        # Default to looking in current directory's jobs/definitions
+        from pathlib import Path
+        definitions_dir = envelope.get("definitions_dir", Path.cwd() / "jobs" / "definitions")
+        registry = JobRegistry(definitions_dir)
+
+    # Load job definition
+    version = envelope.get("version")
+    job_def = registry.load(job_id, version=version)
+
+    # Get or create store
+    store = envelope.get("store")
+    if store is None:
+        store = FileRunStore(DEFAULT_RUN_PATH)
+
+    # Get backends
+    backends = envelope.get("backends")
+
+    # Execute using internal function
+    return execute_job(
+        job_def=job_def,
+        ctx=ctx,
+        payload=payload,
+        envelope=envelope,
+        store=store,
+        backends=backends,
+    )

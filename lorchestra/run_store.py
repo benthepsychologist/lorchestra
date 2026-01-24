@@ -32,6 +32,20 @@ from lorchestra.schemas import (
 )
 
 
+# Default storage path per spec: ~/.local/lorchestra/runs/
+DEFAULT_RUN_PATH = Path.home() / ".local" / "lorchestra" / "runs"
+
+
+def get_default_store() -> "FileRunStore":
+    """
+    Get a FileRunStore with the default path.
+
+    Returns:
+        FileRunStore configured to use ~/.local/lorchestra/runs/
+    """
+    return FileRunStore(DEFAULT_RUN_PATH)
+
+
 def generate_ulid() -> str:
     """
     Generate a ULID (Universally Unique Lexicographically Sortable Identifier).

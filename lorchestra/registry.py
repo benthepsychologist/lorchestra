@@ -2,7 +2,8 @@
 JobRegistry - Load and validate JobDefs from storage.
 
 The registry provides:
-- Loading JobDefs from JSON files in a definitions directory
+- Loading JobDefs from YAML or JSON files in a definitions directory
+- Version support (optional, default="latest")
 - Caching loaded definitions
 - Validation of JobDef structure
 - Content-addressable lookup via SHA256 hash
@@ -12,6 +13,12 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Optional
+
+try:
+    import yaml
+    HAS_YAML = True
+except ImportError:
+    HAS_YAML = False
 
 from lorchestra.schemas import JobDef
 
@@ -59,38 +66,42 @@ class JobRegistry:
         """Get the definitions directory path."""
         return self._definitions_dir
 
-    def load(self, job_id: str) -> JobDef:
+    def load(self, job_id: str, version: Optional[str] = None) -> JobDef:
         """
-        Load a JobDef by ID.
+        Load a JobDef by ID and optional version.
 
-        Searches for {job_id}.json in the definitions directory tree.
+        Searches for {job_id}.yaml or {job_id}.json in the definitions directory tree.
+        YAML files are preferred over JSON when both exist.
         Results are cached for subsequent calls.
 
         Args:
-            job_id: The job identifier (filename without .json)
+            job_id: The job identifier (filename without extension)
+            version: Optional version string. If provided and not "latest",
+                     validates that the loaded JobDef has this version.
 
         Returns:
             The loaded JobDef
 
         Raises:
             JobNotFoundError: If the job definition file doesn't exist
+                             or if version doesn't match
             JobValidationError: If the job definition is invalid
         """
-        # Check cache first
-        if job_id in self._cache:
-            return self._cache[job_id]
+        # Check cache first (only for unversioned or "latest" requests)
+        if version is None or version == "latest":
+            if job_id in self._cache:
+                return self._cache[job_id]
 
         # Find the definition file
         def_path = self._find_definition(job_id)
         if def_path is None:
             raise JobNotFoundError(f"Job definition not found: {job_id}")
 
-        # Load and parse
+        # Load and parse based on file extension
         try:
-            with open(def_path) as f:
-                data = json.load(f)
-        except json.JSONDecodeError as e:
-            raise JobValidationError(f"Invalid JSON in {def_path}: {e}")
+            data = self._load_file(def_path)
+        except Exception as e:
+            raise JobValidationError(f"Failed to load {def_path}: {e}")
 
         # Validate and create JobDef
         try:
@@ -101,8 +112,15 @@ class JobRegistry:
         # Verify job_id matches
         if job_def.job_id != job_id:
             raise JobValidationError(
-                f"Job ID mismatch: file is '{job_id}.json' but job_id is '{job_def.job_id}'"
+                f"Job ID mismatch: file is '{job_id}' but job_id is '{job_def.job_id}'"
             )
+
+        # Version validation
+        if version is not None and version != "latest":
+            if job_def.version != version:
+                raise JobNotFoundError(
+                    f"Version mismatch for {job_id}: requested '{version}', found '{job_def.version}'"
+                )
 
         # Cache and index
         self._cache[job_id] = job_def
@@ -110,6 +128,34 @@ class JobRegistry:
         self._hash_index[sha256] = job_id
 
         return job_def
+
+    def _load_file(self, path: Path) -> dict:
+        """
+        Load a definition file (YAML or JSON).
+
+        Args:
+            path: Path to the file
+
+        Returns:
+            Parsed dictionary
+
+        Raises:
+            ValueError: If file format is unsupported or parsing fails
+        """
+        suffix = path.suffix.lower()
+
+        with open(path) as f:
+            if suffix in (".yaml", ".yml"):
+                if not HAS_YAML:
+                    raise ValueError(
+                        f"Cannot load YAML file {path}: PyYAML not installed. "
+                        "Install with: pip install pyyaml"
+                    )
+                return yaml.safe_load(f)
+            elif suffix == ".json":
+                return json.load(f)
+            else:
+                raise ValueError(f"Unsupported file format: {suffix}")
 
     def load_by_hash(self, sha256: str) -> Optional[JobDef]:
         """
@@ -136,17 +182,20 @@ class JobRegistry:
         if not self._definitions_dir.exists():
             return []
 
-        return sorted([
-            f.stem
-            for f in self._definitions_dir.glob("**/*.json")
-            if "_deprecated" not in str(f)
-        ])
+        job_ids = set()
+        for ext in ["*.yaml", "*.yml", "*.json"]:
+            for f in self._definitions_dir.glob(f"**/{ext}"):
+                if "_deprecated" not in str(f):
+                    job_ids.add(f.stem)
+
+        return sorted(job_ids)
 
     def _find_definition(self, job_id: str) -> Optional[Path]:
         """
         Find the definition file for a job ID.
 
         Searches the definitions directory recursively.
+        YAML files are preferred over JSON.
 
         Args:
             job_id: The job identifier
@@ -154,17 +203,19 @@ class JobRegistry:
         Returns:
             Path to the definition file, or None if not found
         """
-        filename = f"{job_id}.json"
+        # Try extensions in order of preference: YAML first, then JSON
+        for ext in [".yaml", ".yml", ".json"]:
+            filename = f"{job_id}{ext}"
 
-        # Check root directory first
-        root_path = self._definitions_dir / filename
-        if root_path.exists():
-            return root_path
+            # Check root directory first
+            root_path = self._definitions_dir / filename
+            if root_path.exists():
+                return root_path
 
-        # Search subdirectories
-        matches = list(self._definitions_dir.glob(f"**/{filename}"))
-        if matches:
-            return matches[0]
+            # Search subdirectories
+            matches = list(self._definitions_dir.glob(f"**/{filename}"))
+            if matches:
+                return matches[0]
 
         return None
 
