@@ -1,0 +1,53 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://lorchestra.dev/schemas/ops.schema.json",
+  "title": "Op",
+  "description": "Operation taxonomy for lorchestra",
+  "definitions": {
+    "Op": {
+      "type": "string",
+      "description": "Valid operation identifiers",
+      "enum": [
+        "query.raw_objects",
+        "query.canonical_objects",
+        "query.last_sync",
+        "write.upsert",
+        "write.insert",
+        "write.delete",
+        "write.merge",
+        "assert.rows",
+        "assert.schema",
+        "assert.unique",
+        "compute.llm",
+        "compute.transform",
+        "compute.extract",
+        "compute.render",
+        "job.run"
+      ]
+    },
+    "OpCategory": {
+      "type": "string",
+      "description": "High-level operation categories",
+      "enum": ["query", "write", "assert", "compute", "job"]
+    },
+    "Backend": {
+      "type": "string",
+      "description": "Backend responsible for executing operations",
+      "enum": ["data_plane", "compute", "orchestration"]
+    },
+    "OpBackendMapping": {
+      "description": "Mapping of operations to backends",
+      "type": "object",
+      "properties": {
+        "query.*": { "const": "data_plane" },
+        "write.*": { "const": "data_plane" },
+        "assert.*": { "const": "data_plane" },
+        "compute.*": { "const": "compute" },
+        "job.*": { "const": "orchestration" }
+      }
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/definitions/Op" }
+  ]
+}

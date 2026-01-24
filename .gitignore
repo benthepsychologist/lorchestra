@@ -54,6 +54,9 @@ phi-data/
 # But allow job definitions (including subdirectories)
 !lorchestra/jobs/definitions/**/*.json
 
+# Allow schema files
+!lorchestra/schemas/*.schema.json
+
 # Testing
 .pytest_cache/
 .coverage

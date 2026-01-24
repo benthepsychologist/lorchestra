@@ -1,0 +1,117 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://lorchestra.dev/schemas/job_def.schema.json",
+  "title": "JobDef",
+  "description": "A declarative job definition with steps containing parameter references",
+  "type": "object",
+  "required": ["job_id", "version", "steps"],
+  "properties": {
+    "job_id": {
+      "type": "string",
+      "description": "Unique identifier for the job",
+      "minLength": 1
+    },
+    "version": {
+      "type": "string",
+      "description": "Semantic version of the job definition",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(-[a-zA-Z0-9]+)?$"
+    },
+    "steps": {
+      "type": "array",
+      "description": "Ordered list of step definitions",
+      "items": {
+        "$ref": "#/definitions/StepDef"
+      },
+      "minItems": 0
+    }
+  },
+  "definitions": {
+    "StepDef": {
+      "type": "object",
+      "required": ["step_id", "op"],
+      "properties": {
+        "step_id": {
+          "type": "string",
+          "description": "Unique identifier for the step within the job",
+          "minLength": 1
+        },
+        "op": {
+          "type": "string",
+          "description": "Operation to execute",
+          "enum": [
+            "query.raw_objects",
+            "query.canonical_objects",
+            "query.last_sync",
+            "write.upsert",
+            "write.insert",
+            "write.delete",
+            "write.merge",
+            "assert.rows",
+            "assert.schema",
+            "assert.unique",
+            "compute.llm",
+            "compute.transform",
+            "compute.extract",
+            "compute.render",
+            "job.run"
+          ]
+        },
+        "params": {
+          "type": "object",
+          "description": "Parameters for the operation, may contain @ctx.*, @payload.*, @run.* refs",
+          "additionalProperties": true
+        },
+        "phase_id": {
+          "type": "string",
+          "description": "Optional phase grouping (no execution semantics in v0)"
+        },
+        "timeout_s": {
+          "type": "integer",
+          "description": "Optional step-level timeout in seconds",
+          "minimum": 1
+        },
+        "continue_on_error": {
+          "type": "boolean",
+          "description": "If true, job continues even if this step fails",
+          "default": false
+        },
+        "if": {
+          "type": "string",
+          "description": "Compile-time conditional (must use only @ctx.* and @payload.*, not @run.*)"
+        },
+        "idempotency": {
+          "$ref": "#/definitions/IdempotencyConfig"
+        }
+      }
+    },
+    "IdempotencyConfig": {
+      "type": "object",
+      "required": ["scope"],
+      "description": "Idempotency configuration for write operations",
+      "properties": {
+        "scope": {
+          "type": "string",
+          "enum": ["run", "semantic", "explicit"],
+          "description": "Idempotency scope: run (default), semantic (key from param), or explicit"
+        },
+        "semantic_key_ref": {
+          "type": "string",
+          "description": "Required when scope is 'semantic'. References a param for the semantic key."
+        },
+        "include_payload_hash": {
+          "type": "boolean",
+          "description": "Whether to include a hash of resolved params in the idempotency key",
+          "default": false
+        }
+      },
+      "if": {
+        "properties": {
+          "scope": { "const": "semantic" }
+        }
+      },
+      "then": {
+        "required": ["semantic_key_ref"]
+      }
+    }
+  }
+}

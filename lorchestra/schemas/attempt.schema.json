@@ -1,0 +1,98 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://lorchestra.dev/schemas/attempt.schema.json",
+  "title": "AttemptRecord",
+  "description": "A record of a single execution attempt for a run",
+  "type": "object",
+  "required": ["run_id", "attempt_n", "started_at", "status", "step_outcomes"],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "description": "ULID of the run this attempt belongs to",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "attempt_n": {
+      "type": "integer",
+      "description": "Attempt number (1-indexed)",
+      "minimum": 1
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When this attempt started"
+    },
+    "completed_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "When this attempt completed (null if still running)"
+    },
+    "status": {
+      "type": "string",
+      "description": "Overall attempt status",
+      "enum": ["pending", "running", "completed", "failed", "skipped"]
+    },
+    "step_outcomes": {
+      "type": "array",
+      "description": "List of outcomes for each step in this attempt",
+      "items": {
+        "$ref": "#/definitions/StepOutcome"
+      }
+    }
+  },
+  "definitions": {
+    "StepOutcome": {
+      "type": "object",
+      "required": ["step_id", "status"],
+      "description": "The outcome of executing a single step within an attempt",
+      "properties": {
+        "step_id": {
+          "type": "string",
+          "description": "Identifier of the step",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "description": "Execution status",
+          "enum": ["pending", "running", "completed", "failed", "skipped"]
+        },
+        "started_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "When step execution started (null if pending/skipped)"
+        },
+        "completed_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "When step execution completed (null if pending/running)"
+        },
+        "manifest_ref": {
+          "type": ["string", "null"],
+          "description": "Reference to the StepManifest used for execution"
+        },
+        "output_ref": {
+          "type": ["string", "null"],
+          "description": "Reference to stored output (e.g., GCS path or inline)"
+        },
+        "error": {
+          "type": ["object", "null"],
+          "description": "Error details if status is failed",
+          "properties": {
+            "code": {
+              "type": "string",
+              "description": "Error code"
+            },
+            "message": {
+              "type": "string",
+              "description": "Error message"
+            },
+            "details": {
+              "type": "object",
+              "description": "Additional error details",
+              "additionalProperties": true
+            }
+          }
+        }
+      }
+    }
+  }
+}

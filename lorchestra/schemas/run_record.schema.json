@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://lorchestra.dev/schemas/run_record.schema.json",
+  "title": "RunRecord",
+  "description": "A record of a job run",
+  "type": "object",
+  "required": ["run_id", "job_id", "job_def_sha256", "started_at"],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "description": "ULID uniquely identifying this run",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "job_id": {
+      "type": "string",
+      "description": "The job being run (from JobInstance)",
+      "minLength": 1
+    },
+    "job_def_sha256": {
+      "type": "string",
+      "description": "Content hash linking to the exact JobDef version",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "envelope": {
+      "type": "object",
+      "description": "Runtime context/payload passed to the job",
+      "additionalProperties": true
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the run started"
+    }
+  }
+}

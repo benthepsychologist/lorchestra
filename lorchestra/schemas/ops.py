@@ -34,9 +34,10 @@ class Op(str, Enum):
     - job.* => orchestration (lorchestra)
     """
     # Query operations (data_plane, read-only)
-    QUERY_SQL = "query.sql"
-    QUERY_ENTITY = "query.entity"
-    QUERY_LOOKUP = "query.lookup"
+    # Per e005 spec: typed methods only, no raw SQL
+    QUERY_RAW_OBJECTS = "query.raw_objects"
+    QUERY_CANONICAL_OBJECTS = "query.canonical_objects"
+    QUERY_LAST_SYNC = "query.last_sync"
 
     # Write operations (data_plane, require idempotency)
     WRITE_UPSERT = "write.upsert"
@@ -50,10 +51,11 @@ class Op(str, Enum):
     ASSERT_UNIQUE = "assert.unique"
 
     # Compute operations (compute backend, external IO)
-    COMPUTE_HTTP = "compute.http"
+    # Per e005 spec: llm, transform, extract, render
     COMPUTE_LLM = "compute.llm"
     COMPUTE_TRANSFORM = "compute.transform"
-    COMPUTE_SCRIPT = "compute.script"
+    COMPUTE_EXTRACT = "compute.extract"
+    COMPUTE_RENDER = "compute.render"
 
     # Job operations (orchestration)
     JOB_RUN = "job.run"

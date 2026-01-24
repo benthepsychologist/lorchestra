@@ -1,0 +1,95 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://lorchestra.dev/schemas/job_instance.schema.json",
+  "title": "JobInstance",
+  "description": "A compiled job instance ready for execution",
+  "type": "object",
+  "required": ["job_id", "job_version", "job_def_sha256", "compiled_at", "steps"],
+  "properties": {
+    "job_id": {
+      "type": "string",
+      "description": "The job identifier (from JobDef)",
+      "minLength": 1
+    },
+    "job_version": {
+      "type": "string",
+      "description": "The version (from JobDef)"
+    },
+    "job_def_sha256": {
+      "type": "string",
+      "description": "SHA256 hash of the source JobDef for content addressing",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "compiled_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When this instance was compiled"
+    },
+    "steps": {
+      "type": "array",
+      "description": "Fixed, ordered list of compiled steps",
+      "items": {
+        "$ref": "#/definitions/JobStepInstance"
+      }
+    }
+  },
+  "definitions": {
+    "JobStepInstance": {
+      "type": "object",
+      "required": ["step_id", "op"],
+      "description": "A compiled step ready for execution",
+      "properties": {
+        "step_id": {
+          "type": "string",
+          "description": "Unique identifier for the step",
+          "minLength": 1
+        },
+        "op": {
+          "type": "string",
+          "description": "The operation to execute",
+          "enum": [
+            "query.raw_objects",
+            "query.canonical_objects",
+            "query.last_sync",
+            "write.upsert",
+            "write.insert",
+            "write.delete",
+            "write.merge",
+            "assert.rows",
+            "assert.schema",
+            "assert.unique",
+            "compute.llm",
+            "compute.transform",
+            "compute.extract",
+            "compute.render",
+            "job.run"
+          ]
+        },
+        "params": {
+          "type": "object",
+          "description": "Resolved parameters (no @ctx.* or @payload.* refs, may have @run.*)",
+          "additionalProperties": true
+        },
+        "phase_id": {
+          "type": "string",
+          "description": "Optional phase grouping (no execution semantics in v0)"
+        },
+        "timeout_s": {
+          "type": "integer",
+          "description": "Optional step-level timeout in seconds",
+          "minimum": 1
+        },
+        "continue_on_error": {
+          "type": "boolean",
+          "description": "If true, job continues even if this step fails",
+          "default": false
+        },
+        "compiled_skip": {
+          "type": "boolean",
+          "description": "True if step.if evaluated to false at compile time",
+          "default": false
+        }
+      }
+    }
+  }
+}

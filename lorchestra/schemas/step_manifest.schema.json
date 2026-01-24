@@ -1,0 +1,60 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://lorchestra.dev/schemas/step_manifest.schema.json",
+  "title": "StepManifest",
+  "description": "A dispatchable manifest for step execution",
+  "type": "object",
+  "required": ["run_id", "step_id", "backend", "op", "idempotency_key"],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "description": "ULID of the run this step belongs to",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "step_id": {
+      "type": "string",
+      "description": "Identifier of the step within the job",
+      "minLength": 1
+    },
+    "backend": {
+      "type": "string",
+      "description": "Target backend derived from op prefix",
+      "enum": ["data_plane", "compute", "orchestration"]
+    },
+    "op": {
+      "type": "string",
+      "description": "The operation to execute",
+      "enum": [
+        "query.raw_objects",
+        "query.canonical_objects",
+        "query.last_sync",
+        "write.upsert",
+        "write.insert",
+        "write.delete",
+        "write.merge",
+        "assert.rows",
+        "assert.schema",
+        "assert.unique",
+        "compute.llm",
+        "compute.transform",
+        "compute.extract",
+        "compute.render",
+        "job.run"
+      ]
+    },
+    "resolved_params": {
+      "type": "object",
+      "description": "Fully resolved parameters (no @ctx.*, @payload.*, or @run.* refs)",
+      "additionalProperties": true
+    },
+    "prompt_hash": {
+      "type": ["string", "null"],
+      "description": "SHA256 of LLM prompt if applicable (null for non-LLM ops)",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "idempotency_key": {
+      "type": "string",
+      "description": "Computed key for idempotent execution"
+    }
+  }
+}

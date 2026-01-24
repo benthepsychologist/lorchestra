@@ -47,40 +47,45 @@ class TestOp:
     """Tests for Op enum."""
 
     def test_op_values(self):
-        """All expected ops exist with correct values."""
-        assert Op.QUERY_SQL.value == "query.sql"
-        assert Op.QUERY_ENTITY.value == "query.entity"
-        assert Op.QUERY_LOOKUP.value == "query.lookup"
+        """All expected ops exist with correct values (per e005 spec)."""
+        # Query ops - typed methods only, no raw SQL
+        assert Op.QUERY_RAW_OBJECTS.value == "query.raw_objects"
+        assert Op.QUERY_CANONICAL_OBJECTS.value == "query.canonical_objects"
+        assert Op.QUERY_LAST_SYNC.value == "query.last_sync"
+        # Write ops
         assert Op.WRITE_UPSERT.value == "write.upsert"
         assert Op.WRITE_INSERT.value == "write.insert"
         assert Op.WRITE_DELETE.value == "write.delete"
         assert Op.WRITE_MERGE.value == "write.merge"
+        # Assert ops
         assert Op.ASSERT_ROWS.value == "assert.rows"
         assert Op.ASSERT_SCHEMA.value == "assert.schema"
         assert Op.ASSERT_UNIQUE.value == "assert.unique"
-        assert Op.COMPUTE_HTTP.value == "compute.http"
+        # Compute ops - per e005 spec
         assert Op.COMPUTE_LLM.value == "compute.llm"
         assert Op.COMPUTE_TRANSFORM.value == "compute.transform"
-        assert Op.COMPUTE_SCRIPT.value == "compute.script"
+        assert Op.COMPUTE_EXTRACT.value == "compute.extract"
+        assert Op.COMPUTE_RENDER.value == "compute.render"
+        # Job ops
         assert Op.JOB_RUN.value == "job.run"
 
     def test_op_categories(self):
         """Ops have correct categories."""
-        assert Op.QUERY_SQL.category == OpCategory.QUERY
+        assert Op.QUERY_RAW_OBJECTS.category == OpCategory.QUERY
         assert Op.WRITE_UPSERT.category == OpCategory.WRITE
         assert Op.ASSERT_ROWS.category == OpCategory.ASSERT
-        assert Op.COMPUTE_HTTP.category == OpCategory.COMPUTE
+        assert Op.COMPUTE_LLM.category == OpCategory.COMPUTE
         assert Op.JOB_RUN.category == OpCategory.JOB
 
     def test_op_backends(self):
         """Ops map to correct backends."""
         # data_plane for query/write/assert
-        assert Op.QUERY_SQL.backend == "data_plane"
+        assert Op.QUERY_RAW_OBJECTS.backend == "data_plane"
         assert Op.WRITE_UPSERT.backend == "data_plane"
         assert Op.ASSERT_ROWS.backend == "data_plane"
         # compute for compute.*
-        assert Op.COMPUTE_HTTP.backend == "compute"
         assert Op.COMPUTE_LLM.backend == "compute"
+        assert Op.COMPUTE_EXTRACT.backend == "compute"
         # orchestration for job.*
         assert Op.JOB_RUN.backend == "orchestration"
 
@@ -92,14 +97,14 @@ class TestOp:
         assert Op.WRITE_DELETE.requires_idempotency is True
         assert Op.WRITE_MERGE.requires_idempotency is True
         # Non-write ops do not
-        assert Op.QUERY_SQL.requires_idempotency is False
+        assert Op.QUERY_RAW_OBJECTS.requires_idempotency is False
         assert Op.ASSERT_ROWS.requires_idempotency is False
-        assert Op.COMPUTE_HTTP.requires_idempotency is False
+        assert Op.COMPUTE_LLM.requires_idempotency is False
         assert Op.JOB_RUN.requires_idempotency is False
 
     def test_op_from_string(self):
         """Op.from_string parses correctly."""
-        assert Op.from_string("query.sql") == Op.QUERY_SQL
+        assert Op.from_string("query.raw_objects") == Op.QUERY_RAW_OBJECTS
         assert Op.from_string("write.upsert") == Op.WRITE_UPSERT
         assert Op.from_string("compute.llm") == Op.COMPUTE_LLM
         assert Op.from_string("job.run") == Op.JOB_RUN
@@ -162,9 +167,9 @@ class TestStepDef:
 
     def test_basic_step(self):
         """Basic step with required fields."""
-        step = StepDef(step_id="step1", op=Op.QUERY_SQL)
+        step = StepDef(step_id="step1", op=Op.QUERY_RAW_OBJECTS)
         assert step.step_id == "step1"
-        assert step.op == Op.QUERY_SQL
+        assert step.op == Op.QUERY_RAW_OBJECTS
         assert step.params == {}
         assert step.phase_id is None
         assert step.timeout_s is None
@@ -176,17 +181,17 @@ class TestStepDef:
         """Step with parameter references."""
         step = StepDef(
             step_id="step1",
-            op=Op.QUERY_SQL,
-            params={"sql": "SELECT * FROM @ctx.table", "filter": "@payload.filter"},
+            op=Op.QUERY_RAW_OBJECTS,
+            params={"entity_type": "@ctx.entity", "filter": "@payload.filter"},
         )
-        assert step.params["sql"] == "SELECT * FROM @ctx.table"
+        assert step.params["entity_type"] == "@ctx.entity"
         assert step.params["filter"] == "@payload.filter"
 
     def test_step_with_optional_fields(self):
         """Step with all optional fields."""
         step = StepDef(
             step_id="step1",
-            op=Op.QUERY_SQL,
+            op=Op.QUERY_RAW_OBJECTS,
             phase_id="phase1",
             timeout_s=30,
             continue_on_error=True,
@@ -199,7 +204,7 @@ class TestStepDef:
         """if_ condition allows @ctx.* references."""
         step = StepDef(
             step_id="step1",
-            op=Op.QUERY_SQL,
+            op=Op.QUERY_RAW_OBJECTS,
             if_="@ctx.enabled == true",
         )
         assert step.if_ == "@ctx.enabled == true"
@@ -208,7 +213,7 @@ class TestStepDef:
         """if_ condition allows @payload.* references."""
         step = StepDef(
             step_id="step1",
-            op=Op.QUERY_SQL,
+            op=Op.QUERY_RAW_OBJECTS,
             if_="@payload.count > 0",
         )
         assert step.if_ == "@payload.count > 0"
@@ -218,7 +223,7 @@ class TestStepDef:
         with pytest.raises(CompileError, match="@run.* references are not allowed"):
             StepDef(
                 step_id="step1",
-                op=Op.QUERY_SQL,
+                op=Op.QUERY_RAW_OBJECTS,
                 if_="@run.previous_result.count > 0",
             )
 
@@ -241,7 +246,7 @@ class TestStepDef:
         with pytest.raises(CompileError, match="idempotency is only valid for write operations"):
             StepDef(
                 step_id="step1",
-                op=Op.QUERY_SQL,
+                op=Op.QUERY_RAW_OBJECTS,
                 idempotency=IdempotencyConfig(scope="run"),
             )
 
@@ -260,7 +265,7 @@ class TestJobDef:
             job_id="job1",
             version="1.0.0",
             steps=(
-                StepDef(step_id="step1", op=Op.QUERY_SQL),
+                StepDef(step_id="step1", op=Op.QUERY_RAW_OBJECTS),
                 StepDef(step_id="step2", op=Op.WRITE_UPSERT),
             ),
         )
@@ -275,7 +280,7 @@ class TestJobDef:
                 job_id="job1",
                 version="1.0.0",
                 steps=(
-                    StepDef(step_id="step1", op=Op.QUERY_SQL),
+                    StepDef(step_id="step1", op=Op.QUERY_RAW_OBJECTS),
                     StepDef(step_id="step1", op=Op.WRITE_UPSERT),
                 ),
             )
@@ -286,11 +291,11 @@ class TestJobDef:
             job_id="job1",
             version="1.0.0",
             steps=(
-                StepDef(step_id="step1", op=Op.QUERY_SQL),
+                StepDef(step_id="step1", op=Op.QUERY_RAW_OBJECTS),
                 StepDef(step_id="step2", op=Op.WRITE_UPSERT),
             ),
         )
-        assert job.get_step("step1").op == Op.QUERY_SQL
+        assert job.get_step("step1").op == Op.QUERY_RAW_OBJECTS
         assert job.get_step("step2").op == Op.WRITE_UPSERT
         assert job.get_step("nonexistent") is None
 
@@ -302,8 +307,8 @@ class TestJobDef:
             steps=(
                 StepDef(
                     step_id="step1",
-                    op=Op.QUERY_SQL,
-                    params={"sql": "SELECT 1"},
+                    op=Op.QUERY_RAW_OBJECTS,
+                    params={"entity_type": "records"},
                     phase_id="phase1",
                 ),
                 StepDef(
@@ -340,8 +345,8 @@ class TestJobStepInstance:
         """Basic step instance."""
         step = JobStepInstance(
             step_id="step1",
-            op=Op.QUERY_SQL,
-            params={"sql": "SELECT * FROM table"},
+            op=Op.QUERY_RAW_OBJECTS,
+            params={"entity_type": "records"},
         )
         assert step.step_id == "step1"
         assert step.compiled_skip is False
@@ -350,7 +355,7 @@ class TestJobStepInstance:
         """compiled_skip marks step for skipping."""
         step = JobStepInstance(
             step_id="step1",
-            op=Op.QUERY_SQL,
+            op=Op.QUERY_RAW_OBJECTS,
             compiled_skip=True,
         )
         assert step.compiled_skip is True
@@ -368,7 +373,7 @@ class TestJobInstance:
             job_def_sha256="a" * 64,
             compiled_at=now,
             steps=(
-                JobStepInstance(step_id="step1", op=Op.QUERY_SQL),
+                JobStepInstance(step_id="step1", op=Op.QUERY_RAW_OBJECTS),
                 JobStepInstance(step_id="step2", op=Op.WRITE_UPSERT, compiled_skip=True),
             ),
         )
@@ -383,8 +388,8 @@ class TestJobInstance:
             job_def_sha256="a" * 64,
             compiled_at=utcnow(),
             steps=(
-                JobStepInstance(step_id="step1", op=Op.QUERY_SQL),
-                JobStepInstance(step_id="step2", op=Op.QUERY_SQL, compiled_skip=True),
+                JobStepInstance(step_id="step1", op=Op.QUERY_RAW_OBJECTS),
+                JobStepInstance(step_id="step2", op=Op.QUERY_RAW_OBJECTS, compiled_skip=True),
                 JobStepInstance(step_id="step3", op=Op.WRITE_UPSERT),
             ),
         )
@@ -404,7 +409,7 @@ class TestJobInstance:
             steps=(
                 JobStepInstance(
                     step_id="step1",
-                    op=Op.QUERY_SQL,
+                    op=Op.QUERY_RAW_OBJECTS,
                     phase_id="phase1",
                     timeout_s=60,
                 ),
@@ -471,8 +476,8 @@ class TestStepManifest:
             run_id="01HGVZ8X1MXYZABC123456789A",
             step_id="step1",
             backend="data_plane",
-            op=Op.QUERY_SQL,
-            resolved_params={"sql": "SELECT 1"},
+            op=Op.QUERY_RAW_OBJECTS,
+            resolved_params={"entity_type": "records"},
             idempotency_key="key123",
         )
         assert manifest.run_id == "01HGVZ8X1MXYZABC123456789A"
@@ -485,8 +490,8 @@ class TestStepManifest:
             StepManifest(
                 run_id="01HGVZ8X1MXYZABC123456789A",
                 step_id="step1",
-                backend="compute",  # Wrong! query.sql should be data_plane
-                op=Op.QUERY_SQL,
+                backend="compute",  # Wrong! query.raw_objects should be data_plane
+                op=Op.QUERY_RAW_OBJECTS,
                 idempotency_key="key123",
             )
 
@@ -495,8 +500,8 @@ class TestStepManifest:
         manifest = StepManifest.from_op(
             run_id="01HGVZ8X1MXYZABC123456789A",
             step_id="step1",
-            op=Op.COMPUTE_HTTP,
-            resolved_params={"url": "http://example.com"},
+            op=Op.COMPUTE_EXTRACT,
+            resolved_params={"text": "some text", "schema": {}},
             idempotency_key="key123",
         )
         assert manifest.backend == "compute"
@@ -518,8 +523,8 @@ class TestStepManifest:
         original = StepManifest.from_op(
             run_id="01HGVZ8X1MXYZABC123456789A",
             step_id="step1",
-            op=Op.QUERY_SQL,
-            resolved_params={"sql": "SELECT 1"},
+            op=Op.QUERY_RAW_OBJECTS,
+            resolved_params={"entity_type": "records"},
             idempotency_key="key123",
         )
 
@@ -706,23 +711,23 @@ class TestSchemaInvariants:
     def test_phase_id_has_no_execution_semantics(self):
         """phase_id is just metadata with no execution semantics in v0."""
         # We just verify it can be set without affecting behavior
-        step = StepDef(step_id="step1", op=Op.QUERY_SQL, phase_id="load_phase")
+        step = StepDef(step_id="step1", op=Op.QUERY_RAW_OBJECTS, phase_id="load_phase")
         assert step.phase_id == "load_phase"
         # No execution semantics - just stored as metadata
 
     def test_idempotency_must_be_absent_for_non_write_ops(self):
         """Non-write ops must not have idempotency."""
         non_write_ops = [
-            Op.QUERY_SQL,
-            Op.QUERY_ENTITY,
-            Op.QUERY_LOOKUP,
+            Op.QUERY_RAW_OBJECTS,
+            Op.QUERY_CANONICAL_OBJECTS,
+            Op.QUERY_LAST_SYNC,
             Op.ASSERT_ROWS,
             Op.ASSERT_SCHEMA,
             Op.ASSERT_UNIQUE,
-            Op.COMPUTE_HTTP,
             Op.COMPUTE_LLM,
             Op.COMPUTE_TRANSFORM,
-            Op.COMPUTE_SCRIPT,
+            Op.COMPUTE_EXTRACT,
+            Op.COMPUTE_RENDER,
             Op.JOB_RUN,
         ]
         for op in non_write_ops:
@@ -738,8 +743,8 @@ class TestSchemaInvariants:
         manifest = StepManifest.from_op(
             run_id="01HGVZ8X1MXYZABC123456789A",
             step_id="step1",
-            op=Op.QUERY_SQL,
-            resolved_params={"sql": "SELECT 1"},
+            op=Op.QUERY_RAW_OBJECTS,
+            resolved_params={"entity_type": "records"},
             idempotency_key="run:01HGVZ8X1MXYZABC123456789A:step1",
         )
         # Manifest has all fields needed for dispatch
@@ -753,10 +758,10 @@ class TestSchemaInvariants:
     def test_backend_derived_from_op_prefix(self):
         """Backend is correctly derived from op prefix."""
         test_cases = [
-            (Op.QUERY_SQL, "data_plane"),
+            (Op.QUERY_RAW_OBJECTS, "data_plane"),
             (Op.WRITE_UPSERT, "data_plane"),
             (Op.ASSERT_ROWS, "data_plane"),
-            (Op.COMPUTE_HTTP, "compute"),
+            (Op.COMPUTE_LLM, "compute"),
             (Op.JOB_RUN, "orchestration"),
         ]
         for op, expected_backend in test_cases:
@@ -802,7 +807,7 @@ class TestJsonSchemaValidation:
             job_id="test_job",
             version="1.0.0",
             steps=(
-                StepDef(step_id="step1", op=Op.QUERY_SQL, params={"sql": "SELECT 1"}),
+                StepDef(step_id="step1", op=Op.QUERY_RAW_OBJECTS, params={"entity_type": "records"}),
                 StepDef(
                     step_id="step2",
                     op=Op.WRITE_UPSERT,
@@ -822,7 +827,7 @@ class TestJsonSchemaValidation:
             job_def_sha256="a" * 64,
             compiled_at=utcnow(),
             steps=(
-                JobStepInstance(step_id="step1", op=Op.QUERY_SQL, params={"sql": "SELECT 1"}),
+                JobStepInstance(step_id="step1", op=Op.QUERY_RAW_OBJECTS, params={"entity_type": "records"}),
                 JobStepInstance(step_id="step2", op=Op.WRITE_UPSERT, compiled_skip=True),
             ),
         )
@@ -847,8 +852,8 @@ class TestJsonSchemaValidation:
         manifest = StepManifest.from_op(
             run_id="01HGVZ8X1MXYZABC123456789A",
             step_id="step1",
-            op=Op.QUERY_SQL,
-            resolved_params={"sql": "SELECT 1"},
+            op=Op.QUERY_RAW_OBJECTS,
+            resolved_params={"entity_type": "records"},
             idempotency_key="run:01HGVZ8X1MXYZABC123456789A:step1",
         )
         validate(manifest.to_dict(), schema)
