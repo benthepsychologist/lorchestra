@@ -33,17 +33,27 @@ from lorchestra.schemas import StepManifest, Op
 # -----------------------------------------------------------------------------
 
 
-def _make_query_manifest(limit: int = 100) -> StepManifest:
+def _make_query_manifest(
+    limit: int = 100,
+    time_range: dict | None = None,
+) -> StepManifest:
     """Create a query.raw_objects manifest for testing."""
+    params = {
+        "source_system": "test",
+        "object_type": "test_obj",
+        "limit": limit,  # Required for bounded cost
+    }
+    # Add time_range if provided (required for WAL scan ops)
+    if time_range is None:
+        # Default valid time_range for tests
+        params["time_range"] = {"start": "2024-01-01T00:00:00Z", "end": "2024-01-02T00:00:00Z"}
+    else:
+        params["time_range"] = time_range
     return StepManifest.from_op(
         run_id="01TEST00000000000000000000",
         step_id="test_query",
         op=Op.QUERY_RAW_OBJECTS,
-        resolved_params={
-            "source_system": "test",
-            "object_type": "test_obj",
-            "limit": limit,  # Required for bounded cost
-        },
+        resolved_params=params,
         idempotency_key="test:test_query",
     )
 
@@ -267,7 +277,7 @@ class TestDataPlaneHandler:
         """Query operations (except query.last_sync) require a limit parameter."""
         client = NoOpStoracleClient()
         handler = DataPlaneHandler(client)
-        # Create manifest without limit
+        # Create manifest without limit but with time_range
         manifest = StepManifest.from_op(
             run_id="01TEST00000000000000000000",
             step_id="test_query_no_limit",
@@ -275,6 +285,7 @@ class TestDataPlaneHandler:
             resolved_params={
                 "source_system": "test",
                 "object_type": "test_obj",
+                "time_range": {"start": "2024-01-01", "end": "2024-01-02"},
                 # No limit specified
             },
             idempotency_key="test:no_limit",
@@ -331,6 +342,68 @@ class TestDataPlaneHandler:
     def test_max_query_limit_is_1000(self):
         """Verify MAX_QUERY_LIMIT is 1000 per e005 spec."""
         assert MAX_QUERY_LIMIT == 1000
+
+    def test_wal_scan_requires_time_range(self):
+        """WAL scan operations (query.raw_objects) require a time_range parameter."""
+        client = NoOpStoracleClient()
+        handler = DataPlaneHandler(client)
+        # Create manifest with limit but no time_range
+        manifest = StepManifest.from_op(
+            run_id="01TEST00000000000000000000",
+            step_id="test_query_no_time_range",
+            op=Op.QUERY_RAW_OBJECTS,
+            resolved_params={
+                "source_system": "test",
+                "object_type": "test_obj",
+                "limit": 100,
+                # No time_range specified
+            },
+            idempotency_key="test:no_time_range",
+        )
+
+        with pytest.raises(ValueError, match="requires a 'time_range' parameter"):
+            handler.execute(manifest)
+
+    def test_wal_scan_time_range_must_have_start_end(self):
+        """time_range must be a dict with 'start' and 'end' keys."""
+        client = NoOpStoracleClient()
+        handler = DataPlaneHandler(client)
+        # Create manifest with invalid time_range (missing end)
+        manifest = StepManifest.from_op(
+            run_id="01TEST00000000000000000000",
+            step_id="test_query_bad_time_range",
+            op=Op.QUERY_RAW_OBJECTS,
+            resolved_params={
+                "source_system": "test",
+                "object_type": "test_obj",
+                "limit": 100,
+                "time_range": {"start": "2024-01-01"},  # Missing 'end'
+            },
+            idempotency_key="test:bad_time_range",
+        )
+
+        with pytest.raises(ValueError, match="must be a dict with 'start' and 'end'"):
+            handler.execute(manifest)
+
+    def test_query_canonical_no_time_range_required(self):
+        """query.canonical_objects does not require time_range (not a WAL scan)."""
+        client = NoOpStoracleClient()
+        handler = DataPlaneHandler(client)
+        manifest = StepManifest.from_op(
+            run_id="01TEST00000000000000000000",
+            step_id="test_canonical",
+            op=Op.QUERY_CANONICAL_OBJECTS,
+            resolved_params={
+                "canonical_schema": "email",
+                "limit": 100,
+                # No time_range needed for canonical queries
+            },
+            idempotency_key="test:canonical",
+        )
+
+        # Should not raise
+        result = handler.execute(manifest)
+        assert result["count"] == 0  # NoOp returns empty
 
 
 # -----------------------------------------------------------------------------

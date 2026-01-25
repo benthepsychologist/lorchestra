@@ -12,6 +12,7 @@ keeping the orchestration layer free of storage implementation details.
 Defense-in-depth:
 - Query operations are restricted to an allowlist (enforced here, not just in storacle)
 - Query operations require a limit parameter (max 1000) for bounded cost
+- WAL scan queries (query.raw_objects) require a time_range for bounded scans
 """
 
 from typing import Any
@@ -31,6 +32,11 @@ QUERY_OP_ALLOWLIST = frozenset({
 
 # Maximum limit for query operations (bounded cost)
 MAX_QUERY_LIMIT = 1000
+
+# Query operations that scan WAL tables and require time_range
+WAL_SCAN_OPS = frozenset({
+    Op.QUERY_RAW_OBJECTS,
+})
 
 
 class DataPlaneHandler(Handler):
@@ -112,6 +118,7 @@ class DataPlaneHandler(Handler):
         Defense-in-depth per e005 spec:
         - Query ops must be in the allowlist (query.raw_objects, query.canonical_objects, query.last_sync)
         - Query ops (except query.last_sync) require a limit parameter (max 1000)
+        - WAL scan ops (query.raw_objects) require a time_range parameter
 
         Args:
             op: The query operation
@@ -120,6 +127,7 @@ class DataPlaneHandler(Handler):
         Raises:
             ValueError: If the op is not in the allowlist
             ValueError: If limit is missing or exceeds MAX_QUERY_LIMIT
+            ValueError: If time_range is missing for WAL scan ops
         """
         # Check allowlist
         if op not in QUERY_OP_ALLOWLIST:
@@ -141,6 +149,20 @@ class DataPlaneHandler(Handler):
                 raise ValueError(
                     f"Query limit {limit} exceeds maximum allowed ({MAX_QUERY_LIMIT}). "
                     f"Use pagination for larger result sets."
+                )
+
+        # Check time_range required for WAL scan operations
+        if op in WAL_SCAN_OPS:
+            time_range = params.get("time_range")
+            if time_range is None:
+                raise ValueError(
+                    f"Query operation '{op.value}' requires a 'time_range' parameter for bounded WAL scans. "
+                    f"Provide {{'start': datetime, 'end': datetime}} to limit scan scope."
+                )
+            # Validate time_range structure
+            if not isinstance(time_range, dict) or "start" not in time_range or "end" not in time_range:
+                raise ValueError(
+                    f"time_range must be a dict with 'start' and 'end' keys, got: {time_range}"
                 )
 
     # -------------------------------------------------------------------------
