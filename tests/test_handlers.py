@@ -424,33 +424,6 @@ class TestNoOpComputeClient:
         assert result["model"] == "gpt-4"
         assert "usage" in result
 
-    def test_transform_returns_input_unchanged(self):
-        """transform should return input unchanged (identity)."""
-        client = NoOpComputeClient()
-        data = {"key": "value"}
-
-        result = client.transform(data, "some_transform")
-
-        assert result == data
-
-    def test_extract_returns_mock_result(self):
-        """extract should return mock extraction result."""
-        client = NoOpComputeClient()
-
-        result = client.extract("source text", "email_extractor")
-
-        assert result["source"] == "source text"
-        assert result["extractor"] == "email_extractor"
-
-    def test_render_returns_mock_string(self):
-        """render should return mock rendered string."""
-        client = NoOpComputeClient()
-
-        result = client.render("report_template", {"name": "Test"})
-
-        assert "[noop render:" in result
-
-
 # -----------------------------------------------------------------------------
 # ComputeHandler Tests
 # -----------------------------------------------------------------------------
@@ -469,63 +442,6 @@ class TestComputeHandler:
 
         assert result["response"] == "[noop response]"
         assert result["model"] == "test-model"
-
-    def test_compute_transform(self):
-        """Should dispatch compute.transform to client."""
-        client = NoOpComputeClient()
-        handler = ComputeHandler(client)
-        manifest = StepManifest.from_op(
-            run_id="01TEST00000000000000000000",
-            step_id="transform_test",
-            op=Op.COMPUTE_TRANSFORM,
-            resolved_params={
-                "input": {"data": "value"},
-                "transform_ref": "email/to_jmap@1.0",
-            },
-            idempotency_key="test:transform",
-        )
-
-        result = handler.execute(manifest)
-
-        assert result["output"] == {"data": "value"}
-
-    def test_compute_extract(self):
-        """Should dispatch compute.extract to client."""
-        client = NoOpComputeClient()
-        handler = ComputeHandler(client)
-        manifest = StepManifest.from_op(
-            run_id="01TEST00000000000000000000",
-            step_id="extract_test",
-            op=Op.COMPUTE_EXTRACT,
-            resolved_params={
-                "source": "email body text",
-                "extractor_ref": "contact_info",
-            },
-            idempotency_key="test:extract",
-        )
-
-        result = handler.execute(manifest)
-
-        assert result["source"] == "email body text"
-
-    def test_compute_render(self):
-        """Should dispatch compute.render to client."""
-        client = NoOpComputeClient()
-        handler = ComputeHandler(client)
-        manifest = StepManifest.from_op(
-            run_id="01TEST00000000000000000000",
-            step_id="render_test",
-            op=Op.COMPUTE_RENDER,
-            resolved_params={
-                "template_ref": "weekly_report",
-                "context": {"week": 1},
-            },
-            idempotency_key="test:render",
-        )
-
-        result = handler.execute(manifest)
-
-        assert "rendered" in result
 
     def test_unsupported_op_raises(self):
         """Should raise ValueError for non-compute ops."""

@@ -58,14 +58,14 @@ def simple_job_def() -> JobDef:
                 params={"source": "test", "limit": 100},
             ),
             StepDef(
-                step_id="transform",
-                op=Op.COMPUTE_TRANSFORM,
-                params={"input": "@run.query_data.rows"},
+                step_id="llm_process",
+                op=Op.COMPUTE_LLM,
+                params={"prompt": "Process data", "input_rows": "@run.query_data.rows"},
             ),
             StepDef(
                 step_id="write_result",
                 op=Op.WRITE_UPSERT,
-                params={"table": "output", "data": "@run.transform.result"},
+                params={"table": "output", "data": "@run.llm_process.response"},
                 idempotency=IdempotencyConfig(scope="run"),
             ),
         ),
@@ -93,8 +93,8 @@ def job_with_conditions() -> JobDef:
             ),
             StepDef(
                 step_id="when_enabled",
-                op=Op.COMPUTE_TRANSFORM,
-                params={"mode": "full"},
+                op=Op.COMPUTE_LLM,
+                params={"prompt": "process in full mode"},
                 if_="@payload.enabled",
             ),
         ),
@@ -254,8 +254,8 @@ class TestCompiler:
         """Compile preserves @run.* references for runtime."""
         instance = compile_job(simple_job_def)
 
-        transform_step = instance.get_step("transform")
-        assert transform_step.params["input"] == "@run.query_data.rows"
+        llm_step = instance.get_step("llm_process")
+        assert llm_step.params["input_rows"] == "@run.query_data.rows"
 
     def test_compile_evaluates_if_true(self, job_with_conditions):
         """If condition evaluates to true - step not skipped."""
@@ -590,8 +590,8 @@ class MockBackend:
         """Return mock output based on operation."""
         if manifest.op == Op.QUERY_RAW_OBJECTS:
             return {"rows": [{"id": 1}, {"id": 2}], "count": 2}
-        elif manifest.op == Op.COMPUTE_TRANSFORM:
-            return {"result": "transformed", "status": "ok"}
+        elif manifest.op == Op.COMPUTE_LLM:
+            return {"response": "processed", "model": "test", "usage": {}}
         elif manifest.op.is_write_op():
             return {"affected": 1, "status": "ok"}
         else:
@@ -693,8 +693,8 @@ class TestExecutor:
                 # Return mock output that enables @run.* resolution
                 if manifest.step_id == "query_data":
                     return {"rows": [{"id": 1}, {"id": 2}]}
-                elif manifest.step_id == "transform":
-                    return {"result": "transformed_data"}
+                elif manifest.step_id == "llm_process":
+                    return {"response": "processed_data", "model": "test", "usage": {}}
                 return {"status": "ok"}
 
         tracking = TrackingBackend()
@@ -711,9 +711,9 @@ class TestExecutor:
         result = executor.execute(instance)
         assert result.success
 
-        # Check transform step received resolved params
-        transform_call = next(c for c in tracking.calls if c.step_id == "transform")
-        assert transform_call.resolved_params["input"] == [{"id": 1}, {"id": 2}]
+        # Check llm_process step received resolved params
+        llm_call = next(c for c in tracking.calls if c.step_id == "llm_process")
+        assert llm_call.resolved_params["input_rows"] == [{"id": 1}, {"id": 2}]
 
 
 class TestExecuteJobFunction:

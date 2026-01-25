@@ -61,11 +61,8 @@ class TestOp:
         assert Op.ASSERT_ROWS.value == "assert.rows"
         assert Op.ASSERT_SCHEMA.value == "assert.schema"
         assert Op.ASSERT_UNIQUE.value == "assert.unique"
-        # Compute ops - per e005 spec
+        # Compute ops - only compute.llm in v0
         assert Op.COMPUTE_LLM.value == "compute.llm"
-        assert Op.COMPUTE_TRANSFORM.value == "compute.transform"
-        assert Op.COMPUTE_EXTRACT.value == "compute.extract"
-        assert Op.COMPUTE_RENDER.value == "compute.render"
         # Job ops
         assert Op.JOB_RUN.value == "job.run"
 
@@ -85,7 +82,6 @@ class TestOp:
         assert Op.ASSERT_ROWS.backend == "data_plane"
         # compute for compute.*
         assert Op.COMPUTE_LLM.backend == "compute"
-        assert Op.COMPUTE_EXTRACT.backend == "compute"
         # orchestration for job.*
         assert Op.JOB_RUN.backend == "orchestration"
 
@@ -500,8 +496,8 @@ class TestStepManifest:
         manifest = StepManifest.from_op(
             run_id="01HGVZ8X1MXYZABC123456789A",
             step_id="step1",
-            op=Op.COMPUTE_EXTRACT,
-            resolved_params={"text": "some text", "schema": {}},
+            op=Op.COMPUTE_LLM,
+            resolved_params={"prompt": "some text"},
             idempotency_key="key123",
         )
         assert manifest.backend == "compute"
@@ -725,9 +721,6 @@ class TestSchemaInvariants:
             Op.ASSERT_SCHEMA,
             Op.ASSERT_UNIQUE,
             Op.COMPUTE_LLM,
-            Op.COMPUTE_TRANSFORM,
-            Op.COMPUTE_EXTRACT,
-            Op.COMPUTE_RENDER,
             Op.JOB_RUN,
         ]
         for op in non_write_ops:

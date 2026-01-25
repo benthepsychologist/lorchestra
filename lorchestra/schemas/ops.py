@@ -51,11 +51,7 @@ class Op(str, Enum):
     ASSERT_UNIQUE = "assert.unique"
 
     # Compute operations (compute backend, external IO)
-    # Per e005 spec: llm, transform, extract, render
     COMPUTE_LLM = "compute.llm"
-    COMPUTE_TRANSFORM = "compute.transform"
-    COMPUTE_EXTRACT = "compute.extract"
-    COMPUTE_RENDER = "compute.render"
 
     # Job operations (orchestration)
     JOB_RUN = "job.run"

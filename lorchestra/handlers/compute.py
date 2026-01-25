@@ -1,14 +1,9 @@
 """
 Compute Handler for external IO operations.
 
-Handles all compute operations:
-- compute.llm: LLM invocation
-- compute.transform: Data transformation
-- compute.extract: Structured data extraction
-- compute.render: Template rendering
+Handles compute.llm operations via ComputeClient.
 
-These operations are delegated to a ComputeClient implementation,
-keeping the orchestration layer free of compute service details.
+Keeping the orchestration layer free of compute service details.
 """
 
 from typing import Any, Protocol, runtime_checkable
@@ -22,7 +17,7 @@ class ComputeClient(Protocol):
     """
     Protocol for compute operations.
 
-    This interface abstracts all compute operations so that:
+    This interface abstracts LLM operations so that:
     1. lorchestra orchestration layer has no compute service imports
     2. Compute backend can be swapped (OpenAI, Anthropic, local, mock)
     3. Testing is simplified via mock implementations
@@ -51,59 +46,6 @@ class ComputeClient(Protocol):
         """
         ...
 
-    def transform(
-        self,
-        input_data: Any,
-        transform_ref: str,
-    ) -> Any:
-        """
-        Apply a registered transform to input data.
-
-        Args:
-            input_data: Data to transform
-            transform_ref: Reference to transform definition (e.g., "email/gmail_to_jmap@1.0")
-
-        Returns:
-            Transformed data
-        """
-        ...
-
-    def extract(
-        self,
-        source: str,
-        extractor_ref: str,
-        options: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """
-        Extract structured data from a source.
-
-        Args:
-            source: Source content (text, URL, file path)
-            extractor_ref: Reference to extractor definition
-            options: Extraction options
-
-        Returns:
-            Dict with extracted data
-        """
-        ...
-
-    def render(
-        self,
-        template_ref: str,
-        context: dict[str, Any],
-    ) -> str:
-        """
-        Render a template with context.
-
-        Args:
-            template_ref: Reference to template definition
-            context: Template context variables
-
-        Returns:
-            Rendered template string
-        """
-        ...
-
 
 class NoOpComputeClient:
     """
@@ -127,31 +69,6 @@ class NoOpComputeClient:
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         }
 
-    def transform(
-        self,
-        input_data: Any,
-        transform_ref: str,
-    ) -> Any:
-        """Return input unchanged (identity transform)."""
-        return input_data
-
-    def extract(
-        self,
-        source: str,
-        extractor_ref: str,
-        options: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """Return mock extraction result."""
-        return {"source": source, "extractor": extractor_ref, "extracted": {}}
-
-    def render(
-        self,
-        template_ref: str,
-        context: dict[str, Any],
-    ) -> str:
-        """Return mock rendered string."""
-        return f"[noop render: {template_ref}]"
-
 
 class ComputeHandler(Handler):
     """
@@ -173,8 +90,6 @@ class ComputeHandler(Handler):
         """
         Execute a compute operation.
 
-        Dispatches to the appropriate ComputeClient method based on the Op.
-
         Args:
             manifest: The StepManifest containing operation details
 
@@ -182,19 +97,13 @@ class ComputeHandler(Handler):
             The operation result as a dictionary
 
         Raises:
-            ValueError: If the operation is not a compute operation
+            ValueError: If the operation is not compute.llm
         """
         op = manifest.op
         params = manifest.resolved_params
 
         if op == Op.COMPUTE_LLM:
             return self._compute_llm(params, manifest)
-        elif op == Op.COMPUTE_TRANSFORM:
-            return self._compute_transform(params)
-        elif op == Op.COMPUTE_EXTRACT:
-            return self._compute_extract(params)
-        elif op == Op.COMPUTE_RENDER:
-            return self._compute_render(params)
 
         raise ValueError(f"Unsupported compute op: {op.value}")
 
@@ -213,27 +122,3 @@ class ComputeHandler(Handler):
         if manifest.prompt_hash:
             result["prompt_hash"] = manifest.prompt_hash
         return result
-
-    def _compute_transform(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Execute compute.transform operation."""
-        output = self._client.transform(
-            input_data=params["input"],
-            transform_ref=params["transform_ref"],
-        )
-        return {"output": output}
-
-    def _compute_extract(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Execute compute.extract operation."""
-        return self._client.extract(
-            source=params["source"],
-            extractor_ref=params["extractor_ref"],
-            options=params.get("options"),
-        )
-
-    def _compute_render(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Execute compute.render operation."""
-        rendered = self._client.render(
-            template_ref=params["template_ref"],
-            context=params.get("context", {}),
-        )
-        return {"rendered": rendered}
