@@ -579,7 +579,7 @@ def exec_run(ctx, job_id: str, ctx_json: str, payload_json: str, envelope_json: 
     import sys
     sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-    from spec.lorchestra import JobRegistry, Compiler, Executor, RunStore
+    from spec.lorchestra import JobRegistry, Compiler, Executor
     from spec.lorchestra.run_store import InMemoryRunStore, FileRunStore
 
     # Parse JSON inputs

@@ -6,34 +6,27 @@ JobDef -> JobInstance -> RunRecord -> StepManifest -> AttemptRecord
 
 import json
 import pytest
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 from lorchestra.schemas import (
     JobDef,
     StepDef,
-    JobInstance,
     JobStepInstance,
-    RunRecord,
     StepManifest,
     AttemptRecord,
-    StepOutcome,
     StepStatus,
     Op,
     IdempotencyConfig,
     CompileError,
 )
 
-from lorchestra.registry import JobRegistry, JobNotFoundError, JobValidationError
+from lorchestra.registry import JobRegistry, JobNotFoundError
 from lorchestra.compiler import Compiler, compile_job, _resolve_value, _evaluate_condition
 from lorchestra.run_store import InMemoryRunStore, FileRunStore, generate_ulid
 from lorchestra.executor import (
     Executor,
-    ExecutionResult,
-    ExecutionError,
     NoOpBackend,
-    execute,
     execute_job,
     _resolve_run_refs,
     _compute_idempotency_key,
@@ -760,7 +753,7 @@ class TestEndToEnd:
         """Test complete JobDef -> execution lifecycle."""
         # 1. Load from registry
         registry = JobRegistry(temp_definitions_dir)
-        job_def = registry.load("ingest_test")
+        registry.load("ingest_test")  # Verify it loads successfully
 
         # 2. Compile
         compiler = Compiler(registry)

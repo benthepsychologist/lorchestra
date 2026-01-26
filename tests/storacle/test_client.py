@@ -9,7 +9,7 @@ Tests cover:
 
 import pytest
 from lorchestra.storacle import RpcMeta, submit_plan
-from lorchestra.storacle.client import _noop_execute_plan, _submit_inproc
+from lorchestra.storacle.client import _noop_execute_plan
 from lorchestra.plan_builder import StoraclePlan, StoracleOp
 from lorchestra.errors import TransientError, PermanentError
 

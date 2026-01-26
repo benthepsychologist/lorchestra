@@ -32,7 +32,7 @@ import re
 import warnings
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Any, Callable, Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 
 from lorchestra.schemas import (
     JobDef,
@@ -47,7 +47,7 @@ from lorchestra.schemas import (
 )
 
 from .registry import JobRegistry
-from .compiler import Compiler, compile_job
+from .compiler import compile_job
 from .run_store import RunStore, InMemoryRunStore, FileRunStore, DEFAULT_RUN_PATH
 
 if TYPE_CHECKING:

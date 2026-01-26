@@ -11,7 +11,6 @@ from lorchestra.callable import CallableResult
 from lorchestra.plan_builder import (
     build_plan,
     StoraclePlan,
-    StoracleOp,
     _compute_idempotency_key,
     _hash_canonical,
 )

@@ -7,15 +7,8 @@ Note: This test file has been updated for e005b-01 which removed query.*, write.
 ops in favor of call.* ops for callable dispatch.
 """
 
-import hashlib
-import json
 import pytest
 from datetime import datetime, timezone
-
-
-def utcnow() -> datetime:
-    """Return current UTC time as timezone-aware datetime."""
-    return datetime.now(timezone.utc)
 
 from lorchestra.schemas import (
     # Ops
@@ -30,7 +23,6 @@ from lorchestra.schemas import (
     JobStepInstance,
     # Run Record
     RunRecord,
-    ULID,
     # Step Manifest
     StepManifest,
     # Attempt
@@ -38,6 +30,11 @@ from lorchestra.schemas import (
     StepOutcome,
     StepStatus,
 )
+
+
+def utcnow() -> datetime:
+    """Return current UTC time as timezone-aware datetime."""
+    return datetime.now(timezone.utc)
 
 
 # =============================================================================

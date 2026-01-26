@@ -12,8 +12,6 @@ The resulting JobInstance has:
 - compiled_skip flags for steps whose if_ evaluated to false
 """
 
-import hashlib
-import json
 import re
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -23,7 +21,6 @@ from lorchestra.schemas import (
     JobInstance,
     JobStepInstance,
     StepDef,
-    IdempotencyConfig,
     CompileError,
 )
 

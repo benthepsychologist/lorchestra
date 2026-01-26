@@ -14,7 +14,6 @@ Storage backends:
 """
 
 import json
-import os
 import time
 import random
 from abc import ABC, abstractmethod
@@ -26,8 +25,6 @@ from lorchestra.schemas import (
     RunRecord,
     StepManifest,
     AttemptRecord,
-    StepOutcome,
-    StepStatus,
     JobInstance,
 )
 

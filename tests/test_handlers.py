@@ -13,17 +13,15 @@ DataPlaneHandler with CallableHandler for call.* ops.
 """
 
 import pytest
-from datetime import datetime, timezone
 
 from lorchestra.handlers import (
-    Handler,
     NoOpHandler,
     HandlerRegistry,
     CallableHandler,
     ComputeHandler,
     OrchestrationHandler,
 )
-from lorchestra.handlers.compute import ComputeClient, NoOpComputeClient
+from lorchestra.handlers.compute import NoOpComputeClient
 from lorchestra.schemas import StepManifest, Op
 from lorchestra.callable import register_callable
 
