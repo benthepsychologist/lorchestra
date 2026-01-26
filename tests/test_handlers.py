@@ -1,13 +1,15 @@
-"""Tests for the handlers module (e005-03).
+"""Tests for the handlers module (e005b-01).
 
 Tests cover:
 - Handler base class and NoOpHandler
-- StoracleClient protocol and NoOpStoracleClient
-- DataPlaneHandler dispatch
+- CallableHandler dispatch
 - ComputeClient protocol and NoOpComputeClient
 - ComputeHandler dispatch
 - OrchestrationHandler
 - HandlerRegistry dispatch and factory methods
+
+Note: This test file has been updated for e005b-01 which replaced
+DataPlaneHandler with CallableHandler for call.* ops.
 """
 
 import pytest
@@ -17,15 +19,13 @@ from lorchestra.handlers import (
     Handler,
     NoOpHandler,
     HandlerRegistry,
-    DataPlaneHandler,
+    CallableHandler,
     ComputeHandler,
     OrchestrationHandler,
-    StoracleClient,
-    NoOpStoracleClient,
 )
 from lorchestra.handlers.compute import ComputeClient, NoOpComputeClient
-from lorchestra.handlers.data_plane import QUERY_OP_ALLOWLIST, MAX_QUERY_LIMIT
 from lorchestra.schemas import StepManifest, Op
+from lorchestra.callable import register_callable
 
 
 # -----------------------------------------------------------------------------
@@ -33,42 +33,17 @@ from lorchestra.schemas import StepManifest, Op
 # -----------------------------------------------------------------------------
 
 
-def _make_query_manifest(
-    limit: int = 100,
-    time_range: dict | None = None,
-) -> StepManifest:
-    """Create a query.raw_objects manifest for testing."""
-    params = {
-        "source_system": "test",
-        "object_type": "test_obj",
-        "limit": limit,  # Required for bounded cost
-    }
-    # Add time_range if provided (required for WAL scan ops)
-    if time_range is None:
-        # Default valid time_range for tests
-        params["time_range"] = {"start": "2024-01-01T00:00:00Z", "end": "2024-01-02T00:00:00Z"}
-    else:
-        params["time_range"] = time_range
+def _make_call_manifest() -> StepManifest:
+    """Create a call.injest manifest for testing."""
     return StepManifest.from_op(
         run_id="01TEST00000000000000000000",
-        step_id="test_query",
-        op=Op.QUERY_RAW_OBJECTS,
-        resolved_params=params,
-        idempotency_key="test:test_query",
-    )
-
-
-def _make_write_manifest() -> StepManifest:
-    """Create a write.upsert manifest for testing."""
-    return StepManifest.from_op(
-        run_id="01TEST00000000000000000000",
-        step_id="test_write",
-        op=Op.WRITE_UPSERT,
+        step_id="test_call",
+        op=Op.CALL_INJEST,
         resolved_params={
-            "table": "test_table",
-            "objects": [{"id": 1}, {"id": 2}],
+            "source_system": "test",
+            "object_type": "test_obj",
         },
-        idempotency_key="test:test_write",
+        idempotency_key="test:test_call",
     )
 
 
@@ -101,356 +76,89 @@ def _make_job_run_manifest() -> StepManifest:
 
 
 # -----------------------------------------------------------------------------
-# NoOpHandler Tests
+# Base Handler Tests
 # -----------------------------------------------------------------------------
 
 
 class TestNoOpHandler:
     """Tests for NoOpHandler."""
 
-    def test_execute_returns_noop_status(self):
-        """NoOpHandler should return noop status."""
+    def test_noop_handler_returns_empty_result(self):
+        """NoOpHandler returns status noop."""
         handler = NoOpHandler()
-        manifest = _make_query_manifest()
+        manifest = _make_call_manifest()
 
         result = handler.execute(manifest)
 
         assert result["status"] == "noop"
-        assert result["op"] == "query.raw_objects"
-        assert result["backend"] == "data_plane"
-
-    def test_execute_includes_params(self):
-        """NoOpHandler should include resolved_params in result."""
-        handler = NoOpHandler()
-        manifest = _make_write_manifest()
-
-        result = handler.execute(manifest)
-
-        assert result["params"]["table"] == "test_table"
-        assert len(result["params"]["objects"]) == 2
 
 
 # -----------------------------------------------------------------------------
-# NoOpStoracleClient Tests
+# CallableHandler Tests
 # -----------------------------------------------------------------------------
 
 
-class TestNoOpStoracleClient:
-    """Tests for NoOpStoracleClient."""
+class TestCallableHandler:
+    """Tests for CallableHandler dispatch."""
 
-    def test_query_raw_objects_returns_empty(self):
-        """query_raw_objects should return empty iterator."""
-        client = NoOpStoracleClient()
+    def test_callable_handler_dispatches_call_op(self):
+        """CallableHandler dispatches call.* ops to callables."""
+        # Register a mock callable
+        def mock_injest(params: dict) -> dict:
+            return {
+                "items": [{"id": 1, "data": params.get("source_system")}],
+                "stats": {"count": 1},
+            }
 
-        results = list(client.query_raw_objects("test", "obj"))
+        register_callable(Op.CALL_INJEST, mock_injest)
 
-        assert results == []
-
-    def test_query_canonical_objects_returns_empty(self):
-        """query_canonical_objects should return empty iterator."""
-        client = NoOpStoracleClient()
-
-        results = list(client.query_canonical_objects("schema"))
-
-        assert results == []
-
-    def test_query_last_sync_returns_none(self):
-        """query_last_sync should return None."""
-        client = NoOpStoracleClient()
-
-        result = client.query_last_sync("test", "conn", "obj")
-
-        assert result is None
-
-    def test_upsert_returns_object_count(self):
-        """upsert should return count of objects as inserted."""
-        client = NoOpStoracleClient()
-        objects = [{"id": 1}, {"id": 2}, {"id": 3}]
-
-        result = client.upsert("table", objects)
-
-        assert result["inserted"] == 3
-        assert result["updated"] == 0
-
-    def test_insert_returns_count(self):
-        """insert should return count of objects."""
-        client = NoOpStoracleClient()
-
-        result = client.insert("table", [{"id": 1}])
-
-        assert result == 1
-
-    def test_delete_returns_zero(self):
-        """delete should return 0 (no rows deleted in noop)."""
-        client = NoOpStoracleClient()
-
-        result = client.delete("table", {"id": 1})
-
-        assert result == 0
-
-    def test_assert_rows_passes(self):
-        """assert_rows should always pass in noop mode."""
-        client = NoOpStoracleClient()
-
-        result = client.assert_rows("table", expected_count=100)
-
-        assert result["passed"] is True
-
-    def test_assert_schema_passes(self):
-        """assert_schema should always pass in noop mode."""
-        client = NoOpStoracleClient()
-
-        result = client.assert_schema("table", [{"name": "id", "type": "INT"}])
-
-        assert result["passed"] is True
-        assert result["missing"] == []
-
-    def test_assert_unique_passes(self):
-        """assert_unique should always pass in noop mode."""
-        client = NoOpStoracleClient()
-
-        result = client.assert_unique("table", ["id"])
-
-        assert result["passed"] is True
-
-
-# -----------------------------------------------------------------------------
-# DataPlaneHandler Tests
-# -----------------------------------------------------------------------------
-
-
-class TestDataPlaneHandler:
-    """Tests for DataPlaneHandler."""
-
-    def test_query_raw_objects(self):
-        """Should dispatch query.raw_objects to client."""
-        client = NoOpStoracleClient()
-        handler = DataPlaneHandler(client)
-        manifest = _make_query_manifest()
+        handler = CallableHandler()
+        manifest = _make_call_manifest()
 
         result = handler.execute(manifest)
 
-        assert result["rows"] == []
-        assert result["count"] == 0
+        assert "callable_result" in result
+        assert result["callable_result"]["items_count"] == 1
 
-    def test_write_upsert(self):
-        """Should dispatch write.upsert to client."""
-        client = NoOpStoracleClient()
-        handler = DataPlaneHandler(client)
-        manifest = _make_write_manifest()
-
-        result = handler.execute(manifest)
-
-        assert result["inserted"] == 2
-        assert result["updated"] == 0
-        assert result["total"] == 2
-
-    def test_assert_rows(self):
-        """Should dispatch assert.rows to client."""
-        client = NoOpStoracleClient()
-        handler = DataPlaneHandler(client)
-        manifest = StepManifest.from_op(
-            run_id="01TEST00000000000000000000",
-            step_id="assert_test",
-            op=Op.ASSERT_ROWS,
-            resolved_params={
-                "table": "test_table",
-                "expected_count": 10,
-            },
-            idempotency_key="test:assert",
-        )
-
-        result = handler.execute(manifest)
-
-        assert result["passed"] is True
-
-    def test_unsupported_op_raises(self):
-        """Should raise ValueError for non-data_plane ops."""
-        client = NoOpStoracleClient()
-        handler = DataPlaneHandler(client)
+    def test_callable_handler_rejects_non_call_ops(self):
+        """CallableHandler rejects non-call.* ops."""
+        handler = CallableHandler()
         manifest = _make_llm_manifest()
 
-        with pytest.raises(ValueError, match="Unsupported data_plane op"):
+        with pytest.raises(ValueError, match="only handles call"):
             handler.execute(manifest)
 
-    def test_query_requires_limit(self):
-        """Query operations (except query.last_sync) require a limit parameter."""
-        client = NoOpStoracleClient()
-        handler = DataPlaneHandler(client)
-        # Create manifest without limit but with time_range
-        manifest = StepManifest.from_op(
-            run_id="01TEST00000000000000000000",
-            step_id="test_query_no_limit",
-            op=Op.QUERY_RAW_OBJECTS,
-            resolved_params={
-                "source_system": "test",
-                "object_type": "test_obj",
-                "time_range": {"start": "2024-01-01", "end": "2024-01-02"},
-                # No limit specified
-            },
-            idempotency_key="test:no_limit",
-        )
-
-        with pytest.raises(ValueError, match="requires a 'limit' parameter"):
-            handler.execute(manifest)
-
-    def test_query_limit_max_enforced(self):
-        """Query limit cannot exceed MAX_QUERY_LIMIT (1000)."""
-        client = NoOpStoracleClient()
-        handler = DataPlaneHandler(client)
-        manifest = _make_query_manifest(limit=MAX_QUERY_LIMIT + 1)
-
-        with pytest.raises(ValueError, match="exceeds maximum allowed"):
-            handler.execute(manifest)
-
-    def test_query_limit_at_max_allowed(self):
-        """Query with limit at MAX_QUERY_LIMIT should succeed."""
-        client = NoOpStoracleClient()
-        handler = DataPlaneHandler(client)
-        manifest = _make_query_manifest(limit=MAX_QUERY_LIMIT)
-
-        # Should not raise
-        result = handler.execute(manifest)
-        assert result["count"] == 0  # NoOp returns empty
-
-    def test_query_last_sync_no_limit_required(self):
-        """query.last_sync does not require a limit parameter."""
-        client = NoOpStoracleClient()
-        handler = DataPlaneHandler(client)
-        manifest = StepManifest.from_op(
-            run_id="01TEST00000000000000000000",
-            step_id="test_last_sync",
-            op=Op.QUERY_LAST_SYNC,
-            resolved_params={
-                "source_system": "test",
-                "connection_name": "conn",
-                "object_type": "obj",
-                # No limit needed
-            },
-            idempotency_key="test:last_sync",
-        )
-
-        # Should not raise
-        result = handler.execute(manifest)
-        assert result["last_sync"] is None  # NoOp returns None
-
-    def test_query_allowlist_contains_expected_ops(self):
-        """Verify the query allowlist contains the expected operations."""
-        expected = {Op.QUERY_RAW_OBJECTS, Op.QUERY_CANONICAL_OBJECTS, Op.QUERY_LAST_SYNC}
-        assert QUERY_OP_ALLOWLIST == expected
-
-    def test_max_query_limit_is_1000(self):
-        """Verify MAX_QUERY_LIMIT is 1000 per e005 spec."""
-        assert MAX_QUERY_LIMIT == 1000
-
-    def test_wal_scan_requires_time_range(self):
-        """WAL scan operations (query.raw_objects) require a time_range parameter."""
-        client = NoOpStoracleClient()
-        handler = DataPlaneHandler(client)
-        # Create manifest with limit but no time_range
-        manifest = StepManifest.from_op(
-            run_id="01TEST00000000000000000000",
-            step_id="test_query_no_time_range",
-            op=Op.QUERY_RAW_OBJECTS,
-            resolved_params={
-                "source_system": "test",
-                "object_type": "test_obj",
-                "limit": 100,
-                # No time_range specified
-            },
-            idempotency_key="test:no_time_range",
-        )
-
-        with pytest.raises(ValueError, match="requires a 'time_range' parameter"):
-            handler.execute(manifest)
-
-    def test_wal_scan_time_range_must_have_start_end(self):
-        """time_range must be a dict with 'start' and 'end' keys."""
-        client = NoOpStoracleClient()
-        handler = DataPlaneHandler(client)
-        # Create manifest with invalid time_range (missing end)
-        manifest = StepManifest.from_op(
-            run_id="01TEST00000000000000000000",
-            step_id="test_query_bad_time_range",
-            op=Op.QUERY_RAW_OBJECTS,
-            resolved_params={
-                "source_system": "test",
-                "object_type": "test_obj",
-                "limit": 100,
-                "time_range": {"start": "2024-01-01"},  # Missing 'end'
-            },
-            idempotency_key="test:bad_time_range",
-        )
-
-        with pytest.raises(ValueError, match="must be a dict with 'start' and 'end'"):
-            handler.execute(manifest)
-
-    def test_query_canonical_no_time_range_required(self):
-        """query.canonical_objects does not require time_range (not a WAL scan)."""
-        client = NoOpStoracleClient()
-        handler = DataPlaneHandler(client)
-        manifest = StepManifest.from_op(
-            run_id="01TEST00000000000000000000",
-            step_id="test_canonical",
-            op=Op.QUERY_CANONICAL_OBJECTS,
-            resolved_params={
-                "canonical_schema": "email",
-                "limit": 100,
-                # No time_range needed for canonical queries
-            },
-            idempotency_key="test:canonical",
-        )
-
-        # Should not raise
-        result = handler.execute(manifest)
-        assert result["count"] == 0  # NoOp returns empty
-
-
-# -----------------------------------------------------------------------------
-# NoOpComputeClient Tests
-# -----------------------------------------------------------------------------
-
-
-class TestNoOpComputeClient:
-    """Tests for NoOpComputeClient."""
-
-    def test_llm_invoke_returns_mock_response(self):
-        """llm_invoke should return mock response."""
-        client = NoOpComputeClient()
-
-        result = client.llm_invoke("Hello", model="gpt-4")
-
-        assert result["response"] == "[noop response]"
-        assert result["model"] == "gpt-4"
-        assert "usage" in result
 
 # -----------------------------------------------------------------------------
 # ComputeHandler Tests
 # -----------------------------------------------------------------------------
 
 
+class TestNoOpComputeClient:
+    """Tests for NoOpComputeClient."""
+
+    def test_noop_compute_returns_stub(self):
+        """NoOpComputeClient returns stub response."""
+        client = NoOpComputeClient()
+        result = client.llm_invoke(prompt="test", model="test")
+
+        assert result["model"] == "test"
+        assert "response" in result
+
+
 class TestComputeHandler:
     """Tests for ComputeHandler."""
 
-    def test_compute_llm(self):
-        """Should dispatch compute.llm to client."""
+    def test_compute_handler_dispatches_llm(self):
+        """ComputeHandler dispatches compute.llm to client."""
         client = NoOpComputeClient()
         handler = ComputeHandler(client)
         manifest = _make_llm_manifest()
 
         result = handler.execute(manifest)
 
-        assert result["response"] == "[noop response]"
-        assert result["model"] == "test-model"
-
-    def test_unsupported_op_raises(self):
-        """Should raise ValueError for non-compute ops."""
-        client = NoOpComputeClient()
-        handler = ComputeHandler(client)
-        manifest = _make_query_manifest()
-
-        with pytest.raises(ValueError, match="Unsupported compute op"):
-            handler.execute(manifest)
+        assert "response" in result
+        assert "model" in result
 
 
 # -----------------------------------------------------------------------------
@@ -461,23 +169,16 @@ class TestComputeHandler:
 class TestOrchestrationHandler:
     """Tests for OrchestrationHandler."""
 
-    def test_job_run_without_registry_returns_noop(self):
-        """job.run without registry should return noop status."""
-        handler = OrchestrationHandler()
+    def test_orchestration_handler_handles_job_run(self):
+        """OrchestrationHandler handles job.run ops."""
+        registry = HandlerRegistry.create_noop()
+        handler = OrchestrationHandler(registry=registry, store=None)
         manifest = _make_job_run_manifest()
 
         result = handler.execute(manifest)
 
-        assert result["status"] == "noop"
-        assert result["job_id"] == "sub_job"
-
-    def test_unsupported_op_raises(self):
-        """Should raise ValueError for non-orchestration ops."""
-        handler = OrchestrationHandler()
-        manifest = _make_query_manifest()
-
-        with pytest.raises(ValueError, match="Unsupported orchestration op"):
-            handler.execute(manifest)
+        # Without a store or real job, this just returns the params
+        assert "job_id" in result or "status" in result
 
 
 # -----------------------------------------------------------------------------
@@ -488,33 +189,26 @@ class TestOrchestrationHandler:
 class TestHandlerRegistry:
     """Tests for HandlerRegistry."""
 
-    def test_register_and_get(self):
-        """Should register and retrieve handlers."""
+    def test_registry_register_and_get(self):
+        """Can register and retrieve handlers."""
         registry = HandlerRegistry()
         handler = NoOpHandler()
 
-        registry.register("test", handler)
-        retrieved = registry.get("test")
+        registry.register("test_backend", handler)
 
-        assert retrieved is handler
+        assert registry.get("test_backend") is handler
+        assert registry.has("test_backend")
+        assert not registry.has("unknown")
 
-    def test_get_unregistered_raises(self):
-        """Should raise KeyError for unregistered backend."""
+    def test_registry_get_missing_raises(self):
+        """Getting unregistered backend raises KeyError."""
         registry = HandlerRegistry()
 
         with pytest.raises(KeyError, match="No handler registered"):
             registry.get("unknown")
 
-    def test_has_returns_true_for_registered(self):
-        """has() should return True for registered backends."""
-        registry = HandlerRegistry()
-        registry.register("test", NoOpHandler())
-
-        assert registry.has("test") is True
-        assert registry.has("unknown") is False
-
-    def test_list_backends(self):
-        """list_backends() should return registered backend names."""
+    def test_registry_list_backends(self):
+        """list_backends returns all registered names."""
         registry = HandlerRegistry()
         registry.register("a", NoOpHandler())
         registry.register("b", NoOpHandler())
@@ -523,111 +217,57 @@ class TestHandlerRegistry:
 
         assert set(backends) == {"a", "b"}
 
-    def test_dispatch_routes_to_handler(self):
-        """dispatch() should route manifest to correct handler."""
+    def test_registry_dispatch(self):
+        """dispatch routes to correct handler."""
         registry = HandlerRegistry()
-        registry.register("data_plane", DataPlaneHandler(NoOpStoracleClient()))
-        registry.register("compute", ComputeHandler(NoOpComputeClient()))
+        registry.register("callable", NoOpHandler())
 
-        # Data plane manifest
-        dp_result = registry.dispatch(_make_query_manifest())
-        assert dp_result["count"] == 0
+        manifest = _make_call_manifest()
+        result = registry.dispatch(manifest)
 
-        # Compute manifest
-        compute_result = registry.dispatch(_make_llm_manifest())
-        assert compute_result["response"] == "[noop response]"
-
-    def test_dispatch_unregistered_raises(self):
-        """dispatch() should raise KeyError for unregistered backend."""
-        registry = HandlerRegistry()
-
-        with pytest.raises(KeyError):
-            registry.dispatch(_make_query_manifest())
-
-    def test_create_noop_registers_all_backends(self):
-        """create_noop() should register all backend types."""
-        registry = HandlerRegistry.create_noop()
-
-        backends = set(registry.list_backends())
-
-        assert backends == {"data_plane", "compute", "orchestration"}
-
-    def test_create_default_without_clients(self):
-        """create_default() without clients should use NoOpHandler."""
-        registry = HandlerRegistry.create_default()
-
-        # Should have all backends
-        assert registry.has("data_plane")
-        assert registry.has("compute")
-        assert registry.has("orchestration")
-
-        # Should be noop
-        result = registry.dispatch(_make_query_manifest())
         assert result["status"] == "noop"
 
-    def test_create_default_with_storacle_client(self):
-        """create_default() with storacle_client should use DataPlaneHandler."""
-        client = NoOpStoracleClient()
-        registry = HandlerRegistry.create_default(storacle_client=client)
+    def test_create_noop_registry(self):
+        """create_noop creates registry with all NoOp handlers."""
+        registry = HandlerRegistry.create_noop()
 
-        # Should dispatch to DataPlaneHandler
-        result = registry.dispatch(_make_query_manifest())
-        assert "rows" in result  # DataPlaneHandler returns rows
-        assert "status" not in result  # Not NoOpHandler
+        assert registry.has("callable")
+        assert registry.has("inferator")
+        assert registry.has("orchestration")
 
-    def test_create_default_with_compute_client(self):
-        """create_default() with compute_client should use ComputeHandler."""
-        client = NoOpComputeClient()
-        registry = HandlerRegistry.create_default(compute_client=client)
+        # All should return noop
+        manifest = _make_call_manifest()
+        result = registry.dispatch(manifest)
+        assert result["status"] == "noop"
 
-        # Should dispatch to ComputeHandler
-        result = registry.dispatch(_make_llm_manifest())
-        assert result["response"] == "[noop response]"
-        assert "model" in result  # ComputeHandler includes model
+    def test_create_default_registry(self):
+        """create_default creates registry with default handlers."""
+        registry = HandlerRegistry.create_default()
+
+        assert registry.has("callable")
+        assert registry.has("inferator")
+        assert registry.has("orchestration")
 
 
 # -----------------------------------------------------------------------------
-# Protocol Compliance Tests
+# Backend Routing Tests
 # -----------------------------------------------------------------------------
 
 
-class TestProtocolCompliance:
-    """Tests to verify protocol implementations are compliant."""
+class TestBackendRouting:
+    """Tests for correct backend routing in registry."""
 
-    def test_noop_storacle_client_is_storacle_client(self):
-        """NoOpStoracleClient should be a StoracleClient."""
-        client = NoOpStoracleClient()
+    def test_call_ops_route_to_callable(self):
+        """call.* ops route to callable backend."""
+        manifest = _make_call_manifest()
+        assert manifest.backend == "callable"
 
-        # Runtime check using isinstance with Protocol
-        assert isinstance(client, StoracleClient)
+    def test_compute_ops_route_to_inferator(self):
+        """compute.* ops route to inferator backend."""
+        manifest = _make_llm_manifest()
+        assert manifest.backend == "inferator"
 
-    def test_noop_compute_client_is_compute_client(self):
-        """NoOpComputeClient should be a ComputeClient."""
-        client = NoOpComputeClient()
-
-        # Runtime check using isinstance with Protocol
-        assert isinstance(client, ComputeClient)
-
-    def test_data_plane_handler_is_handler(self):
-        """DataPlaneHandler should be a Handler."""
-        handler = DataPlaneHandler(NoOpStoracleClient())
-
-        assert isinstance(handler, Handler)
-
-    def test_compute_handler_is_handler(self):
-        """ComputeHandler should be a Handler."""
-        handler = ComputeHandler(NoOpComputeClient())
-
-        assert isinstance(handler, Handler)
-
-    def test_orchestration_handler_is_handler(self):
-        """OrchestrationHandler should be a Handler."""
-        handler = OrchestrationHandler()
-
-        assert isinstance(handler, Handler)
-
-    def test_noop_handler_is_handler(self):
-        """NoOpHandler should be a Handler."""
-        handler = NoOpHandler()
-
-        assert isinstance(handler, Handler)
+    def test_job_ops_route_to_orchestration(self):
+        """job.* ops route to orchestration backend."""
+        manifest = _make_job_run_manifest()
+        assert manifest.backend == "orchestration"

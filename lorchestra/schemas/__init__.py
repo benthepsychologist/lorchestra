@@ -18,7 +18,7 @@ Boundaries:
 - compute: External IO operations (compute.*)
 """
 
-from .ops import Op, OpCategory
+from .ops import Op
 from .job_def import (
     JobDef,
     StepDef,
@@ -45,7 +45,6 @@ from .attempt import (
 __all__ = [
     # Ops
     "Op",
-    "OpCategory",
     # Job Definition
     "JobDef",
     "StepDef",

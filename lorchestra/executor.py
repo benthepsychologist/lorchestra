@@ -43,7 +43,6 @@ from lorchestra.schemas import (
     AttemptRecord,
     StepOutcome,
     StepStatus,
-    Op,
     IdempotencyConfig,
 )
 
@@ -140,10 +139,6 @@ def _compute_idempotency_key(
     Returns:
         The computed idempotency key
     """
-    if not step.op.requires_idempotency:
-        # Non-write ops don't need idempotency keys, but we generate one anyway
-        return f"{run_id}:{step_id}"
-
     # Default to run scope if not specified
     if idempotency is None:
         idempotency = IdempotencyConfig(scope="run")
@@ -530,10 +525,8 @@ class Executor:
 
         # Compute idempotency key
         # Note: In a real implementation, we'd get the IdempotencyConfig from the step
-        # For now, use default run-scoped idempotency for write ops
-        idempotency = None
-        if step.op.requires_idempotency:
-            idempotency = IdempotencyConfig(scope="run")
+        # For now, use default run-scoped idempotency
+        idempotency = IdempotencyConfig(scope="run")
 
         idempotency_key = _compute_idempotency_key(
             run_id, step.step_id, step, resolved_params, idempotency

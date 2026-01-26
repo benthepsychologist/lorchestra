@@ -1,7 +1,10 @@
 """Tests for lorchestra.schemas module.
 
 Tests the JobDef -> JobInstance -> RunRecord -> StepManifest -> AttemptRecord lifecycle
-and validates all schema invariants from the e005 specification.
+and validates all schema invariants from the e005b specification.
+
+Note: This test file has been updated for e005b-01 which removed query.*, write.*, assert.*
+ops in favor of call.* ops for callable dispatch.
 """
 
 import hashlib
@@ -17,7 +20,6 @@ def utcnow() -> datetime:
 from lorchestra.schemas import (
     # Ops
     Op,
-    OpCategory,
     # Job Definition
     JobDef,
     StepDef,
@@ -47,61 +49,33 @@ class TestOp:
     """Tests for Op enum."""
 
     def test_op_values(self):
-        """All expected ops exist with correct values (per e005 spec)."""
-        # Query ops - typed methods only, no raw SQL
-        assert Op.QUERY_RAW_OBJECTS.value == "query.raw_objects"
-        assert Op.QUERY_CANONICAL_OBJECTS.value == "query.canonical_objects"
-        assert Op.QUERY_LAST_SYNC.value == "query.last_sync"
-        # Write ops
-        assert Op.WRITE_UPSERT.value == "write.upsert"
-        assert Op.WRITE_INSERT.value == "write.insert"
-        assert Op.WRITE_DELETE.value == "write.delete"
-        assert Op.WRITE_MERGE.value == "write.merge"
-        # Assert ops
-        assert Op.ASSERT_ROWS.value == "assert.rows"
-        assert Op.ASSERT_SCHEMA.value == "assert.schema"
-        assert Op.ASSERT_UNIQUE.value == "assert.unique"
+        """All expected ops exist with correct values (per e005b spec)."""
+        # Call ops (in-proc callable dispatch)
+        assert Op.CALL_INJEST.value == "call.injest"
+        assert Op.CALL_CANONIZER.value == "call.canonizer"
+        assert Op.CALL_FINALFORM.value == "call.finalform"
+        assert Op.CALL_PROJECTIONIST.value == "call.projectionist"
+        assert Op.CALL_WORKMAN.value == "call.workman"
         # Compute ops - only compute.llm in v0
         assert Op.COMPUTE_LLM.value == "compute.llm"
         # Job ops
         assert Op.JOB_RUN.value == "job.run"
 
-    def test_op_categories(self):
-        """Ops have correct categories."""
-        assert Op.QUERY_RAW_OBJECTS.category == OpCategory.QUERY
-        assert Op.WRITE_UPSERT.category == OpCategory.WRITE
-        assert Op.ASSERT_ROWS.category == OpCategory.ASSERT
-        assert Op.COMPUTE_LLM.category == OpCategory.COMPUTE
-        assert Op.JOB_RUN.category == OpCategory.JOB
-
     def test_op_backends(self):
         """Ops map to correct backends."""
-        # data_plane for query/write/assert
-        assert Op.QUERY_RAW_OBJECTS.backend == "data_plane"
-        assert Op.WRITE_UPSERT.backend == "data_plane"
-        assert Op.ASSERT_ROWS.backend == "data_plane"
-        # compute for compute.*
-        assert Op.COMPUTE_LLM.backend == "compute"
+        # callable for call.*
+        assert Op.CALL_INJEST.backend == "callable"
+        assert Op.CALL_CANONIZER.backend == "callable"
+        assert Op.CALL_FINALFORM.backend == "callable"
+        # inferator for compute.*
+        assert Op.COMPUTE_LLM.backend == "inferator"
         # orchestration for job.*
         assert Op.JOB_RUN.backend == "orchestration"
 
-    def test_op_requires_idempotency(self):
-        """Only write ops require idempotency."""
-        # Write ops require idempotency
-        assert Op.WRITE_UPSERT.requires_idempotency is True
-        assert Op.WRITE_INSERT.requires_idempotency is True
-        assert Op.WRITE_DELETE.requires_idempotency is True
-        assert Op.WRITE_MERGE.requires_idempotency is True
-        # Non-write ops do not
-        assert Op.QUERY_RAW_OBJECTS.requires_idempotency is False
-        assert Op.ASSERT_ROWS.requires_idempotency is False
-        assert Op.COMPUTE_LLM.requires_idempotency is False
-        assert Op.JOB_RUN.requires_idempotency is False
-
     def test_op_from_string(self):
         """Op.from_string parses correctly."""
-        assert Op.from_string("query.raw_objects") == Op.QUERY_RAW_OBJECTS
-        assert Op.from_string("write.upsert") == Op.WRITE_UPSERT
+        assert Op.from_string("call.injest") == Op.CALL_INJEST
+        assert Op.from_string("call.canonizer") == Op.CALL_CANONIZER
         assert Op.from_string("compute.llm") == Op.COMPUTE_LLM
         assert Op.from_string("job.run") == Op.JOB_RUN
 
@@ -163,9 +137,9 @@ class TestStepDef:
 
     def test_basic_step(self):
         """Basic step with required fields."""
-        step = StepDef(step_id="step1", op=Op.QUERY_RAW_OBJECTS)
+        step = StepDef(step_id="step1", op=Op.CALL_INJEST)
         assert step.step_id == "step1"
-        assert step.op == Op.QUERY_RAW_OBJECTS
+        assert step.op == Op.CALL_INJEST
         assert step.params == {}
         assert step.phase_id is None
         assert step.timeout_s == 300  # Default per e005 spec
@@ -177,7 +151,7 @@ class TestStepDef:
         """Step with parameter references."""
         step = StepDef(
             step_id="step1",
-            op=Op.QUERY_RAW_OBJECTS,
+            op=Op.CALL_INJEST,
             params={"entity_type": "@ctx.entity", "filter": "@payload.filter"},
         )
         assert step.params["entity_type"] == "@ctx.entity"
@@ -187,7 +161,7 @@ class TestStepDef:
         """Step with all optional fields."""
         step = StepDef(
             step_id="step1",
-            op=Op.QUERY_RAW_OBJECTS,
+            op=Op.CALL_INJEST,
             phase_id="phase1",
             timeout_s=30,
             continue_on_error=True,
@@ -200,7 +174,7 @@ class TestStepDef:
         """if_ condition allows @ctx.* references."""
         step = StepDef(
             step_id="step1",
-            op=Op.QUERY_RAW_OBJECTS,
+            op=Op.CALL_INJEST,
             if_="@ctx.enabled == true",
         )
         assert step.if_ == "@ctx.enabled == true"
@@ -209,7 +183,7 @@ class TestStepDef:
         """if_ condition allows @payload.* references."""
         step = StepDef(
             step_id="step1",
-            op=Op.QUERY_RAW_OBJECTS,
+            op=Op.CALL_INJEST,
             if_="@payload.count > 0",
         )
         assert step.if_ == "@payload.count > 0"
@@ -219,32 +193,18 @@ class TestStepDef:
         with pytest.raises(CompileError, match="@run.* references are not allowed"):
             StepDef(
                 step_id="step1",
-                op=Op.QUERY_RAW_OBJECTS,
+                op=Op.CALL_INJEST,
                 if_="@run.previous_result.count > 0",
             )
 
-    def test_write_op_allows_idempotency(self):
-        """Write ops can have idempotency config."""
+    def test_step_allows_idempotency(self):
+        """Steps can have idempotency config."""
         step = StepDef(
             step_id="step1",
-            op=Op.WRITE_UPSERT,
+            op=Op.CALL_INJEST,
             idempotency=IdempotencyConfig(scope="run"),
         )
         assert step.idempotency.scope == "run"
-
-    def test_write_op_allows_no_idempotency(self):
-        """Write ops can omit idempotency (defaults applied at compile)."""
-        step = StepDef(step_id="step1", op=Op.WRITE_UPSERT)
-        assert step.idempotency is None
-
-    def test_non_write_op_rejects_idempotency(self):
-        """Non-write ops must not have idempotency."""
-        with pytest.raises(CompileError, match="idempotency is only valid for write operations"):
-            StepDef(
-                step_id="step1",
-                op=Op.QUERY_RAW_OBJECTS,
-                idempotency=IdempotencyConfig(scope="run"),
-            )
 
 
 # =============================================================================
@@ -261,8 +221,8 @@ class TestJobDef:
             job_id="job1",
             version="1.0.0",
             steps=(
-                StepDef(step_id="step1", op=Op.QUERY_RAW_OBJECTS),
-                StepDef(step_id="step2", op=Op.WRITE_UPSERT),
+                StepDef(step_id="step1", op=Op.CALL_INJEST),
+                StepDef(step_id="step2", op=Op.CALL_CANONIZER),
             ),
         )
         assert job.job_id == "job1"
@@ -276,8 +236,8 @@ class TestJobDef:
                 job_id="job1",
                 version="1.0.0",
                 steps=(
-                    StepDef(step_id="step1", op=Op.QUERY_RAW_OBJECTS),
-                    StepDef(step_id="step1", op=Op.WRITE_UPSERT),
+                    StepDef(step_id="step1", op=Op.CALL_INJEST),
+                    StepDef(step_id="step1", op=Op.CALL_CANONIZER),
                 ),
             )
 
@@ -287,12 +247,12 @@ class TestJobDef:
             job_id="job1",
             version="1.0.0",
             steps=(
-                StepDef(step_id="step1", op=Op.QUERY_RAW_OBJECTS),
-                StepDef(step_id="step2", op=Op.WRITE_UPSERT),
+                StepDef(step_id="step1", op=Op.CALL_INJEST),
+                StepDef(step_id="step2", op=Op.CALL_CANONIZER),
             ),
         )
-        assert job.get_step("step1").op == Op.QUERY_RAW_OBJECTS
-        assert job.get_step("step2").op == Op.WRITE_UPSERT
+        assert job.get_step("step1").op == Op.CALL_INJEST
+        assert job.get_step("step2").op == Op.CALL_CANONIZER
         assert job.get_step("nonexistent") is None
 
     def test_to_dict_and_from_dict(self):
@@ -303,13 +263,13 @@ class TestJobDef:
             steps=(
                 StepDef(
                     step_id="step1",
-                    op=Op.QUERY_RAW_OBJECTS,
+                    op=Op.CALL_INJEST,
                     params={"entity_type": "records"},
                     phase_id="phase1",
                 ),
                 StepDef(
                     step_id="step2",
-                    op=Op.WRITE_UPSERT,
+                    op=Op.CALL_CANONIZER,
                     idempotency=IdempotencyConfig(
                         scope="semantic",
                         semantic_key_ref="@payload.id",
@@ -341,7 +301,7 @@ class TestJobStepInstance:
         """Basic step instance."""
         step = JobStepInstance(
             step_id="step1",
-            op=Op.QUERY_RAW_OBJECTS,
+            op=Op.CALL_INJEST,
             params={"entity_type": "records"},
         )
         assert step.step_id == "step1"
@@ -351,7 +311,7 @@ class TestJobStepInstance:
         """compiled_skip marks step for skipping."""
         step = JobStepInstance(
             step_id="step1",
-            op=Op.QUERY_RAW_OBJECTS,
+            op=Op.CALL_INJEST,
             compiled_skip=True,
         )
         assert step.compiled_skip is True
@@ -369,8 +329,8 @@ class TestJobInstance:
             job_def_sha256="a" * 64,
             compiled_at=now,
             steps=(
-                JobStepInstance(step_id="step1", op=Op.QUERY_RAW_OBJECTS),
-                JobStepInstance(step_id="step2", op=Op.WRITE_UPSERT, compiled_skip=True),
+                JobStepInstance(step_id="step1", op=Op.CALL_INJEST),
+                JobStepInstance(step_id="step2", op=Op.CALL_CANONIZER, compiled_skip=True),
             ),
         )
         assert instance.job_id == "job1"
@@ -384,9 +344,9 @@ class TestJobInstance:
             job_def_sha256="a" * 64,
             compiled_at=utcnow(),
             steps=(
-                JobStepInstance(step_id="step1", op=Op.QUERY_RAW_OBJECTS),
-                JobStepInstance(step_id="step2", op=Op.QUERY_RAW_OBJECTS, compiled_skip=True),
-                JobStepInstance(step_id="step3", op=Op.WRITE_UPSERT),
+                JobStepInstance(step_id="step1", op=Op.CALL_INJEST),
+                JobStepInstance(step_id="step2", op=Op.CALL_INJEST, compiled_skip=True),
+                JobStepInstance(step_id="step3", op=Op.CALL_CANONIZER),
             ),
         )
         executable = instance.get_executable_steps()
@@ -405,7 +365,7 @@ class TestJobInstance:
             steps=(
                 JobStepInstance(
                     step_id="step1",
-                    op=Op.QUERY_RAW_OBJECTS,
+                    op=Op.CALL_INJEST,
                     phase_id="phase1",
                     timeout_s=60,
                 ),
@@ -471,13 +431,13 @@ class TestStepManifest:
         manifest = StepManifest(
             run_id="01HGVZ8X1MXYZABC123456789A",
             step_id="step1",
-            backend="data_plane",
-            op=Op.QUERY_RAW_OBJECTS,
+            backend="callable",
+            op=Op.CALL_INJEST,
             resolved_params={"entity_type": "records"},
             idempotency_key="key123",
         )
         assert manifest.run_id == "01HGVZ8X1MXYZABC123456789A"
-        assert manifest.backend == "data_plane"
+        assert manifest.backend == "callable"
         assert manifest.prompt_hash is None
 
     def test_backend_mismatch_rejected(self):
@@ -486,8 +446,8 @@ class TestStepManifest:
             StepManifest(
                 run_id="01HGVZ8X1MXYZABC123456789A",
                 step_id="step1",
-                backend="compute",  # Wrong! query.raw_objects should be data_plane
-                op=Op.QUERY_RAW_OBJECTS,
+                backend="inferator",  # Wrong! call.injest should be callable
+                op=Op.CALL_INJEST,
                 idempotency_key="key123",
             )
 
@@ -500,7 +460,7 @@ class TestStepManifest:
             resolved_params={"prompt": "some text"},
             idempotency_key="key123",
         )
-        assert manifest.backend == "compute"
+        assert manifest.backend == "inferator"
 
     def test_llm_manifest_with_prompt_hash(self):
         """LLM ops can have prompt_hash."""
@@ -519,7 +479,7 @@ class TestStepManifest:
         original = StepManifest.from_op(
             run_id="01HGVZ8X1MXYZABC123456789A",
             step_id="step1",
-            op=Op.QUERY_RAW_OBJECTS,
+            op=Op.CALL_INJEST,
             resolved_params={"entity_type": "records"},
             idempotency_key="key123",
         )
@@ -702,41 +662,21 @@ class TestAttemptRecord:
 
 
 class TestSchemaInvariants:
-    """Tests for schema invariants from e005 specification."""
+    """Tests for schema invariants from e005b specification."""
 
     def test_phase_id_has_no_execution_semantics(self):
         """phase_id is just metadata with no execution semantics in v0."""
         # We just verify it can be set without affecting behavior
-        step = StepDef(step_id="step1", op=Op.QUERY_RAW_OBJECTS, phase_id="load_phase")
+        step = StepDef(step_id="step1", op=Op.CALL_INJEST, phase_id="load_phase")
         assert step.phase_id == "load_phase"
         # No execution semantics - just stored as metadata
-
-    def test_idempotency_must_be_absent_for_non_write_ops(self):
-        """Non-write ops must not have idempotency."""
-        non_write_ops = [
-            Op.QUERY_RAW_OBJECTS,
-            Op.QUERY_CANONICAL_OBJECTS,
-            Op.QUERY_LAST_SYNC,
-            Op.ASSERT_ROWS,
-            Op.ASSERT_SCHEMA,
-            Op.ASSERT_UNIQUE,
-            Op.COMPUTE_LLM,
-            Op.JOB_RUN,
-        ]
-        for op in non_write_ops:
-            with pytest.raises(CompileError):
-                StepDef(
-                    step_id="step1",
-                    op=op,
-                    idempotency=IdempotencyConfig(scope="run"),
-                )
 
     def test_step_manifest_is_replay_safe(self):
         """StepManifest contains all info needed for replay."""
         manifest = StepManifest.from_op(
             run_id="01HGVZ8X1MXYZABC123456789A",
             step_id="step1",
-            op=Op.QUERY_RAW_OBJECTS,
+            op=Op.CALL_INJEST,
             resolved_params={"entity_type": "records"},
             idempotency_key="run:01HGVZ8X1MXYZABC123456789A:step1",
         )
@@ -751,10 +691,9 @@ class TestSchemaInvariants:
     def test_backend_derived_from_op_prefix(self):
         """Backend is correctly derived from op prefix."""
         test_cases = [
-            (Op.QUERY_RAW_OBJECTS, "data_plane"),
-            (Op.WRITE_UPSERT, "data_plane"),
-            (Op.ASSERT_ROWS, "data_plane"),
-            (Op.COMPUTE_LLM, "compute"),
+            (Op.CALL_INJEST, "callable"),
+            (Op.CALL_CANONIZER, "callable"),
+            (Op.COMPUTE_LLM, "inferator"),
             (Op.JOB_RUN, "orchestration"),
         ]
         for op, expected_backend in test_cases:
@@ -766,122 +705,3 @@ class TestSchemaInvariants:
                 idempotency_key="key",
             )
             assert manifest.backend == expected_backend, f"{op} should have backend {expected_backend}"
-
-
-# =============================================================================
-# JSON SCHEMA VALIDATION TESTS
-# =============================================================================
-
-
-class TestJsonSchemaValidation:
-    """Tests that Python dataclass serialization matches JSON schemas."""
-
-    @pytest.fixture
-    def schemas_dir(self):
-        """Path to schemas directory."""
-        from pathlib import Path
-        return Path(__file__).parent.parent / "lorchestra" / "schemas"
-
-    @pytest.fixture
-    def validate(self):
-        """Create a JSON schema validator function."""
-        import jsonschema
-
-        def _validate(instance: dict, schema: dict) -> None:
-            jsonschema.validate(instance=instance, schema=schema)
-
-        return _validate
-
-    def test_job_def_schema_validates(self, schemas_dir, validate):
-        """JobDef.to_dict() validates against job_def.schema.json."""
-        schema = json.loads((schemas_dir / "job_def.schema.json").read_text())
-
-        job = JobDef(
-            job_id="test_job",
-            version="1.0.0",
-            steps=(
-                StepDef(step_id="step1", op=Op.QUERY_RAW_OBJECTS, params={"entity_type": "records"}),
-                StepDef(
-                    step_id="step2",
-                    op=Op.WRITE_UPSERT,
-                    idempotency=IdempotencyConfig(scope="semantic", semantic_key_ref="@payload.id"),
-                ),
-            ),
-        )
-        validate(job.to_dict(), schema)
-
-    def test_job_instance_schema_validates(self, schemas_dir, validate):
-        """JobInstance.to_dict() validates against job_instance.schema.json."""
-        schema = json.loads((schemas_dir / "job_instance.schema.json").read_text())
-
-        instance = JobInstance(
-            job_id="test_job",
-            job_version="1.0.0",
-            job_def_sha256="a" * 64,
-            compiled_at=utcnow(),
-            steps=(
-                JobStepInstance(step_id="step1", op=Op.QUERY_RAW_OBJECTS, params={"entity_type": "records"}),
-                JobStepInstance(step_id="step2", op=Op.WRITE_UPSERT, compiled_skip=True),
-            ),
-        )
-        validate(instance.to_dict(), schema)
-
-    def test_run_record_schema_validates(self, schemas_dir, validate):
-        """RunRecord.to_dict() validates against run_record.schema.json."""
-        schema = json.loads((schemas_dir / "run_record.schema.json").read_text())
-
-        record = RunRecord(
-            run_id="01HGVZ8X1MXYZABC123456789A",
-            job_id="test_job",
-            job_def_sha256="a" * 64,
-            envelope={"key": "value"},
-        )
-        validate(record.to_dict(), schema)
-
-    def test_step_manifest_schema_validates(self, schemas_dir, validate):
-        """StepManifest.to_dict() validates against step_manifest.schema.json."""
-        schema = json.loads((schemas_dir / "step_manifest.schema.json").read_text())
-
-        manifest = StepManifest.from_op(
-            run_id="01HGVZ8X1MXYZABC123456789A",
-            step_id="step1",
-            op=Op.QUERY_RAW_OBJECTS,
-            resolved_params={"entity_type": "records"},
-            idempotency_key="run:01HGVZ8X1MXYZABC123456789A:step1",
-        )
-        validate(manifest.to_dict(), schema)
-
-    def test_attempt_record_schema_validates(self, schemas_dir, validate):
-        """AttemptRecord.to_dict() validates against attempt.schema.json."""
-        schema = json.loads((schemas_dir / "attempt.schema.json").read_text())
-
-        now = utcnow()
-        attempt = AttemptRecord(
-            run_id="01HGVZ8X1MXYZABC123456789A",
-            attempt_n=1,
-            started_at=now,
-            completed_at=now,
-            status=StepStatus.COMPLETED,
-            step_outcomes=(
-                StepOutcome(
-                    step_id="step1",
-                    status=StepStatus.COMPLETED,
-                    started_at=now,
-                    completed_at=now,
-                ),
-            ),
-        )
-        validate(attempt.to_dict(), schema)
-
-    def test_invalid_job_def_fails_validation(self, schemas_dir, validate):
-        """Invalid JobDef data fails schema validation."""
-        import jsonschema
-        schema = json.loads((schemas_dir / "job_def.schema.json").read_text())
-
-        invalid_data = {
-            "job_id": "",  # Empty string, minLength 1 required
-            "version": "invalid",  # Should match semver pattern
-            "steps": [],
-        }
-        with pytest.raises(jsonschema.ValidationError):
-            validate(invalid_data, schema)

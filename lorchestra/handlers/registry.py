@@ -1,9 +1,14 @@
 """
 Handler Registry for dispatching operations to appropriate handlers.
 
-The registry maps backend types (data_plane, compute, orchestration) to
+The registry maps backend types (callable, inferator, orchestration) to
 their corresponding Handler implementations, providing a central dispatch
 mechanism for the Executor.
+
+Backend types (per e005b-01):
+- callable: call.* ops dispatched to in-proc callables
+- inferator: compute.* ops dispatched to LLM service
+- orchestration: job.* ops handled by lorchestra itself
 """
 
 from typing import Any, TYPE_CHECKING
@@ -12,7 +17,6 @@ from lorchestra.handlers.base import Handler, NoOpHandler
 from lorchestra.schemas import StepManifest
 
 if TYPE_CHECKING:
-    from lorchestra.handlers.storacle_client import StoracleClient
     from lorchestra.handlers.compute import ComputeClient
     from lorchestra.run_store import RunStore
 
@@ -21,12 +25,12 @@ class HandlerRegistry:
     """
     Registry for handler dispatch by backend type.
 
-    Maps backend names (data_plane, compute, orchestration) to Handler instances.
+    Maps backend names (callable, inferator, orchestration) to Handler instances.
 
     Usage:
         registry = HandlerRegistry()
-        registry.register("data_plane", DataPlaneHandler(storacle_client))
-        registry.register("compute", ComputeHandler(compute_client))
+        registry.register("callable", CallableHandler())
+        registry.register("inferator", InferatorHandler(compute_client))
 
         # Dispatch a manifest
         result = registry.dispatch(manifest)
@@ -44,7 +48,7 @@ class HandlerRegistry:
         Register a handler for a backend type.
 
         Args:
-            backend: Backend type name (data_plane, compute, orchestration)
+            backend: Backend type name (callable, inferator, orchestration)
             handler: Handler instance for this backend
         """
         self._handlers[backend] = handler
@@ -111,7 +115,6 @@ class HandlerRegistry:
     @classmethod
     def create_default(
         cls,
-        storacle_client: "StoracleClient | None" = None,
         compute_client: "ComputeClient | None" = None,
         store: "RunStore | None" = None,
     ) -> "HandlerRegistry":
@@ -121,8 +124,7 @@ class HandlerRegistry:
         If clients are not provided, NoOpHandler will be used.
 
         Args:
-            storacle_client: StoracleClient for data_plane operations
-            compute_client: ComputeClient for compute operations
+            compute_client: ComputeClient for inferator operations
             store: RunStore for orchestration sub-job artifacts
 
         Returns:
@@ -130,25 +132,19 @@ class HandlerRegistry:
         """
         registry = cls()
 
-        # Data plane handler
-        if storacle_client is not None:
-            from lorchestra.handlers.data_plane import DataPlaneHandler
+        # Callable handler (in-proc dispatch)
+        from lorchestra.handlers.callable_handler import CallableHandler
+        registry.register("callable", CallableHandler())
 
-            registry.register("data_plane", DataPlaneHandler(storacle_client))
-        else:
-            registry.register("data_plane", NoOpHandler())
-
-        # Compute handler
+        # Inferator handler (LLM service)
         if compute_client is not None:
             from lorchestra.handlers.compute import ComputeHandler
-
-            registry.register("compute", ComputeHandler(compute_client))
+            registry.register("inferator", ComputeHandler(compute_client))
         else:
-            registry.register("compute", NoOpHandler())
+            registry.register("inferator", NoOpHandler())
 
         # Orchestration handler
         from lorchestra.handlers.orchestration import OrchestrationHandler
-
         registry.register(
             "orchestration",
             OrchestrationHandler(registry=registry, store=store),
@@ -167,7 +163,7 @@ class HandlerRegistry:
             HandlerRegistry with NoOp handlers for all backends
         """
         registry = cls()
-        registry.register("data_plane", NoOpHandler())
-        registry.register("compute", NoOpHandler())
+        registry.register("callable", NoOpHandler())
+        registry.register("inferator", NoOpHandler())
         registry.register("orchestration", NoOpHandler())
         return registry

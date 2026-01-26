@@ -90,21 +90,13 @@ class StepDef:
 
     def _validate_idempotency(self):
         """
-        Validate idempotency configuration based on op type.
-        - Write ops: idempotency defaults to {scope: run} if omitted (handled at creation)
-        - Non-write ops: idempotency MUST be absent/null
+        Validate idempotency configuration.
+
+        Idempotency is optional for all ops in the new call.* model.
+        If provided, it must be a valid IdempotencyConfig.
         """
-        if self.op.requires_idempotency:
-            # Write ops are valid with or without explicit idempotency
-            # (default applied at compile time)
-            pass
-        else:
-            # Non-write ops must NOT have idempotency
-            if self.idempotency is not None:
-                raise CompileError(
-                    f"Step '{self.step_id}': idempotency is only valid for write operations, "
-                    f"but op is '{self.op.value}'"
-                )
+        # Idempotency is now optional for all ops
+        pass
 
 
 @dataclass(frozen=True)
