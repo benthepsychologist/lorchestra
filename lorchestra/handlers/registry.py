@@ -30,7 +30,7 @@ class HandlerRegistry:
     Usage:
         registry = HandlerRegistry()
         registry.register("callable", CallableHandler())
-        registry.register("inferator", InferatorHandler(compute_client))
+        registry.register("inferator", ComputeHandler(compute_client))
 
         # Dispatch a manifest
         result = registry.dispatch(manifest)

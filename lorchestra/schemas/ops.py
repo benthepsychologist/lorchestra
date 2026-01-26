@@ -47,7 +47,7 @@ class Op(str, Enum):
         """
         if self.value.startswith("call."):
             return "callable"
-        elif self.value == "compute.llm":
+        elif self.value.startswith("compute."):
             return "inferator"
         else:
             return "orchestration"
