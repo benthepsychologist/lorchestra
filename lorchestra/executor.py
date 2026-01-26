@@ -2,7 +2,7 @@
 Executor - Step dispatch and execution engine.
 
 The Executor implements:
-- Step dispatch to appropriate handlers (data_plane, compute, orchestration)
+- Step dispatch to appropriate handlers (callable, inferator, orchestration)
 - Reference resolution (@run.* refs from previous step outputs)
 - Idempotency key computation
 - Retry logic with continue_on_error semantics
@@ -19,10 +19,10 @@ Execution flow:
    e. Record StepOutcome
 4. Update AttemptRecord with final status
 
-Handler Architecture (e005-03):
+Handler Architecture (e005b-01):
 - HandlerRegistry dispatches StepManifests to appropriate handlers
-- DataPlaneHandler: query.*, write.*, assert.* (via StoracleClient)
-- ComputeHandler: compute.* (via ComputeClient)
+- CallableHandler: call.* (in-proc callables → storacle)
+- ComputeHandler: compute.llm (via inferator service)
 - OrchestrationHandler: job.* (via lorchestra itself)
 """
 
@@ -273,10 +273,13 @@ class Executor:
     - Attempt tracking
 
     Usage (recommended - with HandlerRegistry):
-        from lorchestra.handlers import HandlerRegistry, DataPlaneHandler
+        from lorchestra.handlers import HandlerRegistry
 
-        registry = HandlerRegistry()
-        registry.register("data_plane", DataPlaneHandler(storacle_client))
+        registry = HandlerRegistry.create_default()
+        # Or manually configure:
+        # registry = HandlerRegistry()
+        # registry.register("callable", CallableHandler())
+        # registry.register("inferator", ComputeHandler(compute_client))
 
         executor = Executor(
             store=InMemoryRunStore(),
@@ -288,7 +291,7 @@ class Executor:
         executor = Executor(
             store=InMemoryRunStore(),
             backends={
-                "data_plane": SomeBackend(),
+                "callable": SomeBackend(),
             },
         )
     """

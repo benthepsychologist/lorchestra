@@ -53,20 +53,19 @@ def simple_job_def() -> JobDef:
         version="1.0.0",
         steps=(
             StepDef(
-                step_id="query_data",
-                op=Op.QUERY_RAW_OBJECTS,
-                params={"source": "test", "limit": 100},
+                step_id="injest_data",
+                op=Op.CALL_INJEST,
+                params={"source_system": "test", "object_type": "test_obj"},
             ),
             StepDef(
                 step_id="llm_process",
                 op=Op.COMPUTE_LLM,
-                params={"prompt": "Process data", "input_rows": "@run.query_data.rows"},
+                params={"prompt": "Process data", "input_rows": "@run.injest_data.items"},
             ),
             StepDef(
-                step_id="write_result",
-                op=Op.WRITE_UPSERT,
-                params={"table": "output", "data": "@run.llm_process.response"},
-                idempotency=IdempotencyConfig(scope="run"),
+                step_id="canonize_result",
+                op=Op.CALL_CANONIZER,
+                params={"schema": "output", "data": "@run.llm_process.response"},
             ),
         ),
     )
@@ -81,15 +80,14 @@ def job_with_conditions() -> JobDef:
         steps=(
             StepDef(
                 step_id="always_run",
-                op=Op.QUERY_RAW_OBJECTS,
-                params={"source": "@ctx.source"},
+                op=Op.CALL_INJEST,
+                params={"source_system": "@ctx.source", "object_type": "default"},
             ),
             StepDef(
                 step_id="prod_only",
-                op=Op.WRITE_UPSERT,
-                params={"table": "prod_table"},
+                op=Op.CALL_CANONIZER,
+                params={"schema": "prod_schema"},
                 if_="@ctx.env == 'prod'",
-                idempotency=IdempotencyConfig(scope="run"),
             ),
             StepDef(
                 step_id="when_enabled",
@@ -112,7 +110,7 @@ def temp_definitions_dir(tmp_path) -> Path:
         "job_id": "simple_job",
         "version": "1.0.0",
         "steps": [
-            {"step_id": "step1", "op": "query.raw_objects", "params": {"limit": 10}},
+            {"step_id": "step1", "op": "call.injest", "params": {"source_system": "test", "object_type": "test"}},
         ],
     }
     (defs_dir / "simple_job.json").write_text(json.dumps(simple_job))
@@ -124,12 +122,11 @@ def temp_definitions_dir(tmp_path) -> Path:
         "job_id": "ingest_test",
         "version": "1.0.0",
         "steps": [
-            {"step_id": "fetch", "op": "query.raw_objects", "params": {"source": "api"}},
+            {"step_id": "fetch", "op": "call.injest", "params": {"source_system": "api", "object_type": "data"}},
             {
-                "step_id": "store",
-                "op": "write.upsert",
-                "params": {"table": "raw"},
-                "idempotency": {"scope": "run"},
+                "step_id": "canonize",
+                "op": "call.canonizer",
+                "params": {"schema": "raw"},
             },
         ],
     }
@@ -231,7 +228,7 @@ class TestCompiler:
 
         # Check @ctx.source was resolved
         step = instance.get_step("always_run")
-        assert step.params["source"] == "my_source"
+        assert step.params["source_system"] == "my_source"
 
     def test_compile_resolves_payload_refs(self):
         """Compile resolves @payload.* references."""
@@ -241,7 +238,7 @@ class TestCompiler:
             steps=(
                 StepDef(
                     step_id="s1",
-                    op=Op.QUERY_RAW_OBJECTS,
+                    op=Op.CALL_INJEST,
                     params={"id": "@payload.entity_id"},
                 ),
             ),
@@ -255,7 +252,7 @@ class TestCompiler:
         instance = compile_job(simple_job_def)
 
         llm_step = instance.get_step("llm_process")
-        assert llm_step.params["input_rows"] == "@run.query_data.rows"
+        assert llm_step.params["input_rows"] == "@run.injest_data.items"
 
     def test_compile_evaluates_if_true(self, job_with_conditions):
         """If condition evaluates to true - step not skipped."""
@@ -397,8 +394,8 @@ class TestInMemoryRunStore:
         manifest = StepManifest.from_op(
             run_id="test-run-id",
             step_id="step1",
-            op=Op.QUERY_RAW_OBJECTS,
-            resolved_params={"limit": 10},
+            op=Op.CALL_INJEST,
+            resolved_params={"source_system": "test", "object_type": "data"},
             idempotency_key="test-key",
         )
 
@@ -550,8 +547,8 @@ class TestIdempotencyKey:
     def test_semantic_scope_key(self):
         """Semantic-scoped key uses semantic_key_ref."""
         step = JobStepInstance(
-            step_id="upsert",
-            op=Op.WRITE_UPSERT,
+            step_id="canonize",
+            op=Op.CALL_CANONIZER,
             params={"entity_id": "ent-456"},
         )
         idempotency = IdempotencyConfig(
@@ -560,7 +557,7 @@ class TestIdempotencyKey:
         )
 
         key = _compute_idempotency_key(
-            "run-123", "upsert", step, {"entity_id": "ent-456"}, idempotency
+            "run-123", "canonize", step, {"entity_id": "ent-456"}, idempotency
         )
 
         assert "semantic:ent-456" in key
@@ -568,14 +565,14 @@ class TestIdempotencyKey:
     def test_payload_hash_included(self):
         """include_payload_hash adds hash suffix."""
         step = JobStepInstance(
-            step_id="write",
-            op=Op.WRITE_UPSERT,
+            step_id="canonize",
+            op=Op.CALL_CANONIZER,
             params={"data": "test"},
         )
         idempotency = IdempotencyConfig(scope="run", include_payload_hash=True)
 
         key = _compute_idempotency_key(
-            "run-123", "write", step, {"data": "test"}, idempotency
+            "run-123", "canonize", step, {"data": "test"}, idempotency
         )
 
         # Key should have hash suffix
@@ -588,12 +585,12 @@ class MockBackend:
 
     def execute(self, manifest: StepManifest) -> dict:
         """Return mock output based on operation."""
-        if manifest.op == Op.QUERY_RAW_OBJECTS:
-            return {"rows": [{"id": 1}, {"id": 2}], "count": 2}
+        if manifest.op == Op.CALL_INJEST:
+            return {"items": [{"id": 1}, {"id": 2}], "stats": {"count": 2}}
         elif manifest.op == Op.COMPUTE_LLM:
             return {"response": "processed", "model": "test", "usage": {}}
-        elif manifest.op.is_write_op():
-            return {"affected": 1, "status": "ok"}
+        elif manifest.op.value.startswith("call."):
+            return {"items": [], "stats": {"count": 0}}
         else:
             return {"status": "ok"}
 
@@ -602,8 +599,8 @@ def _make_mock_backends():
     """Create mock backends for testing."""
     mock = MockBackend()
     return {
-        "data_plane": mock,
-        "compute": mock,
+        "callable": mock,
+        "inferator": mock,
         "orchestration": NoOpBackend(),
     }
 
@@ -691,16 +688,16 @@ class TestExecutor:
             def execute(self, manifest):
                 self.calls.append(manifest)
                 # Return mock output that enables @run.* resolution
-                if manifest.step_id == "query_data":
-                    return {"rows": [{"id": 1}, {"id": 2}]}
+                if manifest.step_id == "injest_data":
+                    return {"items": [{"id": 1}, {"id": 2}], "stats": {"count": 2}}
                 elif manifest.step_id == "llm_process":
                     return {"response": "processed_data", "model": "test", "usage": {}}
                 return {"status": "ok"}
 
         tracking = TrackingBackend()
         backends = {
-            "data_plane": tracking,
-            "compute": tracking,
+            "callable": tracking,
+            "inferator": tracking,
             "orchestration": NoOpBackend(),
         }
 
