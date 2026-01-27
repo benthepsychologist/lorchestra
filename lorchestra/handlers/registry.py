@@ -136,7 +136,7 @@ class HandlerRegistry:
         from lorchestra.handlers.callable_handler import CallableHandler
         registry.register("callable", CallableHandler())
 
-        # Inferator handler (LLM service)
+        # Inferometer handler (LLM service)
         if compute_client is not None:
             from lorchestra.handlers.compute import ComputeHandler
             registry.register("inferometer", ComputeHandler(compute_client))
