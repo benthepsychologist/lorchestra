@@ -288,10 +288,18 @@ class TestBigQueryStorageClient:
 
     def test_upsert_canonical_builds_merge_query(self, storage_client, mock_bq_client):
         """upsert_canonical builds MERGE query with correct structure."""
-        # Mock query result
+        # Mock load_table_from_json (temp table loading)
+        mock_load_job = MagicMock()
+        mock_load_job.result.return_value = None
+        mock_bq_client.load_table_from_json.return_value = mock_load_job
+
+        # Mock query result (MERGE query)
         mock_result = MagicMock()
         mock_result.num_dml_affected_rows = 1
         mock_bq_client.query.return_value.result.return_value = mock_result
+
+        # Mock delete_table (cleanup)
+        mock_bq_client.delete_table.return_value = None
 
         objects = [
             {
@@ -306,13 +314,22 @@ class TestBigQueryStorageClient:
         result = storage_client.upsert_canonical(objects, "corr-123")
 
         assert result["inserted"] == 1
-        assert mock_bq_client.query.called
 
-        # Check query contains MERGE
+        # Verify temp table was loaded with data
+        assert mock_bq_client.load_table_from_json.called
+        load_call = mock_bq_client.load_table_from_json.call_args
+        loaded_rows = load_call[0][0]  # First positional arg is the rows
+        assert len(loaded_rows) == 1
+        assert loaded_rows[0]["idem_key"] == "key1"
+        assert loaded_rows[0]["canonical_schema"] == "iglu:test/schema/1-0-0"
+
+        # Verify MERGE query was executed
+        assert mock_bq_client.query.called
         query = mock_bq_client.query.call_args[0][0]
         assert "MERGE" in query
-        assert "key1" in query
-        assert "iglu:test/schema/1-0-0" in query
+        # MERGE from temp table, not inline values
+        assert "temp_canonical_" in query
+        assert "ON T.idem_key = S.idem_key" in query
 
     def test_upsert_canonical_empty_returns_zero(self, storage_client, mock_bq_client):
         """upsert_canonical with empty list returns zeros."""

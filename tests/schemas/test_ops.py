@@ -119,9 +119,9 @@ class TestBackendProperty:
         """call.workman backend should be 'callable'."""
         assert Op.CALL_WORKMAN.backend == "callable"
 
-    def test_compute_llm_backend_is_inferator(self):
-        """compute.llm backend should be 'inferator'."""
-        assert Op.COMPUTE_LLM.backend == "inferator"
+    def test_compute_llm_backend_is_inferometer(self):
+        """compute.llm backend should be 'inferometer'."""
+        assert Op.COMPUTE_LLM.backend == "inferometer"
 
     def test_job_run_backend_is_orchestration(self):
         """job.run backend should be 'orchestration'."""

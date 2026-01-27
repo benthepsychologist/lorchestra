@@ -18,27 +18,19 @@
     },
     "backend": {
       "type": "string",
-      "description": "Target backend derived from op prefix",
-      "enum": ["data_plane", "compute", "orchestration"]
+      "description": "Target backend derived from op prefix (callable for call.*, inferometer for compute.*, orchestration for job.*)",
+      "enum": ["callable", "inferometer", "orchestration"]
     },
     "op": {
       "type": "string",
       "description": "The operation to execute",
       "enum": [
-        "query.raw_objects",
-        "query.canonical_objects",
-        "query.last_sync",
-        "write.upsert",
-        "write.insert",
-        "write.delete",
-        "write.merge",
-        "assert.rows",
-        "assert.schema",
-        "assert.unique",
+        "call.injest",
+        "call.canonizer",
+        "call.finalform",
+        "call.projectionist",
+        "call.workman",
         "compute.llm",
-        "compute.transform",
-        "compute.extract",
-        "compute.render",
         "job.run"
       ]
     },

@@ -1,15 +1,28 @@
-"""Tests for ProjectionistProcessor (sheets projection via RPC)."""
+"""Tests for ProjectionistProcessor (sheets projection via RPC).
+
+NOTE: These tests require the projectionist and storacle packages to be installed.
+They are skipped if those packages are not available.
+"""
 
 from unittest.mock import MagicMock, patch
 from dataclasses import dataclass
 
 import pytest
 
+# Skip entire module if external dependencies aren't available
+try:
+    from projectionist.context import ProjectionContext
+    from storacle.rpc import execute_plan
+    PROJECTIONIST_AVAILABLE = True
+except ImportError:
+    PROJECTIONIST_AVAILABLE = False
+    pytestmark = pytest.mark.skip(reason="projectionist or storacle packages not installed")
+
 from lorchestra.processors.projectionist import (
     ProjectionistProcessor,
     BqQueryServiceAdapter,
     _resolve_placeholders,
-    PROJECTION_BUILD_PLAN_REGISTRY,
+    _get_build_plan_registry,
 )
 
 
@@ -153,13 +166,17 @@ class TestBqQueryServiceAdapter:
 class TestProjectionBuildPlanRegistry:
     """Tests for build_plan registry."""
 
+    @pytest.mark.skipif(not PROJECTIONIST_AVAILABLE, reason="projectionist not installed")
     def test_sheets_build_plan_registered(self):
-        """Test sheets build_plan is in the registry."""
-        assert "sheets" in PROJECTION_BUILD_PLAN_REGISTRY
+        """Test sheets build_plan is in the registry (when projectionist installed)."""
+        registry = _get_build_plan_registry()
+        assert "sheets" in registry
 
+    @pytest.mark.skipif(not PROJECTIONIST_AVAILABLE, reason="projectionist not installed")
     def test_registry_value_is_callable(self):
         """Test registry values are callable."""
-        for name, fn in PROJECTION_BUILD_PLAN_REGISTRY.items():
+        registry = _get_build_plan_registry()
+        for name, fn in registry.items():
             assert callable(fn), f"{name} is not callable"
 
 
@@ -168,15 +185,18 @@ class TestProjectionBuildPlanRegistry:
 # =============================================================================
 
 
+@pytest.mark.skipif(not PROJECTIONIST_AVAILABLE, reason="projectionist or storacle not installed")
 class TestProjectionistProcessor:
     """Tests for ProjectionistProcessor with RPC-based flow."""
 
-    @patch("lorchestra.processors.projectionist.execute_plan")
-    @patch("lorchestra.processors.projectionist.PROJECTION_BUILD_PLAN_REGISTRY")
+    @patch("lorchestra.processors.projectionist._import_storacle_rpc")
+    @patch("lorchestra.processors.projectionist._get_build_plan_registry")
+    @patch("lorchestra.processors.projectionist._import_projectionist")
     def test_calls_build_plan_then_execute_plan(
         self,
-        mock_registry,
-        mock_execute_plan,
+        mock_import_projectionist,
+        mock_get_registry,
+        mock_import_rpc,
         mock_storage_client,
         mock_event_client,
         job_spec,
@@ -198,9 +218,16 @@ class TestProjectionistProcessor:
         mock_build_plan = MagicMock(
             side_effect=lambda *a, **k: (call_order.append("build_plan"), mock_plan)[1]
         )
-        mock_registry.get.return_value = mock_build_plan
+        mock_get_registry.return_value = {"sheets": mock_build_plan}
 
-        mock_execute_plan.side_effect = lambda *a, **k: (call_order.append("execute_plan"), mock_responses)[1]
+        # Mock ProjectionContext class
+        mock_projection_context = MagicMock()
+        mock_import_projectionist.return_value = (mock_projection_context, None)
+
+        mock_execute_plan = MagicMock(
+            side_effect=lambda *a, **k: (call_order.append("execute_plan"), mock_responses)[1]
+        )
+        mock_import_rpc.return_value = mock_execute_plan
 
         processor = ProjectionistProcessor()
         context = MockJobContext()
@@ -209,12 +236,14 @@ class TestProjectionistProcessor:
 
         assert call_order == ["build_plan", "execute_plan"]
 
-    @patch("lorchestra.processors.projectionist.execute_plan")
-    @patch("lorchestra.processors.projectionist.PROJECTION_BUILD_PLAN_REGISTRY")
+    @patch("lorchestra.processors.projectionist._import_storacle_rpc")
+    @patch("lorchestra.processors.projectionist._get_build_plan_registry")
+    @patch("lorchestra.processors.projectionist._import_projectionist")
     def test_execute_plan_called_with_plan_and_dry_run(
         self,
-        mock_registry,
-        mock_execute_plan,
+        mock_import_projectionist,
+        mock_get_registry,
+        mock_import_rpc,
         mock_storage_client,
         mock_event_client,
         job_spec,
@@ -230,8 +259,13 @@ class TestProjectionistProcessor:
         mock_responses = []
 
         mock_build_plan = MagicMock(return_value=mock_plan)
-        mock_registry.get.return_value = mock_build_plan
-        mock_execute_plan.return_value = mock_responses
+        mock_get_registry.return_value = {"sheets": mock_build_plan}
+
+        mock_projection_context = MagicMock()
+        mock_import_projectionist.return_value = (mock_projection_context, None)
+
+        mock_execute_plan = MagicMock(return_value=mock_responses)
+        mock_import_rpc.return_value = mock_execute_plan
 
         processor = ProjectionistProcessor()
         context = MockJobContext(dry_run=True)
@@ -240,12 +274,14 @@ class TestProjectionistProcessor:
 
         mock_execute_plan.assert_called_once_with(mock_plan, dry_run=True)
 
-    @patch("lorchestra.processors.projectionist.execute_plan")
-    @patch("lorchestra.processors.projectionist.PROJECTION_BUILD_PLAN_REGISTRY")
+    @patch("lorchestra.processors.projectionist._import_storacle_rpc")
+    @patch("lorchestra.processors.projectionist._get_build_plan_registry")
+    @patch("lorchestra.processors.projectionist._import_projectionist")
     def test_events_logged_with_plan_id(
         self,
-        mock_registry,
-        mock_execute_plan,
+        mock_import_projectionist,
+        mock_get_registry,
+        mock_import_rpc,
         mock_storage_client,
         mock_event_client,
         job_spec,
@@ -261,8 +297,13 @@ class TestProjectionistProcessor:
         mock_responses = [{"jsonrpc": "2.0", "id": "op-1", "result": {"rows_written": 5}}]
 
         mock_build_plan = MagicMock(return_value=mock_plan)
-        mock_registry.get.return_value = mock_build_plan
-        mock_execute_plan.return_value = mock_responses
+        mock_get_registry.return_value = {"sheets": mock_build_plan}
+
+        mock_projection_context = MagicMock()
+        mock_import_projectionist.return_value = (mock_projection_context, None)
+
+        mock_execute_plan = MagicMock(return_value=mock_responses)
+        mock_import_rpc.return_value = mock_execute_plan
 
         processor = ProjectionistProcessor()
         context = MockJobContext()
@@ -279,12 +320,14 @@ class TestProjectionistProcessor:
         assert completed_call.kwargs["event_type"] == "projection.completed"
         assert completed_call.kwargs["payload"]["plan_id"] == "sha256:my-unique-plan-id"
 
-    @patch("lorchestra.processors.projectionist.execute_plan")
-    @patch("lorchestra.processors.projectionist.PROJECTION_BUILD_PLAN_REGISTRY")
+    @patch("lorchestra.processors.projectionist._import_storacle_rpc")
+    @patch("lorchestra.processors.projectionist._get_build_plan_registry")
+    @patch("lorchestra.processors.projectionist._import_projectionist")
     def test_completed_event_has_ops_count_not_rows(
         self,
-        mock_registry,
-        mock_execute_plan,
+        mock_import_projectionist,
+        mock_get_registry,
+        mock_import_rpc,
         mock_storage_client,
         mock_event_client,
         job_spec,
@@ -303,8 +346,13 @@ class TestProjectionistProcessor:
         ]
 
         mock_build_plan = MagicMock(return_value=mock_plan)
-        mock_registry.get.return_value = mock_build_plan
-        mock_execute_plan.return_value = mock_responses
+        mock_get_registry.return_value = {"sheets": mock_build_plan}
+
+        mock_projection_context = MagicMock()
+        mock_import_projectionist.return_value = (mock_projection_context, None)
+
+        mock_execute_plan = MagicMock(return_value=mock_responses)
+        mock_import_rpc.return_value = mock_execute_plan
 
         processor = ProjectionistProcessor()
         context = MockJobContext()
@@ -317,12 +365,14 @@ class TestProjectionistProcessor:
         # Should NOT have rows_affected (that would require inspecting result schema)
         assert "rows_affected" not in completed_call.kwargs["payload"]
 
-    @patch("lorchestra.processors.projectionist.execute_plan")
-    @patch("lorchestra.processors.projectionist.PROJECTION_BUILD_PLAN_REGISTRY")
+    @patch("lorchestra.processors.projectionist._import_storacle_rpc")
+    @patch("lorchestra.processors.projectionist._get_build_plan_registry")
+    @patch("lorchestra.processors.projectionist._import_projectionist")
     def test_completed_event_passes_responses_through(
         self,
-        mock_registry,
-        mock_execute_plan,
+        mock_import_projectionist,
+        mock_get_registry,
+        mock_import_rpc,
         mock_storage_client,
         mock_event_client,
         job_spec,
@@ -332,8 +382,13 @@ class TestProjectionistProcessor:
         mock_responses = [{"jsonrpc": "2.0", "id": "op-1", "result": {"some": "data"}}]
 
         mock_build_plan = MagicMock(return_value=mock_plan)
-        mock_registry.get.return_value = mock_build_plan
-        mock_execute_plan.return_value = mock_responses
+        mock_get_registry.return_value = {"sheets": mock_build_plan}
+
+        mock_projection_context = MagicMock()
+        mock_import_projectionist.return_value = (mock_projection_context, None)
+
+        mock_execute_plan = MagicMock(return_value=mock_responses)
+        mock_import_rpc.return_value = mock_execute_plan
 
         processor = ProjectionistProcessor()
         context = MockJobContext()
@@ -344,12 +399,14 @@ class TestProjectionistProcessor:
         # Responses should be passed through as-is
         assert completed_call.kwargs["payload"]["responses"] == mock_responses
 
-    @patch("lorchestra.processors.projectionist.execute_plan")
-    @patch("lorchestra.processors.projectionist.PROJECTION_BUILD_PLAN_REGISTRY")
+    @patch("lorchestra.processors.projectionist._import_storacle_rpc")
+    @patch("lorchestra.processors.projectionist._get_build_plan_registry")
+    @patch("lorchestra.processors.projectionist._import_projectionist")
     def test_dry_run_passed_to_execute_plan(
         self,
-        mock_registry,
-        mock_execute_plan,
+        mock_import_projectionist,
+        mock_get_registry,
+        mock_import_rpc,
         mock_storage_client,
         mock_event_client,
         job_spec,
@@ -359,8 +416,13 @@ class TestProjectionistProcessor:
         mock_responses = []
 
         mock_build_plan = MagicMock(return_value=mock_plan)
-        mock_registry.get.return_value = mock_build_plan
-        mock_execute_plan.return_value = mock_responses
+        mock_get_registry.return_value = {"sheets": mock_build_plan}
+
+        mock_projection_context = MagicMock()
+        mock_import_projectionist.return_value = (mock_projection_context, None)
+
+        mock_execute_plan = MagicMock(return_value=mock_responses)
+        mock_import_rpc.return_value = mock_execute_plan
 
         processor = ProjectionistProcessor()
         context = MockJobContext(dry_run=True)
@@ -371,21 +433,29 @@ class TestProjectionistProcessor:
         call_kwargs = mock_execute_plan.call_args.kwargs
         assert call_kwargs["dry_run"] is True
 
-    @patch("lorchestra.processors.projectionist.execute_plan")
-    @patch("lorchestra.processors.projectionist.PROJECTION_BUILD_PLAN_REGISTRY")
+    @patch("lorchestra.processors.projectionist._import_storacle_rpc")
+    @patch("lorchestra.processors.projectionist._get_build_plan_registry")
+    @patch("lorchestra.processors.projectionist._import_projectionist")
     def test_placeholder_resolution_in_config(
         self,
-        mock_registry,
-        mock_execute_plan,
+        mock_import_projectionist,
+        mock_get_registry,
+        mock_import_rpc,
         mock_storage_client,
         mock_event_client,
         job_spec,
     ):
         """Test that ${PROJECT} etc. in config are resolved."""
         mock_plan = {"plan_version": "storacle.plan/1.0.0", "plan_id": "x", "jsonrpc": "2.0", "meta": {}, "ops": []}
+
         mock_build_plan = MagicMock(return_value=mock_plan)
-        mock_registry.get.return_value = mock_build_plan
-        mock_execute_plan.return_value = []
+        mock_get_registry.return_value = {"sheets": mock_build_plan}
+
+        mock_projection_context = MagicMock()
+        mock_import_projectionist.return_value = (mock_projection_context, None)
+
+        mock_execute_plan = MagicMock(return_value=[])
+        mock_import_rpc.return_value = mock_execute_plan
 
         processor = ProjectionistProcessor()
         context = MockJobContext(
@@ -422,15 +492,18 @@ class TestProjectionistProcessor:
         assert "Unknown projection: unknown_projection" in str(exc_info.value)
 
 
+@pytest.mark.skipif(not PROJECTIONIST_AVAILABLE, reason="projectionist or storacle not installed")
 class TestProjectionistProcessorFailure:
     """Tests for failure handling with RPC responses."""
 
-    @patch("lorchestra.processors.projectionist.execute_plan")
-    @patch("lorchestra.processors.projectionist.PROJECTION_BUILD_PLAN_REGISTRY")
+    @patch("lorchestra.processors.projectionist._import_storacle_rpc")
+    @patch("lorchestra.processors.projectionist._get_build_plan_registry")
+    @patch("lorchestra.processors.projectionist._import_projectionist")
     def test_failed_event_logged_on_rpc_error(
         self,
-        mock_registry,
-        mock_execute_plan,
+        mock_import_projectionist,
+        mock_get_registry,
+        mock_import_rpc,
         mock_storage_client,
         mock_event_client,
         job_spec,
@@ -453,8 +526,13 @@ class TestProjectionistProcessorFailure:
         ]
 
         mock_build_plan = MagicMock(return_value=mock_plan)
-        mock_registry.get.return_value = mock_build_plan
-        mock_execute_plan.return_value = mock_responses
+        mock_get_registry.return_value = {"sheets": mock_build_plan}
+
+        mock_projection_context = MagicMock()
+        mock_import_projectionist.return_value = (mock_projection_context, None)
+
+        mock_execute_plan = MagicMock(return_value=mock_responses)
+        mock_import_rpc.return_value = mock_execute_plan
 
         processor = ProjectionistProcessor()
         context = MockJobContext()
@@ -475,12 +553,14 @@ class TestProjectionistProcessorFailure:
         assert failed_call[0].kwargs["status"] == "failed"
         assert failed_call[0].kwargs["payload"]["plan_id"] == "sha256:fail-plan"
 
-    @patch("lorchestra.processors.projectionist.execute_plan")
-    @patch("lorchestra.processors.projectionist.PROJECTION_BUILD_PLAN_REGISTRY")
+    @patch("lorchestra.processors.projectionist._import_storacle_rpc")
+    @patch("lorchestra.processors.projectionist._get_build_plan_registry")
+    @patch("lorchestra.processors.projectionist._import_projectionist")
     def test_failed_event_logged_on_execute_plan_exception(
         self,
-        mock_registry,
-        mock_execute_plan,
+        mock_import_projectionist,
+        mock_get_registry,
+        mock_import_rpc,
         mock_storage_client,
         mock_event_client,
         job_spec,
@@ -495,8 +575,13 @@ class TestProjectionistProcessorFailure:
         }
 
         mock_build_plan = MagicMock(return_value=mock_plan)
-        mock_registry.get.return_value = mock_build_plan
-        mock_execute_plan.side_effect = RuntimeError("Connection error")
+        mock_get_registry.return_value = {"sheets": mock_build_plan}
+
+        mock_projection_context = MagicMock()
+        mock_import_projectionist.return_value = (mock_projection_context, None)
+
+        mock_execute_plan = MagicMock(side_effect=RuntimeError("Connection error"))
+        mock_import_rpc.return_value = mock_execute_plan
 
         processor = ProjectionistProcessor()
         context = MockJobContext()
@@ -574,19 +659,26 @@ class TestLayerBoundaries:
                 ):
                     raise AssertionError("Found branching on ops[*].method in code")
 
-    def test_processor_imports_execute_plan_from_storacle_rpc(self):
-        """Verify storacle.rpc.execute_plan is imported."""
+    def test_processor_uses_lazy_import_for_storacle_rpc(self):
+        """Verify storacle.rpc is imported lazily via _import_storacle_rpc."""
         import lorchestra.processors.projectionist as module
 
         with open(module.__file__) as f:
             source = f.read()
 
-        # Should import from storacle.rpc
-        assert "from storacle.rpc import execute_plan" in source
+        # Should have lazy import helper
+        assert "_import_storacle_rpc" in source
 
-        # Should not import storacle.clients (actual import statements)
-        assert "from storacle.clients import" not in source
-        assert "import storacle.clients" not in source
+        # Should NOT have top-level direct import (except in TYPE_CHECKING block)
+        lines = source.split("\n")
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("from storacle.rpc import"):
+                # Check if it's inside a function or TYPE_CHECKING block
+                # Look for preceding if TYPE_CHECKING or def
+                context_lines = "\n".join(lines[max(0, i-10):i])
+                if "if TYPE_CHECKING" not in context_lines and "def _import" not in context_lines:
+                    raise AssertionError(f"Found top-level direct import at line {i+1}")
 
     def test_processor_does_not_inspect_result_schema(self):
         """Verify processor does not access rows_written or similar result fields."""

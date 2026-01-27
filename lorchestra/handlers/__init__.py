@@ -7,7 +7,7 @@ This module provides the handler abstraction layer that enforces clean boundarie
 
 Backend types (per e005b-01):
 - callable: call.* ops dispatched to in-proc callables
-- inferator: compute.* ops dispatched to LLM service
+- inferometer: compute.* ops dispatched to LLM service
 - orchestration: job.* ops handled by lorchestra itself
 
 Usage:
@@ -16,7 +16,7 @@ Usage:
     # Create registry with configured handlers
     registry = HandlerRegistry()
     registry.register("callable", CallableHandler())
-    registry.register("inferator", ComputeHandler(compute_client))
+    registry.register("inferometer", ComputeHandler(compute_client))
 
     # Or use factory with defaults
     registry = HandlerRegistry.create_default()

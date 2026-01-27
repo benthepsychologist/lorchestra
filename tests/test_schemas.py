@@ -64,8 +64,8 @@ class TestOp:
         assert Op.CALL_INJEST.backend == "callable"
         assert Op.CALL_CANONIZER.backend == "callable"
         assert Op.CALL_FINALFORM.backend == "callable"
-        # inferator for compute.*
-        assert Op.COMPUTE_LLM.backend == "inferator"
+        # inferometer for compute.*
+        assert Op.COMPUTE_LLM.backend == "inferometer"
         # orchestration for job.*
         assert Op.JOB_RUN.backend == "orchestration"
 
@@ -443,7 +443,7 @@ class TestStepManifest:
             StepManifest(
                 run_id="01HGVZ8X1MXYZABC123456789A",
                 step_id="step1",
-                backend="inferator",  # Wrong! call.injest should be callable
+                backend="inferometer",  # Wrong! call.injest should be callable
                 op=Op.CALL_INJEST,
                 idempotency_key="key123",
             )
@@ -457,7 +457,7 @@ class TestStepManifest:
             resolved_params={"prompt": "some text"},
             idempotency_key="key123",
         )
-        assert manifest.backend == "inferator"
+        assert manifest.backend == "inferometer"
 
     def test_llm_manifest_with_prompt_hash(self):
         """LLM ops can have prompt_hash."""
@@ -690,7 +690,7 @@ class TestSchemaInvariants:
         test_cases = [
             (Op.CALL_INJEST, "callable"),
             (Op.CALL_CANONIZER, "callable"),
-            (Op.COMPUTE_LLM, "inferator"),
+            (Op.COMPUTE_LLM, "inferometer"),
             (Op.JOB_RUN, "orchestration"),
         ]
         for op, expected_backend in test_cases:

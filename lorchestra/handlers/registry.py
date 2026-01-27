@@ -1,13 +1,13 @@
 """
 Handler Registry for dispatching operations to appropriate handlers.
 
-The registry maps backend types (callable, inferator, orchestration) to
+The registry maps backend types (callable, inferometer, orchestration) to
 their corresponding Handler implementations, providing a central dispatch
 mechanism for the Executor.
 
 Backend types (per e005b-01):
 - callable: call.* ops dispatched to in-proc callables
-- inferator: compute.* ops dispatched to LLM service
+- inferometer: compute.* ops dispatched to LLM service
 - orchestration: job.* ops handled by lorchestra itself
 """
 
@@ -25,12 +25,12 @@ class HandlerRegistry:
     """
     Registry for handler dispatch by backend type.
 
-    Maps backend names (callable, inferator, orchestration) to Handler instances.
+    Maps backend names (callable, inferometer, orchestration) to Handler instances.
 
     Usage:
         registry = HandlerRegistry()
         registry.register("callable", CallableHandler())
-        registry.register("inferator", ComputeHandler(compute_client))
+        registry.register("inferometer", ComputeHandler(compute_client))
 
         # Dispatch a manifest
         result = registry.dispatch(manifest)
@@ -48,7 +48,7 @@ class HandlerRegistry:
         Register a handler for a backend type.
 
         Args:
-            backend: Backend type name (callable, inferator, orchestration)
+            backend: Backend type name (callable, inferometer, orchestration)
             handler: Handler instance for this backend
         """
         self._handlers[backend] = handler
@@ -124,7 +124,7 @@ class HandlerRegistry:
         If clients are not provided, NoOpHandler will be used.
 
         Args:
-            compute_client: ComputeClient for inferator operations
+            compute_client: ComputeClient for inferometer operations
             store: RunStore for orchestration sub-job artifacts
 
         Returns:
@@ -139,9 +139,9 @@ class HandlerRegistry:
         # Inferator handler (LLM service)
         if compute_client is not None:
             from lorchestra.handlers.compute import ComputeHandler
-            registry.register("inferator", ComputeHandler(compute_client))
+            registry.register("inferometer", ComputeHandler(compute_client))
         else:
-            registry.register("inferator", NoOpHandler())
+            registry.register("inferometer", NoOpHandler())
 
         # Orchestration handler
         from lorchestra.handlers.orchestration import OrchestrationHandler
@@ -164,6 +164,6 @@ class HandlerRegistry:
         """
         registry = cls()
         registry.register("callable", NoOpHandler())
-        registry.register("inferator", NoOpHandler())
+        registry.register("inferometer", NoOpHandler())
         registry.register("orchestration", NoOpHandler())
         return registry

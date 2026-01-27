@@ -8,41 +8,31 @@
       "type": "string",
       "description": "Valid operation identifiers",
       "enum": [
-        "query.raw_objects",
-        "query.canonical_objects",
-        "query.last_sync",
-        "write.upsert",
-        "write.insert",
-        "write.delete",
-        "write.merge",
-        "assert.rows",
-        "assert.schema",
-        "assert.unique",
+        "call.injest",
+        "call.canonizer",
+        "call.finalform",
+        "call.projectionist",
+        "call.workman",
         "compute.llm",
-        "compute.transform",
-        "compute.extract",
-        "compute.render",
         "job.run"
       ]
     },
     "OpCategory": {
       "type": "string",
       "description": "High-level operation categories",
-      "enum": ["query", "write", "assert", "compute", "job"]
+      "enum": ["call", "compute", "job"]
     },
     "Backend": {
       "type": "string",
       "description": "Backend responsible for executing operations",
-      "enum": ["data_plane", "compute", "orchestration"]
+      "enum": ["callable", "inferometer", "orchestration"]
     },
     "OpBackendMapping": {
       "description": "Mapping of operations to backends",
       "type": "object",
       "properties": {
-        "query.*": { "const": "data_plane" },
-        "write.*": { "const": "data_plane" },
-        "assert.*": { "const": "data_plane" },
-        "compute.*": { "const": "compute" },
+        "call.*": { "const": "callable" },
+        "compute.*": { "const": "inferometer" },
         "job.*": { "const": "orchestration" }
       }
     }

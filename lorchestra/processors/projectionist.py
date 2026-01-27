@@ -21,15 +21,26 @@ Hard constraints (from spec):
 import logging
 from typing import Any, Callable, Iterator
 
-from projectionist.context import ProjectionContext
-from projectionist.projections.sheets import build_plan as sheets_build_plan
-
-from storacle.rpc import execute_plan
-
 from lorchestra.processors import registry
 from lorchestra.processors.base import EventClient, JobContext, StorageClient
 
 logger = logging.getLogger(__name__)
+
+# Lazy imports for external dependencies - may not be installed
+# These are imported lazily at runtime via _import_* functions below
+
+
+def _import_projectionist():
+    """Lazily import projectionist dependencies."""
+    from projectionist.context import ProjectionContext
+    from projectionist.projections.sheets import build_plan as sheets_build_plan
+    return ProjectionContext, sheets_build_plan
+
+
+def _import_storacle_rpc():
+    """Lazily import storacle.rpc.execute_plan."""
+    from storacle.rpc import execute_plan
+    return execute_plan
 
 
 # =============================================================================
@@ -47,9 +58,19 @@ BuildPlanFn = Callable[..., dict[str, Any]]
 
 # Maps projection_name → build_plan function
 # Each function must have signature: (ctx, config, *, bq) -> plan dict
-PROJECTION_BUILD_PLAN_REGISTRY: dict[str, BuildPlanFn] = {
-    "sheets": sheets_build_plan,
-}
+# Note: Registry is populated lazily when projectionist module is imported
+PROJECTION_BUILD_PLAN_REGISTRY: dict[str, BuildPlanFn] = {}
+
+
+def _get_build_plan_registry() -> dict[str, BuildPlanFn]:
+    """Get the build plan registry, populating it lazily."""
+    if not PROJECTION_BUILD_PLAN_REGISTRY:
+        try:
+            _, sheets_build_plan = _import_projectionist()
+            PROJECTION_BUILD_PLAN_REGISTRY["sheets"] = sheets_build_plan
+        except ImportError:
+            pass  # projectionist not installed
+    return PROJECTION_BUILD_PLAN_REGISTRY
 
 
 # =============================================================================
@@ -150,11 +171,12 @@ class ProjectionistProcessor:
         source_system = job_spec.get("source_system", "lorchestra")
 
         # Look up build_plan function from registry
-        build_plan_fn = PROJECTION_BUILD_PLAN_REGISTRY.get(projection_name)
+        build_plan_registry = _get_build_plan_registry()
+        build_plan_fn = build_plan_registry.get(projection_name)
         if build_plan_fn is None:
             raise ValueError(
                 f"Unknown projection: {projection_name}. "
-                f"Registered: {list(PROJECTION_BUILD_PLAN_REGISTRY.keys())}"
+                f"Registered: {list(build_plan_registry.keys())}"
             )
 
         # Resolve placeholders in config using lorchestra config values
@@ -166,7 +188,8 @@ class ProjectionistProcessor:
         # Build BQ adapter for projectionist to read data
         bq_service = BqQueryServiceAdapter(storage_client)
 
-        # Build context
+        # Build context (lazy import)
+        ProjectionContext, _ = _import_projectionist()
         ctx = ProjectionContext(
             dry_run=context.dry_run,
             run_id=context.run_id,
@@ -194,8 +217,9 @@ class ProjectionistProcessor:
         )
 
         try:
-            # Step 2: Execute plan via storacle RPC
+            # Step 2: Execute plan via storacle RPC (lazy import)
             # Lorchestra treats both plan and responses as OPAQUE
+            execute_plan = _import_storacle_rpc()
             responses = execute_plan(plan, dry_run=context.dry_run)
 
             # Check for any errors (opaque check - just presence of 'error' key)

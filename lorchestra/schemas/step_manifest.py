@@ -27,7 +27,7 @@ class StepManifest:
         run_id: ULID of the run this step belongs to
         step_id: Identifier of the step within the job
         backend: Target backend derived from op prefix
-                 (data_plane for query/write/assert, compute for compute)
+                 (callable for call.*, inferometer for compute.*, orchestration for job.*)
         op: The operation to execute
         resolved_params: Fully resolved parameters (no @ctx.*, @payload.*, or @run.* refs)
         prompt_hash: SHA256 of LLM prompt if applicable (nullable for non-LLM ops)
@@ -35,7 +35,7 @@ class StepManifest:
     """
     run_id: ULID
     step_id: str
-    backend: Literal["data_plane", "compute", "orchestration"]
+    backend: Literal["callable", "inferometer", "orchestration"]
     op: Op
     resolved_params: dict[str, Any] = field(default_factory=dict)
     prompt_hash: Optional[str] = None

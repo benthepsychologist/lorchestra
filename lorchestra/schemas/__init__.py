@@ -9,13 +9,14 @@ Lifecycle:
 1. JobDef: Static, version-controlled job definition with @ctx.*, @payload.*, @run.* refs
 2. JobInstance: Compiled job with resolved @ctx.* and @payload.* refs, fixed step list
 3. RunRecord: Runtime record when a job starts execution
-4. StepManifest: Dispatchable unit sent to backends (data_plane, compute, orchestration)
+4. StepManifest: Dispatchable unit sent to backends (callable, inferometer, orchestration)
 5. AttemptRecord: Tracks execution attempts and step outcomes
 
 Boundaries:
 - lorchestra: Orchestration (job lifecycle, step dispatch, retry logic)
-- storacle (data_plane): Data operations (query.*, write.*, assert.*)
-- compute: External IO operations (compute.*)
+- callable: In-proc callable dispatch (call.*)
+- inferometer: LLM compute operations (compute.*)
+- orchestration: Sub-job execution (job.*)
 """
 
 from .ops import Op

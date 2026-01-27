@@ -2,7 +2,7 @@
 Executor - Step dispatch and execution engine.
 
 The Executor implements:
-- Step dispatch to appropriate handlers (callable, inferator, orchestration)
+- Step dispatch to appropriate handlers (callable, inferometer, orchestration)
 - Reference resolution (@run.* refs from previous step outputs)
 - Idempotency key computation
 - Retry logic with continue_on_error semantics
@@ -22,7 +22,7 @@ Execution flow:
 Handler Architecture (e005b-01):
 - HandlerRegistry dispatches StepManifests to appropriate handlers
 - CallableHandler: call.* (in-proc callables → storacle)
-- ComputeHandler: compute.llm (via inferator service)
+- ComputeHandler: compute.llm (via inferometer service)
 - OrchestrationHandler: job.* (via lorchestra itself)
 """
 
@@ -279,7 +279,7 @@ class Executor:
         # Or manually configure:
         # registry = HandlerRegistry()
         # registry.register("callable", CallableHandler())
-        # registry.register("inferator", ComputeHandler(compute_client))
+        # registry.register("inferometer", ComputeHandler(compute_client))
 
         executor = Executor(
             store=InMemoryRunStore(),

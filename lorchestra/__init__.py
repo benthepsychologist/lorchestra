@@ -12,7 +12,7 @@ v2 API (e005-command-plane):
 Handler Architecture (e005b-01):
   - HandlerRegistry dispatches StepManifests to appropriate handlers
   - CallableHandler: call.* (in-proc callables → storacle)
-  - ComputeHandler: compute.llm (via inferator service)
+  - ComputeHandler: compute.llm (via inferometer service)
   - OrchestrationHandler: job.* (via lorchestra itself)
 """
 

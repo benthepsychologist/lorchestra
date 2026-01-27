@@ -593,7 +593,7 @@ def _make_mock_backends():
     mock = MockBackend()
     return {
         "callable": mock,
-        "inferator": mock,
+        "inferometer": mock,
         "orchestration": NoOpBackend(),
     }
 
@@ -690,7 +690,7 @@ class TestExecutor:
         tracking = TrackingBackend()
         backends = {
             "callable": tracking,
-            "inferator": tracking,
+            "inferometer": tracking,
             "orchestration": NoOpBackend(),
         }
 

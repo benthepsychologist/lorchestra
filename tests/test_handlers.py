@@ -230,7 +230,7 @@ class TestHandlerRegistry:
         registry = HandlerRegistry.create_noop()
 
         assert registry.has("callable")
-        assert registry.has("inferator")
+        assert registry.has("inferometer")
         assert registry.has("orchestration")
 
         # All should return noop
@@ -243,7 +243,7 @@ class TestHandlerRegistry:
         registry = HandlerRegistry.create_default()
 
         assert registry.has("callable")
-        assert registry.has("inferator")
+        assert registry.has("inferometer")
         assert registry.has("orchestration")
 
 
@@ -260,10 +260,10 @@ class TestBackendRouting:
         manifest = _make_call_manifest()
         assert manifest.backend == "callable"
 
-    def test_compute_ops_route_to_inferator(self):
-        """compute.* ops route to inferator backend."""
+    def test_compute_ops_route_to_inferometer(self):
+        """compute.* ops route to inferometer backend."""
         manifest = _make_llm_manifest()
-        assert manifest.backend == "inferator"
+        assert manifest.backend == "inferometer"
 
     def test_job_ops_route_to_orchestration(self):
         """job.* ops route to orchestration backend."""

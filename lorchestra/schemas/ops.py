@@ -3,7 +3,7 @@ Op enum defining the operation taxonomy for lorchestra.
 
 Operations are categorized by their backend:
 - call.*    -> callable: in-proc callable dispatch
-- compute.* -> inferator: LLM and external compute
+- compute.* -> inferometer: LLM and external compute
 - job.*     -> orchestration: sub-job execution
 """
 
@@ -19,7 +19,7 @@ class Op(str, Enum):
 
     Backend mapping:
     - call.* => callable (in-proc dispatch)
-    - compute.* => inferator (LLM service)
+    - compute.* => inferometer (LLM service)
     - job.* => orchestration (lorchestra)
     """
     # Callable dispatch (in-proc)
@@ -29,26 +29,26 @@ class Op(str, Enum):
     CALL_PROJECTIONIST = "call.projectionist"
     CALL_WORKMAN = "call.workman"
 
-    # LLM (via inferator)
+    # LLM (via inferometer)
     COMPUTE_LLM = "compute.llm"
 
     # Nested job
     JOB_RUN = "job.run"
 
     @property
-    def backend(self) -> Literal["callable", "inferator", "orchestration"]:
+    def backend(self) -> Literal["callable", "inferometer", "orchestration"]:
         """
         Get the backend responsible for executing this operation.
 
         Returns:
             - "callable" for call.* (handled by in-proc callable dispatch)
-            - "inferator" for compute.* (handled by inferator service)
+            - "inferometer" for compute.* (handled by inferometer service)
             - "orchestration" for job.* (handled by lorchestra itself)
         """
         if self.value.startswith("call."):
             return "callable"
         elif self.value.startswith("compute."):
-            return "inferator"
+            return "inferometer"
         else:
             return "orchestration"
 
