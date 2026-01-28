@@ -6,6 +6,8 @@ Handles compute.llm operations via ComputeClient.
 Keeping the orchestration layer free of compute service details.
 """
 
+import hashlib
+import json
 from typing import Any, Protocol, runtime_checkable
 
 from lorchestra.handlers.base import Handler
@@ -111,14 +113,42 @@ class ComputeHandler(Handler):
         self, params: dict[str, Any], manifest: StepManifest
     ) -> dict[str, Any]:
         """Execute compute.llm operation."""
+        prompt: str = params["prompt"]
+        config = {
+            "model": params.get("model"),
+            "temperature": params.get("temperature"),
+            "max_tokens": params.get("max_tokens"),
+            "system_prompt": params.get("system_prompt"),
+        }
+
         result = self._client.llm_invoke(
-            prompt=params["prompt"],
-            model=params.get("model"),
-            temperature=params.get("temperature"),
-            max_tokens=params.get("max_tokens"),
-            system_prompt=params.get("system_prompt"),
+            prompt=prompt,
+            model=config["model"],
+            temperature=config["temperature"],
+            max_tokens=config["max_tokens"],
+            system_prompt=config["system_prompt"],
         )
-        # Include prompt_hash from manifest if available
-        if manifest.prompt_hash:
-            result["prompt_hash"] = manifest.prompt_hash
+
+        prompt_hash = manifest.prompt_hash or _sha256_prefixed(prompt)
+        result["prompt_hash"] = prompt_hash
+
+        config_hash = _sha256_prefixed(_canonical_json(config))
+        result["config_hash"] = config_hash
+
+        response_text = result.get("response")
+        if isinstance(response_text, str):
+            output_hash = _sha256_prefixed(response_text)
+            result["output_hash"] = output_hash
+            # v0: no artifact store; use a stable synthetic ref for audit parity.
+            result["output_ref"] = f"artifact://inline/{output_hash}"
+
         return result
+
+
+def _canonical_json(data: dict[str, Any]) -> str:
+    return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _sha256_prefixed(text: str) -> str:
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return f"sha256:{digest}"

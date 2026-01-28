@@ -17,6 +17,7 @@ Rule: Exactly one of `items` or `items_ref` must be set.
 """
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -46,3 +47,19 @@ class CallableResult:
             raise ValueError(
                 "CallableResult must have exactly one of items or items_ref"
             )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dict matching CallableResult schema.
+
+        Returns:
+            Dict with schema_version, items or items_ref, and stats.
+        """
+        result: dict[str, Any] = {"schema_version": self.schema_version}
+
+        if self.items is not None:
+            result["items"] = self.items
+        if self.items_ref is not None:
+            result["items_ref"] = self.items_ref
+
+        result["stats"] = self.stats
+        return result

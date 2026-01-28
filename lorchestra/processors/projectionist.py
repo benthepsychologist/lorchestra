@@ -38,8 +38,32 @@ def _import_projectionist():
 
 
 def _import_storacle_rpc():
-    """Lazily import storacle.rpc.execute_plan."""
-    from storacle.rpc import execute_plan
+    """Lazily import storacle JSON-RPC boundary.
+
+    Storacle is currently used as a library, but we still treat it as a JSON-RPC
+    boundary: lorchestra sends a JSON-RPC request with method `storacle.execute_plan`
+    and receives a JSON-RPC response whose result is the list of per-op responses.
+    """
+
+    import uuid
+
+    from storacle.jsonrpc import handle_request
+
+    def execute_plan(plan: dict, *, dry_run: bool) -> list[dict]:
+        request = {
+            "jsonrpc": "2.0",
+            "id": str(uuid.uuid4()),
+            "method": "storacle.execute_plan",
+            "params": {"payload": plan},
+        }
+        response = handle_request(request, dry_run=dry_run)
+        if "error" in response:
+            raise RuntimeError(response["error"].get("message", "Storacle JSON-RPC error"))
+        result = response.get("result")
+        if not isinstance(result, list):
+            raise RuntimeError("Storacle JSON-RPC returned non-list result")
+        return result
+
     return execute_plan
 
 
