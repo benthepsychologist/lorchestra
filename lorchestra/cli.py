@@ -8,6 +8,7 @@ processor type in subdirectories) and dispatched via the JobRunner to typed
 processors (ingest, canonize, formation, projection).
 """
 
+from __future__ import annotations
 
 import sys
 
@@ -35,6 +36,37 @@ def _get_available_jobs() -> list[str]:
     ])
 
 
+def _cleanup_smoke_dataset(bq_client, project: str, dataset: str) -> bool:
+    """Delete a smoke dataset with guarded safety check.
+
+    Args:
+        bq_client: BigQuery client instance.
+        project: GCP project ID.
+        dataset: Dataset name to delete.
+
+    Returns:
+        True if deleted, False if not found.
+
+    Raises:
+        ValueError: If dataset doesn't match smoke_* pattern.
+    """
+    from google.cloud.exceptions import NotFound
+
+    # Safety guard: only delete smoke_* datasets
+    if not dataset.startswith("smoke_"):
+        raise ValueError(
+            f"Refusing to delete dataset '{dataset}': "
+            f"only smoke_* datasets can be deleted"
+        )
+
+    dataset_ref = f"{project}.{dataset}"
+    try:
+        bq_client.delete_dataset(dataset_ref, delete_contents=True, not_found_ok=False)
+        return True
+    except NotFound:
+        return False
+
+
 @click.group()
 @click.version_option(version=__version__, prog_name="lorchestra")
 @click.pass_context
@@ -58,8 +90,17 @@ def main(ctx):
 
 
 
-def _run_job_impl(ctx, job: str, dry_run: bool = False, test_table: bool = False, **kwargs):
+def _run_job_impl(
+    ctx,
+    job: str,
+    dry_run: bool = False,
+    test_table: bool = False,
+    smoke_namespace: str | None = None,
+    clean_up: bool = False,
+    **kwargs,
+):
     """Run a job by ID using the JobRunner."""
+    import os
     from google.cloud import bigquery
     from lorchestra.job_runner import run_job
     from lorchestra.stack_clients.event_client import ensure_test_tables_exist
@@ -75,6 +116,12 @@ def _run_job_impl(ctx, job: str, dry_run: bool = False, test_table: bool = False
     # Validate mutually exclusive flags
     if dry_run and test_table:
         raise click.UsageError("--dry-run and --test-table are mutually exclusive")
+    if smoke_namespace and test_table:
+        raise click.UsageError("--smoke-namespace and --test-table are mutually exclusive")
+    if dry_run and smoke_namespace:
+        raise click.UsageError("--dry-run and --smoke-namespace are mutually exclusive")
+    if clean_up and not smoke_namespace:
+        raise click.UsageError("--clean-up requires --smoke-namespace")
 
     # Print mode banner
     if dry_run:
@@ -86,6 +133,18 @@ def _run_job_impl(ctx, job: str, dry_run: bool = False, test_table: bool = False
         click.echo("=== TEST TABLE MODE ===")
         click.echo("Writing to: test_event_log, test_raw_objects")
         click.echo("=" * 50)
+    elif smoke_namespace:
+        smoke_dataset = f"smoke_{smoke_namespace}"
+        smoke_prefix = f"smoke_{smoke_namespace}__"
+        click.echo("=" * 50)
+        click.echo("=== SMOKE TEST MODE ===")
+        click.echo(f"Dataset:      {smoke_dataset}")
+        click.echo(f"Table prefix: {smoke_prefix}")
+        if clean_up:
+            click.echo("Cleanup:      enabled (will delete dataset after run)")
+        click.echo("=" * 50)
+        # Set env var for storacle to pick up
+        os.environ["STORACLE_SMOKE_NAMESPACE"] = smoke_namespace
 
     # Check if job definition exists
     available_jobs = _get_available_jobs()
@@ -110,12 +169,14 @@ def _run_job_impl(ctx, job: str, dry_run: bool = False, test_table: bool = False
         ensure_test_tables_exist(bq_client, dataset=config.dataset_raw)
 
     # Run job via JobRunner
+    job_failed = False
     try:
         run_job(
             job_id,
             config=config,
             dry_run=dry_run,
             test_table=test_table,
+            smoke_namespace=smoke_namespace,
             definitions_dir=DEFINITIONS_DIR,
             bq_client=bq_client,
         )
@@ -125,11 +186,26 @@ def _run_job_impl(ctx, job: str, dry_run: bool = False, test_table: bool = False
             click.echo(f"\n[DRY-RUN] {job_id} completed (no writes)")
         elif test_table:
             click.echo(f"\n[TEST] {job_id} completed (wrote to test tables)")
+        elif smoke_namespace:
+            click.echo(f"\n[SMOKE] {job_id} completed (wrote to smoke_{smoke_namespace})")
         else:
             click.echo(f"✓ {job_id} completed")
 
     except Exception as e:
+        job_failed = True
         click.echo(f"✗ {job_id} failed: {e}", err=True)
+    finally:
+        # Cleanup smoke dataset if requested (on success or failure)
+        if clean_up and smoke_namespace:
+            smoke_dataset = f"smoke_{smoke_namespace}"
+            click.echo(f"\nCleaning up smoke dataset: {smoke_dataset}")
+            try:
+                _cleanup_smoke_dataset(bq_client, config.project, smoke_dataset)
+                click.echo(f"✓ Deleted dataset {smoke_dataset}")
+            except Exception as cleanup_err:
+                click.echo(f"⚠ Cleanup failed: {cleanup_err}", err=True)
+
+    if job_failed:
         raise SystemExit(1)
 
 
@@ -137,8 +213,26 @@ def _run_job_impl(ctx, job: str, dry_run: bool = False, test_table: bool = False
 @click.argument("job")
 @click.option("--dry-run", is_flag=True, help="Execute without writing to BigQuery")
 @click.option("--test-table", is_flag=True, help="Write to test tables instead of prod")
+@click.option(
+    "--smoke-namespace",
+    type=str,
+    default=None,
+    help="Smoke test namespace (creates isolated dataset smoke_<namespace> with prefixed tables)",
+)
+@click.option(
+    "--clean-up",
+    is_flag=True,
+    help="Delete smoke dataset after run (requires --smoke-namespace)",
+)
 @click.pass_context
-def run(ctx, job: str, dry_run: bool, test_table: bool):
+def run(
+    ctx,
+    job: str,
+    dry_run: bool,
+    test_table: bool,
+    smoke_namespace: str | None,
+    clean_up: bool,
+):
     """
     Run a job by ID.
 
@@ -155,8 +249,19 @@ def run(ctx, job: str, dry_run: bool, test_table: bool):
         lorchestra run ingest_gmail_acct1 --dry-run
 
         lorchestra run ingest_gmail_acct1 --test-table
+
+        lorchestra run ingest_gmail_acct1 --smoke-namespace run_20260128
+
+        lorchestra run ingest_gmail_acct1 --smoke-namespace run_20260128 --clean-up
     """
-    _run_job_impl(ctx, job, dry_run=dry_run, test_table=test_table)
+    _run_job_impl(
+        ctx,
+        job,
+        dry_run=dry_run,
+        test_table=test_table,
+        smoke_namespace=smoke_namespace,
+        clean_up=clean_up,
+    )
 
 
 @main.command("init")
@@ -195,6 +300,54 @@ def init(force: bool):
 
     click.echo(f"Initialized lorchestra config at {cfg_path}")
     click.echo("Remember to run `can init` and `form init` for canonizer/formation if needed.")
+
+
+@main.command("cleanup-smoke")
+@click.argument("namespace")
+@click.option("--dry-run", is_flag=True, help="Show what would be deleted without deleting")
+@click.pass_context
+def cleanup_smoke(ctx, namespace: str, dry_run: bool):
+    """Delete a smoke test dataset.
+
+    NAMESPACE is the smoke namespace (the dataset smoke_<NAMESPACE> will be deleted).
+
+    Examples:
+
+        lorchestra cleanup-smoke run_20260128
+
+        lorchestra cleanup-smoke run_20260128 --dry-run
+    """
+    from google.cloud import bigquery
+
+    # Check config
+    if "config" not in ctx.obj:
+        click.echo(f"✗ Config not loaded: {ctx.obj.get('config_error', 'Unknown error')}", err=True)
+        click.echo("Run 'lorchestra init' to create a configuration file.", err=True)
+        raise SystemExit(1)
+
+    config = ctx.obj["config"]
+    smoke_dataset = f"smoke_{namespace}"
+
+    click.echo(f"Target dataset: {config.project}.{smoke_dataset}")
+
+    if dry_run:
+        click.echo("[DRY-RUN] Would delete dataset (not actually deleting)")
+        return
+
+    bq_client = bigquery.Client()
+    try:
+        deleted = _cleanup_smoke_dataset(bq_client, config.project, smoke_dataset)
+        if deleted:
+            click.echo(f"✓ Deleted dataset {smoke_dataset}")
+        else:
+            click.echo(f"Dataset {smoke_dataset} not found (nothing to delete)")
+    except ValueError as e:
+        click.echo(f"✗ {e}", err=True)
+        raise SystemExit(1)
+    except Exception as e:
+        click.echo(f"✗ Cleanup failed: {e}", err=True)
+        raise SystemExit(1)
+
 
 @main.group("jobs")
 def jobs_group():

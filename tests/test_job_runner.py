@@ -491,8 +491,10 @@ class TestRunJob:
                     test_table=True,
                 )
 
-                # Verify set_run_mode was called
-                mock_ec.set_run_mode.assert_called_once_with(dry_run=True, test_table=True)
+                # Verify set_run_mode was called with expected args
+                mock_ec.set_run_mode.assert_called_once_with(
+                    dry_run=True, test_table=True, smoke_namespace=None
+                )
 
                 # Verify reset_run_mode was called
                 mock_ec.reset_run_mode.assert_called_once()

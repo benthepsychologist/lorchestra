@@ -85,15 +85,21 @@ class UpsertResult:
 # ============================================================================
 # Run Mode Context
 # ============================================================================
-# Module-level flags for dry-run and test-table modes.
+# Module-level flags for dry-run, test-table, and smoke modes.
 # Set via set_run_mode() at CLI entry before job execution.
 # ============================================================================
 
 _DRY_RUN_MODE = False
 _TEST_TABLE_MODE = False
+_SMOKE_NAMESPACE: str | None = None
 
 
-def set_run_mode(*, dry_run: bool = False, test_table: bool = False) -> None:
+def set_run_mode(
+    *,
+    dry_run: bool = False,
+    test_table: bool = False,
+    smoke_namespace: str | None = None,
+) -> None:
     """Set the run mode for event_client operations.
 
     Call this once at CLI entry before job execution.
@@ -101,17 +107,25 @@ def set_run_mode(*, dry_run: bool = False, test_table: bool = False) -> None:
     Args:
         dry_run: If True, skip all BigQuery writes and log what would happen
         test_table: If True, write to test_event_log/test_raw_objects instead of prod
+        smoke_namespace: If set, write to smoke_<namespace> dataset with prefixed tables
     """
-    global _DRY_RUN_MODE, _TEST_TABLE_MODE
+    global _DRY_RUN_MODE, _TEST_TABLE_MODE, _SMOKE_NAMESPACE
     _DRY_RUN_MODE = dry_run
     _TEST_TABLE_MODE = test_table
+    _SMOKE_NAMESPACE = smoke_namespace
 
 
 def reset_run_mode() -> None:
     """Reset run mode to defaults (for testing)."""
-    global _DRY_RUN_MODE, _TEST_TABLE_MODE
+    global _DRY_RUN_MODE, _TEST_TABLE_MODE, _SMOKE_NAMESPACE
     _DRY_RUN_MODE = False
     _TEST_TABLE_MODE = False
+    _SMOKE_NAMESPACE = None
+
+
+def get_smoke_namespace() -> str | None:
+    """Return the current smoke namespace (or None if not in smoke mode)."""
+    return _SMOKE_NAMESPACE
 
 
 # ============================================================================
@@ -564,9 +578,11 @@ def _get_table_ref_by_name(table_name: str, dataset: Optional[str] = None) -> st
     """
     Get fully-qualified BigQuery table reference by explicit table name.
 
+    In smoke mode, routes to smoke_<namespace> dataset with prefixed table names.
+
     Args:
         table_name: Table name (e.g., "event_log", "test_event_log")
-        dataset: Optional dataset override
+        dataset: Optional dataset override (ignored in smoke mode)
 
     Returns:
         Table reference string: "dataset.table_name"
@@ -574,6 +590,14 @@ def _get_table_ref_by_name(table_name: str, dataset: Optional[str] = None) -> st
     Raises:
         RuntimeError: If required EVENTS_BQ_DATASET environment variable is missing
     """
+    # Smoke mode: use smoke dataset and prefix table name
+    if _SMOKE_NAMESPACE:
+        smoke_dataset = f"smoke_{_SMOKE_NAMESPACE}"
+        smoke_prefix = f"smoke_{_SMOKE_NAMESPACE}__"
+        # Don't double-prefix if table_name is already prefixed (e.g., test_event_log)
+        prefixed_table = f"{smoke_prefix}{table_name}"
+        return f"{smoke_dataset}.{prefixed_table}"
+
     dataset = dataset or os.environ.get("EVENTS_BQ_DATASET")
 
     if not dataset:

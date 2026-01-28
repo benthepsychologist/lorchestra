@@ -1169,6 +1169,7 @@ def run_job(
     config: LorchestraConfig | None = None,
     dry_run: bool = False,
     test_table: bool = False,
+    smoke_namespace: str | None = None,
     definitions_dir: Path | None = None,
     bq_client: bigquery.Client | None = None,
 ) -> None:
@@ -1185,6 +1186,7 @@ def run_job(
         config: Configuration object (required, though optional locally for test compat)
         dry_run: If True, skip all writes and log what would happen
         test_table: If True, write to test tables instead of production
+        smoke_namespace: If set, write to smoke_<namespace> dataset with prefixed tables
         definitions_dir: Optional directory containing job definitions
         bq_client: Optional BigQuery client (created if not provided)
 
@@ -1222,9 +1224,11 @@ def run_job(
         logger.info("  DRY RUN mode enabled")
     if test_table:
         logger.info("  TEST TABLE mode enabled")
+    if smoke_namespace:
+        logger.info(f"  SMOKE TEST mode enabled (namespace={smoke_namespace})")
 
     # Set run mode in event_client module
-    ec.set_run_mode(dry_run=dry_run, test_table=test_table)
+    ec.set_run_mode(dry_run=dry_run, test_table=test_table, smoke_namespace=smoke_namespace)
 
     # Create BigQuery client if not provided
     if bq_client is None:
