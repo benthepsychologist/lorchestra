@@ -104,13 +104,13 @@ def _run_job_impl(
     from google.cloud import bigquery
     from lorchestra.job_runner import run_job
     from lorchestra.stack_clients.event_client import ensure_test_tables_exist
-    
+
     # Check config
     if "config" not in ctx.obj:
         click.echo(f"✗ Config not loaded: {ctx.obj.get('config_error', 'Unknown error')}", err=True)
         click.echo("Run 'lorchestra init' to create a configuration file.", err=True)
         raise SystemExit(1)
-    
+
     config = ctx.obj["config"]
 
     # Validate mutually exclusive flags
@@ -637,6 +637,36 @@ def sql_adhoc(ctx, query: str | None):
 # Executor Commands - V2 orchestration engine (e005-02)
 # =============================================================================
 
+
+def _exec_cleanup_smoke(smoke_namespace: str, ctx) -> None:
+    """Clean up smoke dataset after an exec run.
+
+    Args:
+        smoke_namespace: The smoke namespace to clean up.
+        ctx: Click context with config.
+    """
+    from google.cloud import bigquery
+
+    smoke_dataset = f"smoke_{smoke_namespace}"
+    click.echo(f"\nCleaning up smoke dataset: {smoke_dataset}")
+    try:
+        config = ctx.obj.get("config")
+        if config:
+            project = config.project
+        else:
+            import os
+            project = os.environ.get("GCP_PROJECT", "")
+
+        bq_client = bigquery.Client()
+        deleted = _cleanup_smoke_dataset(bq_client, project, smoke_dataset)
+        if deleted:
+            click.echo(f"Deleted dataset {smoke_dataset}")
+        else:
+            click.echo(f"Dataset {smoke_dataset} not found (nothing to delete)")
+    except Exception as cleanup_err:
+        click.echo(f"Cleanup failed: {cleanup_err}", err=True)
+
+
 @main.group("exec")
 def exec_group():
     """V2 executor commands for JobDef orchestration.
@@ -652,8 +682,7 @@ def exec_group():
 @click.option("--ctx", "ctx_json", default="{}", help="Context JSON for @ctx.* resolution")
 @click.option("--payload", "payload_json", default="{}", help="Payload JSON for @payload.* resolution")
 @click.option("--output", "-o", type=click.Path(), help="Output path for JobInstance JSON")
-@click.pass_context
-def exec_compile(ctx, job_id: str, ctx_json: str, payload_json: str, output: str = None):
+def exec_compile(job_id: str, ctx_json: str, payload_json: str, output: str = None):
     """Compile a JobDef into a JobInstance.
 
     Resolves @ctx.* and @payload.* references and evaluates if conditions.
@@ -667,10 +696,7 @@ def exec_compile(ctx, job_id: str, ctx_json: str, payload_json: str, output: str
         lorchestra exec compile my_job -o instance.json
     """
     import json
-    import sys
-    sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
-    from spec.lorchestra import JobRegistry, Compiler
+    from lorchestra.executor import compile as compile_envelope
 
     # Parse context and payload
     try:
@@ -685,11 +711,15 @@ def exec_compile(ctx, job_id: str, ctx_json: str, payload_json: str, output: str
         click.echo(f"Invalid --payload JSON: {e}", err=True)
         raise SystemExit(1)
 
-    # Load and compile
+    # Compile via the public API
     try:
-        registry = JobRegistry(DEFINITIONS_DIR)
-        compiler = Compiler(registry)
-        instance = compiler.compile(job_id, ctx=compile_ctx, payload=payload)
+        envelope = {
+            "job_id": job_id,
+            "ctx": compile_ctx,
+            "payload": payload,
+            "definitions_dir": DEFINITIONS_DIR,
+        }
+        instance = compile_envelope(envelope)
     except Exception as e:
         click.echo(f"Compilation failed: {e}", err=True)
         raise SystemExit(1)
@@ -711,12 +741,25 @@ def exec_compile(ctx, job_id: str, ctx_json: str, payload_json: str, output: str
 @click.option("--envelope", "envelope_json", default="{}", help="Runtime envelope JSON for @run.* resolution")
 @click.option("--dry-run", is_flag=True, help="Execute with no-op backends (no actual I/O)")
 @click.option("--store-dir", type=click.Path(), help="Directory for run artifacts (default: in-memory)")
+@click.option(
+    "--smoke-namespace",
+    type=str,
+    default=None,
+    help="Smoke test namespace (routes BQ writes to isolated smoke_<namespace> dataset)",
+)
+@click.option(
+    "--clean-up",
+    is_flag=True,
+    help="Delete smoke dataset after run (requires --smoke-namespace)",
+)
 @click.pass_context
 def exec_run(ctx, job_id: str, ctx_json: str, payload_json: str, envelope_json: str,
-             dry_run: bool, store_dir: str = None):
-    """Compile and execute a JobDef.
+             dry_run: bool, store_dir: str = None, smoke_namespace: str = None,
+             clean_up: bool = False):
+    """Compile and execute a JobDef via execute(envelope).
 
-    Compiles the JobDef with context/payload, then executes using the executor engine.
+    Builds an envelope from CLI args and calls lorchestra.execute(envelope) --
+    the same entry point that production (life) will use.
 
     Examples:
 
@@ -727,13 +770,20 @@ def exec_run(ctx, job_id: str, ctx_json: str, payload_json: str, envelope_json: 
         lorchestra exec run my_job --dry-run
 
         lorchestra exec run my_job --store-dir ./runs
+
+        lorchestra exec run my_job --smoke-namespace run_20260129
+
+        lorchestra exec run my_job --smoke-namespace run_20260129 --clean-up
     """
     import json
-    import sys
-    sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+    from lorchestra.executor import execute
+    from lorchestra.run_store import InMemoryRunStore, FileRunStore
 
-    from spec.lorchestra import JobRegistry, Compiler, Executor
-    from spec.lorchestra.run_store import InMemoryRunStore, FileRunStore
+    # Validate flag combinations
+    if clean_up and not smoke_namespace:
+        raise click.UsageError("--clean-up requires --smoke-namespace")
+    if dry_run and smoke_namespace:
+        raise click.UsageError("--dry-run and --smoke-namespace are mutually exclusive")
 
     # Parse JSON inputs
     try:
@@ -749,7 +799,7 @@ def exec_run(ctx, job_id: str, ctx_json: str, payload_json: str, envelope_json: 
         raise SystemExit(1)
 
     try:
-        envelope = json.loads(envelope_json)
+        runtime_envelope = json.loads(envelope_json)
     except json.JSONDecodeError as e:
         click.echo(f"Invalid --envelope JSON: {e}", err=True)
         raise SystemExit(1)
@@ -760,23 +810,45 @@ def exec_run(ctx, job_id: str, ctx_json: str, payload_json: str, envelope_json: 
     else:
         store = InMemoryRunStore()
 
-    # Load, compile, and execute
-    try:
-        registry = JobRegistry(DEFINITIONS_DIR)
-        compiler = Compiler(registry)
-        instance = compiler.compile(job_id, ctx=compile_ctx, payload=payload)
-
-        click.echo(f"Compiled job: {instance.job_id} v{instance.job_version}")
-        click.echo(f"  Steps: {len(instance.steps)} ({len(instance.get_executable_steps())} executable)")
-        click.echo(f"  Hash:  {instance.job_def_sha256[:16]}...")
+    # Print mode banner
+    if smoke_namespace:
+        smoke_dataset = f"smoke_{smoke_namespace}"
+        smoke_prefix = f"smoke_{smoke_namespace}__"
+        click.echo("=" * 50)
+        click.echo("=== SMOKE TEST MODE ===")
+        click.echo(f"Dataset:      {smoke_dataset}")
+        click.echo(f"Table prefix: {smoke_prefix}")
+        if clean_up:
+            click.echo("Cleanup:      enabled (will delete dataset after run)")
+        click.echo("=" * 50)
         click.echo()
 
+    # Build envelope -- the single entry point for execution
+    envelope = {
+        "job_id": job_id,
+        "ctx": compile_ctx,
+        "payload": payload,
+        "definitions_dir": DEFINITIONS_DIR,
+        "store": store,
+    }
+
+    # Add smoke namespace if provided
+    if smoke_namespace:
+        envelope["smoke_namespace"] = smoke_namespace
+
+    # Merge runtime envelope fields (user-provided --envelope JSON)
+    if runtime_envelope:
+        # runtime_envelope goes into the envelope for @run.envelope.* resolution
+        # but does NOT override top-level keys like job_id, ctx, etc.
+        envelope.setdefault("runtime", runtime_envelope)
+
+    # Execute via the public API
+    try:
         if dry_run:
             click.echo("=== DRY RUN MODE === (no-op backends)")
             click.echo()
 
-        executor = Executor(store=store)
-        result = executor.execute(instance, envelope=envelope)
+        result = execute(envelope)
 
         # Display results
         click.echo(f"Run ID: {result.run_id}")
@@ -799,12 +871,21 @@ def exec_run(ctx, job_id: str, ctx_json: str, payload_json: str, envelope_json: 
             if outcome.error:
                 click.echo(f"      Error: {outcome.error.get('message', 'Unknown error')}")
 
+        if smoke_namespace:
+            click.echo(f"\n[SMOKE] {job_id} completed (wrote to smoke_{smoke_namespace})")
+
         if not result.success:
             raise SystemExit(1)
 
+    except SystemExit:
+        raise
     except Exception as e:
         click.echo(f"Execution failed: {e}", err=True)
         raise SystemExit(1)
+    finally:
+        # Cleanup smoke dataset if requested
+        if clean_up and smoke_namespace:
+            _exec_cleanup_smoke(smoke_namespace, ctx)
 
 
 @exec_group.command("status")
@@ -820,10 +901,8 @@ def exec_status(run_id: str, store_dir: str):
         lorchestra exec status 01HXYZ123ABC --store-dir ./runs
     """
     import json
-    import sys
-    sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-    from spec.lorchestra.run_store import FileRunStore
+    from lorchestra.run_store import FileRunStore
 
     store = FileRunStore(Path(store_dir))
 

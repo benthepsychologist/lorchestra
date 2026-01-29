@@ -635,6 +635,53 @@ def execute_job(
     return executor.execute(instance, envelope=envelope)
 
 
+def _load_job_def(envelope: dict[str, Any]) -> tuple[JobDef, dict[str, Any], dict[str, Any]]:
+    """Load a JobDef from an envelope, returning (job_def, ctx, payload).
+
+    Shared by compile() and execute() so both use the same registry-loading path.
+    """
+    job_id = envelope["job_id"]
+    ctx = envelope.get("ctx", {})
+    payload = envelope.get("payload", {})
+
+    registry = envelope.get("registry")
+    if registry is None:
+        from pathlib import Path
+        definitions_dir = envelope.get("definitions_dir", Path.cwd() / "jobs" / "definitions")
+        registry = JobRegistry(definitions_dir)
+
+    version = envelope.get("version")
+    job_def = registry.load(job_id, version=version)
+
+    return job_def, ctx, payload
+
+
+def compile(envelope: dict[str, Any]) -> "JobInstance":
+    """
+    Compile a job from an envelope (without executing).
+
+    Envelope schema:
+        job_id: str - The job identifier to load and compile
+        ctx: dict - Context for @ctx.* resolution (optional)
+        payload: dict - Payload for @payload.* resolution (optional)
+        definitions_dir: Path - Directory containing job definitions (optional)
+        registry: JobRegistry - Registry to load job from (optional)
+        version: str - Job version to load (optional)
+
+    Args:
+        envelope: Envelope containing job_id and optional parameters
+
+    Returns:
+        JobInstance ready for execution
+
+    Raises:
+        KeyError: If job_id is not in envelope
+        JobNotFoundError: If job_id is not found in registry
+    """
+    job_def, ctx, payload = _load_job_def(envelope)
+    return compile_job(job_def, ctx, payload)
+
+
 def execute(envelope: dict[str, Any]) -> ExecutionResult:
     """
     Execute a job from an envelope.
@@ -645,6 +692,8 @@ def execute(envelope: dict[str, Any]) -> ExecutionResult:
         job_id: str - The job identifier to load and execute
         ctx: dict - Context for @ctx.* resolution (optional)
         payload: dict - Payload for @payload.* resolution (optional)
+        smoke_namespace: str - Smoke test namespace for routing BQ writes (optional)
+        definitions_dir: Path - Directory containing job definitions (optional)
         registry: JobRegistry - Registry to load job from (optional)
         store: RunStore - Store for run artifacts (optional, defaults to FileRunStore)
         handlers: HandlerRegistry - Handler registry for step dispatch (optional, recommended)
@@ -660,24 +709,17 @@ def execute(envelope: dict[str, Any]) -> ExecutionResult:
         KeyError: If job_id is not in envelope
         JobNotFoundError: If job_id is not found in registry
     """
-    # Extract required fields
-    job_id = envelope["job_id"]
+    import os
 
-    # Extract optional fields
-    ctx = envelope.get("ctx", {})
-    payload = envelope.get("payload", {})
+    # Load job def via shared path
+    job_def, ctx, payload = _load_job_def(envelope)
 
-    # Get or create registry
-    registry = envelope.get("registry")
-    if registry is None:
-        # Default to looking in current directory's jobs/definitions
-        from pathlib import Path
-        definitions_dir = envelope.get("definitions_dir", Path.cwd() / "jobs" / "definitions")
-        registry = JobRegistry(definitions_dir)
-
-    # Load job definition
-    version = envelope.get("version")
-    job_def = registry.load(job_id, version=version)
+    # Configure smoke namespace if provided
+    smoke_namespace = envelope.get("smoke_namespace")
+    if smoke_namespace:
+        from lorchestra.stack_clients.event_client import set_run_mode
+        set_run_mode(smoke_namespace=smoke_namespace)
+        os.environ["STORACLE_SMOKE_NAMESPACE"] = smoke_namespace
 
     # Get or create store
     store = envelope.get("store")

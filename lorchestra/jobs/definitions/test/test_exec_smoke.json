@@ -1,0 +1,14 @@
+{
+  "job_id": "test_exec_smoke",
+  "version": "1.0.0",
+  "steps": [
+    {
+      "step_id": "noop_injest",
+      "op": "call.injest",
+      "params": {
+        "source_system": "test",
+        "object_type": "smoke_check"
+      }
+    }
+  ]
+}

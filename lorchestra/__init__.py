@@ -25,7 +25,8 @@ __all__ = [
     "LorchestraConfig",
     "load_config",
     "get_lorchestra_home",
-    # v2 executor
+    # v2 public API
+    "compile",
     "execute",
     "ExecutionResult",
     # v2 handlers (e005b-01)
@@ -34,8 +35,8 @@ __all__ = [
 
 from .config import LorchestraConfig, load_config, get_lorchestra_home
 
-# v2 executor - the primary public API per epic e005-command-plane
-from .executor import execute, ExecutionResult
+# v2 public API per epic e005-command-plane
+from .executor import compile, execute, ExecutionResult
 
 # v2 handlers - handler registry for step dispatch (e005b-01)
 from .handlers import HandlerRegistry
