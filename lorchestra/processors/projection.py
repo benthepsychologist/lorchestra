@@ -992,6 +992,142 @@ class ObservationProjection:
 
 
 # =============================================================================
+# CROSS-PROJECT SYNC PROCESSOR
+# =============================================================================
+
+
+class CrossProjectSyncProcessor:
+    """Sync curated data to another GCP project via CREATE OR REPLACE TABLE.
+
+    Runs a curation query against local-orchestration and writes results
+    to a table in another project (e.g., molt-chatbot). Uses fully-qualified
+    cross-project table names — BQ handles cross-project references when the
+    service account has bigquery.dataEditor on the target dataset.
+
+    Job spec:
+    {
+        "job_id": "sync_molt_emails",
+        "job_type": "sync_bq_cross_project",
+        "source": {
+            "query_name": "context_emails"   // looked up from molt_projections.py
+        },
+        "sink": {
+            "project": "molt-chatbot",
+            "dataset": "molt",
+            "table": "context_emails"
+        }
+    }
+    """
+
+    def run(
+        self,
+        job_spec: dict[str, Any],
+        context: JobContext,
+        storage_client: StorageClient,
+        event_client: EventClient,
+    ) -> None:
+        """Execute a cross-project sync job."""
+        from lorchestra.sql.molt_projections import get_molt_projection_sql
+
+        job_id = job_spec.get("job_id", "unknown")
+        source_config = job_spec["source"]
+        sink_config = job_spec["sink"]
+
+        sink_project = sink_config["project"]
+        sink_dataset = sink_config["dataset"]
+        sink_table = sink_config["table"]
+        fq_table = f"`{sink_project}.{sink_dataset}.{sink_table}`"
+
+        # Get source SQL — either inline or from named query
+        if "sql" in source_config:
+            source_sql = source_config["sql"]
+        elif "query_name" in source_config:
+            source_sql = get_molt_projection_sql(
+                name=source_config["query_name"],
+                project=context.config.project,
+                dataset=context.config.dataset_canonical,
+            )
+        else:
+            raise ValueError(
+                f"Job {job_id}: source must have 'sql' or 'query_name'"
+            )
+
+        # Emit started event
+        event_client.log_event(
+            event_type="projection.cross_project.started",
+            source_system="lorchestra",
+            correlation_id=context.run_id,
+            status="success",
+            payload={
+                "job_id": job_id,
+                "sink": f"{sink_project}.{sink_dataset}.{sink_table}",
+            },
+        )
+
+        try:
+            # Build the CTAS statement
+            ctas = f"CREATE OR REPLACE TABLE {fq_table} AS\n{source_sql}"
+
+            if context.dry_run:
+                logger.info(
+                    f"[DRY-RUN] Would execute cross-project sync: {job_id}"
+                )
+                logger.info(f"  Target: {fq_table}")
+                logger.info(f"  SQL preview: {source_sql[:200]}...")
+
+                event_client.log_event(
+                    event_type="projection.cross_project.dry_run",
+                    source_system="lorchestra",
+                    correlation_id=context.run_id,
+                    status="success",
+                    payload={
+                        "job_id": job_id,
+                        "sink": f"{sink_project}.{sink_dataset}.{sink_table}",
+                        "sql_preview": source_sql[:500],
+                    },
+                )
+                return
+
+            # Execute the cross-project CTAS
+            result = storage_client.execute_sql(ctas)
+
+            event_client.log_event(
+                event_type="projection.cross_project.completed",
+                source_system="lorchestra",
+                correlation_id=context.run_id,
+                status="success",
+                payload={
+                    "job_id": job_id,
+                    "sink": f"{sink_project}.{sink_dataset}.{sink_table}",
+                    "rows_affected": result.get("rows_affected", 0),
+                    "total_rows": result.get("total_rows", 0),
+                },
+            )
+
+            logger.info(
+                f"Cross-project sync complete: {job_id} → {fq_table} "
+                f"({result.get('total_rows', 0)} rows)"
+            )
+
+        except Exception as e:
+            logger.error(f"Cross-project sync failed: {job_id} - {e}", exc_info=True)
+
+            event_client.log_event(
+                event_type="projection.cross_project.failed",
+                source_system="lorchestra",
+                correlation_id=context.run_id,
+                status="failed",
+                error_message=str(e),
+                payload={
+                    "job_id": job_id,
+                    "sink": f"{sink_project}.{sink_dataset}.{sink_table}",
+                    "error_type": type(e).__name__,
+                },
+            )
+            raise
+
+
+# =============================================================================
 # REGISTER ALL PROCESSORS
 # =============================================================================
 
@@ -1005,3 +1141,6 @@ registry.register("project_observations", ObservationProjection())
 # Local projections
 registry.register("sync_sqlite", SyncSqliteProcessor())
 registry.register("file_projection", FileProjectionProcessor())
+
+# Cross-project projections
+registry.register("sync_bq_cross_project", CrossProjectSyncProcessor())
