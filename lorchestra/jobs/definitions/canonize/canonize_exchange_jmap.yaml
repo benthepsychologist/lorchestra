@@ -1,0 +1,9 @@
+job_id: canonize_exchange_jmap
+version: '1.0'
+steps:
+- step_id: canonize
+  op: call.canonizer
+  params:
+    source_type: exchange
+    config:
+      transform_id: email/exchange_to_jmap_lite@1.1.0

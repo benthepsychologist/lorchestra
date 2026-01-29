@@ -1,0 +1,9 @@
+job_id: canonize_google_forms
+version: '1.0'
+steps:
+- step_id: canonize
+  op: call.canonizer
+  params:
+    source_type: google_forms
+    config:
+      transform_id: forms/google_forms_to_canonical@1.0.0

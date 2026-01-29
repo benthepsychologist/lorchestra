@@ -1,0 +1,9 @@
+job_id: canonize_gmail_jmap
+version: '1.0'
+steps:
+- step_id: canonize
+  op: call.canonizer
+  params:
+    source_type: gmail
+    config:
+      transform_id: email/gmail_to_jmap_lite@1.1.0

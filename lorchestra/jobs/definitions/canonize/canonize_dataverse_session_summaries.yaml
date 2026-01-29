@@ -1,0 +1,9 @@
+job_id: canonize_dataverse_session_summaries
+version: '1.0'
+steps:
+- step_id: canonize
+  op: call.canonizer
+  params:
+    source_type: dataverse
+    config:
+      transform_id: session_summary/dataverse_to_canonical@2-0-0

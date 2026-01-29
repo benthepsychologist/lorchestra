@@ -1,0 +1,9 @@
+job_id: canonize_stripe_refunds
+version: '1.0'
+steps:
+- step_id: canonize
+  op: call.canonizer
+  params:
+    source_type: stripe
+    config:
+      transform_id: refund/stripe_to_canonical@1-0-0
