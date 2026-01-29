@@ -1,0 +1,10 @@
+job_id: form_followup
+version: "1.0"
+steps:
+  - step_id: formation
+    op: call.finalform
+    params:
+      instrument: followup
+      config:
+        binding_id: followup
+        binding_version: "1.0.0"

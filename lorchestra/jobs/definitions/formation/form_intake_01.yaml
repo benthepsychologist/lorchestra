@@ -1,0 +1,10 @@
+job_id: form_intake_01
+version: "1.0"
+steps:
+  - step_id: formation
+    op: call.finalform
+    params:
+      instrument: intake_01
+      config:
+        binding_id: intake_01
+        binding_version: "1.0.0"
