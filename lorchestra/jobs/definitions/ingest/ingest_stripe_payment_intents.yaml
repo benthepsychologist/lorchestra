@@ -1,0 +1,7 @@
+job_id: ingest_stripe_payment_intents
+version: "1.0"
+steps:
+  - step_id: ingest
+    op: call.injest
+    params:
+      source: "stripe_payment_intents"

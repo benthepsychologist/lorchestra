@@ -1,0 +1,7 @@
+job_id: ingest_gmail_acct2
+version: "1.0"
+steps:
+  - step_id: ingest
+    op: call.injest
+    params:
+      source: "gmail_acct2"

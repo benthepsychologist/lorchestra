@@ -1,0 +1,7 @@
+job_id: ingest_dataverse_reports
+version: "1.0"
+steps:
+  - step_id: ingest
+    op: call.injest
+    params:
+      source: "dataverse_reports"
