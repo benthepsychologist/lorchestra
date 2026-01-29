@@ -1,0 +1,13 @@
+job_id: proj_sheets_proj_clients
+version: '1.0'
+steps:
+- step_id: project
+  op: call.projectionist
+  params:
+    projection_id: sheets
+    config:
+      query: SELECT * FROM `${PROJECT}.${DATASET_CANONICAL}.proj_clients`
+      spreadsheet_id: YOUR_SPREADSHEET_ID
+      sheet_name: clients
+      strategy: replace
+      account: gdrive

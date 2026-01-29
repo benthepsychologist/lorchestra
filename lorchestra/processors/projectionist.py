@@ -1,33 +1,25 @@
-"""Projectionist processor: orchestrator glue for projectionist projections.
+"""Projectionist processor — DEPRECATED (e005b-04e).
 
-This is a thin glue layer that:
-1. Builds ProjectionContext from job spec
-2. Calls projectionist.build_plan() to get a storacle.plan/1.0.0 plan dict
-3. Calls storacle.rpc.execute_plan() to execute the plan
-4. Logs events
+This processor is superseded by the execute(envelope) path:
+    lorchestra.execute(envelope) -> CallableHandler -> call.projectionist
+    -> projectionist.execute() -> CallableResult -> plan_builder -> storacle
 
-v3 ARCHITECTURE:
-- Projectionist emits plans (dict with ops) - no I/O
-- Storacle executes plans via RPC - handles auth and vendor calls
-- Lorchestra orchestrates (dry_run, events) - treats plan AND responses as opaque
+New-style YAML job defs in jobs/definitions/projection/sync/*.yaml
+replace the old JSON defs that used this processor.
 
-Hard constraints (from spec):
-- Lorchestra must NOT branch on ops[*].method (treat plan as opaque)
-- Lorchestra must NOT inspect response result schema (treat responses as opaque)
-- Lorchestra must NOT call SheetsWriteService or any Sheets adapter directly
-- Lorchestra imports storacle.rpc for execute_plan only
+This file is retained only for backwards compatibility with
+`lorchestra run <old_job_id>`. It will be removed once all callers
+are migrated to `lorchestra exec run`.
 """
 
 import logging
+import warnings
 from typing import Any, Callable, Iterator
 
 from lorchestra.processors import registry
 from lorchestra.processors.base import EventClient, JobContext, StorageClient
 
 logger = logging.getLogger(__name__)
-
-# Lazy imports for external dependencies - may not be installed
-# These are imported lazily at runtime via _import_* functions below
 
 
 def _import_projectionist():
@@ -38,31 +30,20 @@ def _import_projectionist():
 
 
 def _import_storacle_rpc():
-    """Lazily import storacle JSON-RPC boundary.
+    """Lazily import storacle boundary via the standard lorchestra storacle client.
 
-    Storacle is currently used as a library, but we still treat it as a JSON-RPC
-    boundary: lorchestra sends a JSON-RPC request with method `storacle.execute_plan`
-    and receives a JSON-RPC response whose result is the list of per-op responses.
+    DEPRECATED: This function previously imported storacle.jsonrpc directly.
+    Now routes through lorchestra.storacle (the standard boundary).
     """
-
-    import uuid
-
-    from storacle.jsonrpc import handle_request
+    from lorchestra.storacle import submit_plan, RpcMeta
 
     def execute_plan(plan: dict, *, dry_run: bool) -> list[dict]:
-        request = {
-            "jsonrpc": "2.0",
-            "id": str(uuid.uuid4()),
-            "method": "storacle.execute_plan",
-            "params": {"payload": plan},
-        }
-        response = handle_request(request, dry_run=dry_run)
-        if "error" in response:
-            raise RuntimeError(response["error"].get("message", "Storacle JSON-RPC error"))
-        result = response.get("result")
-        if not isinstance(result, list):
-            raise RuntimeError("Storacle JSON-RPC returned non-list result")
-        return result
+        if dry_run:
+            return [{"status": "noop", "dry_run": True}] * len(plan.get("ops", []))
+        meta = RpcMeta(correlation_id=plan.get("plan_id", "legacy"))
+        result = submit_plan(plan, meta)
+        # submit_plan returns a dict; wrap as list for backwards compat
+        return [result] if not isinstance(result, list) else result
 
     return execute_plan
 
@@ -188,7 +169,16 @@ class ProjectionistProcessor:
         storage_client: StorageClient,
         event_client: EventClient,
     ) -> None:
-        """Execute a projectionist job via storacle RPC."""
+        """Execute a projectionist job via storacle RPC.
+
+        DEPRECATED: Use `lorchestra exec run <job_id>` with new-style YAML defs instead.
+        """
+        warnings.warn(
+            "ProjectionistProcessor is deprecated (e005b-04e). "
+            "Use `lorchestra exec run` with new-style YAML job defs instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         job_id = job_spec.get("job_id", "unknown")
         projection_name = job_spec.get("projection_name")
         projection_config_raw = job_spec["projection_config"]

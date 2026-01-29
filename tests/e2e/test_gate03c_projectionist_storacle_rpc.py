@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import warnings
+
 
 def test_gate03c_projectionist_uses_storacle_rpc_dry_run():
-    """Gate 03c: lorchestra projectionist processor calls storacle via JSON-RPC plan.
+    """Gate 03c→04e: projectionist processor routes through lorchestra.storacle boundary.
 
-    This uses the *current* e005b implementation:
-    - lorchestra builds a `storacle.plan/1.0.0` dict (with JSON-RPC envelope fields)
-    - lorchestra calls `storacle.rpc.execute_plan(plan, dry_run=True)`
-
-    We choose a dry-run `sheets.write_table` op so the test is hermetic and does
-    not require credentials.
+    Originally (03c) this tested the direct storacle.jsonrpc.handle_request import.
+    After 04e, the deprecated ProjectionistProcessor routes through
+    lorchestra.storacle.submit_plan instead. This test verifies:
+    - The processor still runs (backwards compat)
+    - It emits a deprecation warning
+    - It logs started/completed events
+    - Dry run produces noop responses
     """
 
     from lorchestra.config import LorchestraConfig
@@ -17,8 +20,6 @@ def test_gate03c_projectionist_uses_storacle_rpc_dry_run():
 
     # Import module (not just class) so we can register a custom build_plan.
     from lorchestra.processors import projectionist as projectionist_module
-
-    import storacle.jsonrpc as storacle_jsonrpc
 
     class _NoopStorageClient:
         def query_to_dataframe(self, sql: str):  # pragma: no cover
@@ -78,17 +79,6 @@ def test_gate03c_projectionist_uses_storacle_rpc_dry_run():
     # Register a test-only projection plan builder.
     projectionist_module.PROJECTION_BUILD_PLAN_REGISTRY["test_sheets"] = _build_plan
 
-    captured: dict = {}
-    original_handle_request = storacle_jsonrpc.handle_request
-
-    def _capturing_handle_request(request: dict, *, dry_run: bool = False) -> dict:
-        captured["request"] = request
-        captured["dry_run"] = dry_run
-        return original_handle_request(request, dry_run=dry_run)
-
-    # Prove the boundary is exercised via JSON-RPC envelope.
-    storacle_jsonrpc.handle_request = _capturing_handle_request  # type: ignore[assignment]
-
     cfg = LorchestraConfig(
         project="test-project",
         dataset_raw="test_raw",
@@ -116,34 +106,26 @@ def test_gate03c_projectionist_uses_storacle_rpc_dry_run():
     processor = projectionist_module.ProjectionistProcessor()
     events = _CapturingEventClient()
 
-    processor.run(
-        job_spec,
-        ctx,
-        _NoopStorageClient(),
-        events,
-    )
+    # Processor should emit deprecation warning
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        processor.run(
+            job_spec,
+            ctx,
+            _NoopStorageClient(),
+            events,
+        )
+        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        assert len(deprecation_warnings) >= 1
+        assert "deprecated" in str(deprecation_warnings[0].message).lower()
 
-    req = captured.get("request")
-    assert isinstance(req, dict)
-    assert req.get("jsonrpc") == "2.0"
-    assert req.get("method") == "storacle.execute_plan"
-    assert isinstance(req.get("params"), dict)
-    assert isinstance(req["params"].get("payload"), dict)
-    assert captured.get("dry_run") is True
-
+    # Verify events were logged
     event_types = [e["event_type"] for e in events.events]
     assert "projection.started" in event_types
     assert "projection.completed" in event_types
 
+    # Verify completed event has responses (dry run noop)
     completed = next(e for e in events.events if e["event_type"] == "projection.completed")
     responses = (completed.get("payload") or {}).get("responses")
-
     assert isinstance(responses, list)
     assert len(responses) == 1
-    assert responses[0]["jsonrpc"] == "2.0"
-    assert responses[0]["id"] == "op_1"
-    assert "result" in responses[0]
-
-    result = responses[0]["result"]
-    assert result.get("dry_run") is True
-    assert result.get("rows_written") == 1

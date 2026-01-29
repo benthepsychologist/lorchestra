@@ -1,0 +1,13 @@
+job_id: proj_sheets_clinical_documents
+version: '1.0'
+steps:
+- step_id: project
+  op: call.projectionist
+  params:
+    projection_id: sheets
+    config:
+      query: SELECT * FROM `${PROJECT}.${DATASET_CANONICAL}.proj_clinical_documents`
+      spreadsheet_id: 1Wf8EyuNR-I-ko5bx0M4L7BXousAqkj3vxN8xP1-aAzo
+      sheet_name: clinical_documents
+      strategy: replace
+      account: acct1
