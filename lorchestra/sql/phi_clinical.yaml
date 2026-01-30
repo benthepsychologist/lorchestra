@@ -1,0 +1,25 @@
+# PHI Clinical Detection Configuration
+#
+# Controls which emails are flagged as clinical in the CONTEXT_EMAILS
+# projection and have sender identity redacted.
+#
+# >>> Update these lists when adding new clinical sources <<<
+#
+# Three detection signals (OR logic - any match triggers scrubbing):
+#   1. Contact table match (automatic - no config needed)
+#   2. Clinical sender domains (platforms that send clinical referrals)
+#   3. Practice recipient emails (specific mailboxes that receive clinical mail)
+
+# Signal 2: Sender domains for clinical referral platforms.
+# Emails FROM these domains are treated as clinical.
+# Example: PsychologyToday sends intake inquiries from noreply@psychologytoday.com
+clinical_sender_domains:
+  - psychologytoday.com
+
+# Signal 3: Specific practice mailboxes that receive clinical correspondence.
+# Emails TO any of these addresses are treated as clinical.
+# NOTE: These are exact email addresses, NOT domains.
+#   drben@benthepsychologist.com != zach@benthepsychologist.com
+practice_recipient_emails:
+  - drben@benthepsychologist.com
+  - booking@mensiomentalhealth.com

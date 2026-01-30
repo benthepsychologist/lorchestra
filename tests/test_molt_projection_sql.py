@@ -7,6 +7,8 @@ from lorchestra.sql.molt_projections import (
     CONTEXT_CALENDAR,
     CONTEXT_EMAILS,
     MOLT_PROJECTIONS,
+    _load_phi_config,
+    _to_sql_in,
     get_molt_projection_sql,
 )
 
@@ -53,6 +55,8 @@ class TestContextEmailsSQL:
             "is_flagged",
             "is_unread",
             "needs_response",
+            "clinical_contact_id",
+            "is_clinical",
             "source_system",
             "connection_name",
             "idem_key",
@@ -86,6 +90,118 @@ class TestContextEmailsSQL:
         """Query has no LIMIT clause."""
         sql = CONTEXT_EMAILS
         assert "LIMIT" not in sql
+
+    def test_joins_contact_for_clinical_detection(self):
+        """Query joins contact table to identify clinical emails."""
+        sql = CONTEXT_EMAILS
+        assert "contact/jsonschema/2-0-0" in sql
+        assert "telecom.email" in sql
+        assert "telecom.emailSecondary" in sql
+
+    def test_redacts_clinical_sender_name(self):
+        """Clinical emails get sender_name replaced with 'Client X.' format."""
+        sql = CONTEXT_EMAILS
+        assert "Client " in sql
+        assert "WHEN is_clinical" in sql
+
+    def test_redacts_clinical_sender_email(self):
+        """Clinical emails get sender_email masked as 'x*****@domain.com'."""
+        sql = CONTEXT_EMAILS
+        assert "*****@" in sql
+
+    def test_strips_clinical_snippet(self):
+        """Clinical emails have snippet set to NULL."""
+        sql = CONTEXT_EMAILS
+        assert "WHEN is_clinical THEN NULL" in sql
+
+    def test_non_clinical_emails_pass_through(self):
+        """Non-clinical emails retain full sender and snippet for non-clinical."""
+        sql = CONTEXT_EMAILS
+        assert "ELSE raw_sender_email" in sql
+        assert "ELSE raw_snippet" in sql
+
+    def test_case_insensitive_contact_matching(self):
+        """Contact email matching is case-insensitive via LOWER()."""
+        sql = CONTEXT_EMAILS
+        assert "LOWER(JSON_VALUE(e.payload, '$.from[0].email'))" in sql
+        assert "LOWER(JSON_VALUE(payload, '$.telecom.email'))" in sql
+
+    def test_clinical_signal_contact_match(self):
+        """Signal 1: clinical_contact_id match flags as clinical."""
+        sql = CONTEXT_EMAILS
+        assert "clinical_contact_id IS NOT NULL" in sql
+
+    def test_clinical_signal_sender_domain_placeholder(self):
+        """Signal 2: SQL template has placeholder for clinical sender domains."""
+        sql = CONTEXT_EMAILS
+        assert "{clinical_sender_domains}" in sql
+
+    def test_clinical_signal_practice_recipient_placeholder(self):
+        """Signal 3: SQL template has placeholder for practice recipient emails."""
+        sql = CONTEXT_EMAILS
+        assert "{practice_recipient_emails}" in sql
+
+    def test_practice_recipient_checks_to_field(self):
+        """Practice recipient check uses JMAP $.to array."""
+        sql = CONTEXT_EMAILS
+        assert "JSON_EXTRACT_ARRAY(payload, '$.to')" in sql
+
+    def test_practice_recipient_matches_exact_email(self):
+        """Signal 3 matches exact email addresses, not domains."""
+        sql = get_molt_projection_sql(
+            "context_emails",
+            project="local-orchestration",
+            dataset="canonical",
+        )
+        # Should match exact emails, not extract domain with REGEXP_EXTRACT
+        assert "drben@benthepsychologist.com" in sql
+        assert "booking@mensiomentalhealth.com" in sql
+
+    def test_resolved_sql_has_clinical_domains(self):
+        """Resolved SQL contains clinical sender domains from config."""
+        sql = get_molt_projection_sql(
+            "context_emails",
+            project="local-orchestration",
+            dataset="canonical",
+        )
+        assert "psychologytoday.com" in sql
+
+    def test_uses_cte_for_clinical_flag(self):
+        """Query uses CTE to compute is_clinical once, apply in outer SELECT."""
+        sql = CONTEXT_EMAILS
+        assert "WITH email_base AS" in sql
+        assert "is_clinical" in sql
+
+
+class TestPhiClinicalConfig:
+    """Tests for PHI clinical detection config loading."""
+
+    def test_config_loads_successfully(self):
+        """phi_clinical.yaml loads without error."""
+        config = _load_phi_config()
+        assert "clinical_sender_domains" in config
+        assert "practice_recipient_emails" in config
+
+    def test_config_has_psychologytoday(self):
+        """Config includes psychologytoday.com as clinical sender domain."""
+        config = _load_phi_config()
+        assert "psychologytoday.com" in config["clinical_sender_domains"]
+
+    def test_config_has_practice_emails(self):
+        """Config includes specific practice mailbox addresses."""
+        config = _load_phi_config()
+        emails = config["practice_recipient_emails"]
+        assert "drben@benthepsychologist.com" in emails
+        assert "booking@mensiomentalhealth.com" in emails
+
+    def test_to_sql_in_single(self):
+        """_to_sql_in formats single value correctly."""
+        assert _to_sql_in(["a.com"]) == "'a.com'"
+
+    def test_to_sql_in_multiple(self):
+        """_to_sql_in formats multiple values correctly."""
+        result = _to_sql_in(["a.com", "b.com"])
+        assert result == "'a.com', 'b.com'"
 
 
 class TestContextCalendarSQL:

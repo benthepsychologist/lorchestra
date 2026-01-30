@@ -8,43 +8,143 @@ Placeholders:
     {project}  - Source GCP project ID (e.g., local-orchestration)
     {dataset}  - Source BQ dataset (e.g., canonical)
 
+PHI clinical detection config is loaded from phi_clinical.yaml (same directory).
+See that file for documentation on maintaining clinical sender domains and
+practice recipient email addresses.
+
 Usage:
     from lorchestra.sql.molt_projections import get_molt_projection_sql
 
     sql = get_molt_projection_sql("context_emails", project="local-orchestration", dataset="canonical")
 """
 
+from __future__ import annotations
+
+from pathlib import Path
+
+import yaml
+
+_PHI_CONFIG_PATH = Path(__file__).parent / "phi_clinical.yaml"
+
+
+def _load_phi_config() -> dict:
+    """Load PHI clinical detection config from YAML.
+
+    Returns dict with keys: clinical_sender_domains, practice_recipient_emails.
+    Raises FileNotFoundError if config is missing (required for PHI safety).
+    """
+    with open(_PHI_CONFIG_PATH) as f:
+        return yaml.safe_load(f)
+
+
+def _to_sql_in(values: list[str]) -> str:
+    """Convert a list of strings to a SQL IN clause body.
+
+    ['a.com', 'b.com'] -> "'a.com', 'b.com'"
+    """
+    return ", ".join(f"'{v}'" for v in values)
+
 # =============================================================================
 # context_emails — All emails from the last 14 days (sent + received)
+#
+# PHI scrubbing: Emails flagged as clinical have sender identity redacted
+# and snippet stripped. Non-clinical emails pass through fully.
+#
+# Clinical detection signals (any match triggers scrubbing):
+#   1. Contact match  — sender email matches a client in contact table
+#   2. Clinical domain — sender domain is a known clinical platform
+#   3. Practice recipient — email was sent TO a specific practice mailbox
+#
+# Signals 2 and 3 are configured in phi_clinical.yaml (same directory).
 # =============================================================================
 CONTEXT_EMAILS = """
+WITH email_base AS (
+  SELECT
+    e.payload,
+    JSON_VALUE(e.payload, '$.id') AS email_id,
+    JSON_VALUE(e.payload, '$.threadId') AS thread_id,
+    JSON_VALUE(e.payload, '$.from[0].email') AS raw_sender_email,
+    JSON_VALUE(e.payload, '$.from[0].name') AS raw_sender_name,
+    JSON_VALUE(e.payload, '$.subject') AS subject,
+    JSON_VALUE(e.payload, '$.preview') AS raw_snippet,
+    TIMESTAMP(JSON_VALUE(e.payload, '$.receivedAt')) AS received_at,
+    ARRAY(
+      SELECT label FROM UNNEST(
+        JSON_EXTRACT_ARRAY(e.payload, '$.labels')
+      ) AS label
+    ) AS labels,
+    IFNULL(JSON_VALUE(e.payload, '$.keywords.$flagged'), 'false') = 'true' AS is_flagged,
+    IFNULL(JSON_VALUE(e.payload, '$.keywords.$seen'), 'false') != 'true' AS is_unread,
+    (
+      IFNULL(JSON_VALUE(e.payload, '$.keywords.$seen'), 'false') != 'true'
+      AND JSON_VALUE(e.payload, '$.from[0].email') NOT LIKE '%noreply%'
+      AND JSON_VALUE(e.payload, '$.from[0].email') NOT LIKE '%no-reply%'
+    ) AS needs_response,
+    cli.contact_id AS clinical_contact_id,
+    e.source_system,
+    e.connection_name,
+    e.idem_key
+  FROM `{project}.{dataset}.canonical_objects` e
+  LEFT JOIN (
+    SELECT
+      JSON_VALUE(payload, '$.id') AS contact_id,
+      LOWER(JSON_VALUE(payload, '$.telecom.email')) AS contact_email,
+      LOWER(JSON_VALUE(payload, '$.telecom.emailSecondary')) AS contact_email_secondary
+    FROM `{project}.{dataset}.canonical_objects`
+    WHERE canonical_schema = 'iglu:org.canonical/contact/jsonschema/2-0-0'
+  ) cli
+    ON LOWER(JSON_VALUE(e.payload, '$.from[0].email')) = cli.contact_email
+    OR LOWER(JSON_VALUE(e.payload, '$.from[0].email')) = cli.contact_email_secondary
+  WHERE e.canonical_schema = 'iglu:org.canonical/email_jmap_lite/jsonschema/1-0-0'
+    AND TIMESTAMP(JSON_VALUE(e.payload, '$.receivedAt'))
+        > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 14 DAY)
+)
 SELECT
-  JSON_VALUE(payload, '$.id') AS email_id,
-  JSON_VALUE(payload, '$.threadId') AS thread_id,
-  JSON_VALUE(payload, '$.from[0].email') AS sender_email,
-  JSON_VALUE(payload, '$.from[0].name') AS sender_name,
-  JSON_VALUE(payload, '$.subject') AS subject,
-  JSON_VALUE(payload, '$.preview') AS snippet,
-  TIMESTAMP(JSON_VALUE(payload, '$.receivedAt')) AS received_at,
-  ARRAY(
-    SELECT label FROM UNNEST(
-      JSON_EXTRACT_ARRAY(payload, '$.labels')
-    ) AS label
-  ) AS labels,
-  IFNULL(JSON_VALUE(payload, '$.keywords.$flagged'), 'false') = 'true' AS is_flagged,
-  IFNULL(JSON_VALUE(payload, '$.keywords.$seen'), 'false') != 'true' AS is_unread,
-  (
-    IFNULL(JSON_VALUE(payload, '$.keywords.$seen'), 'false') != 'true'
-    AND JSON_VALUE(payload, '$.from[0].email') NOT LIKE '%noreply%'
-    AND JSON_VALUE(payload, '$.from[0].email') NOT LIKE '%no-reply%'
-  ) AS needs_response,
+  email_id,
+  thread_id,
+  CASE WHEN is_clinical
+    THEN CONCAT(
+      LOWER(SUBSTR(raw_sender_email, 1, 1)),
+      '*****@',
+      REGEXP_EXTRACT(raw_sender_email, r'@(.+)$')
+    )
+    ELSE raw_sender_email
+  END AS sender_email,
+  CASE WHEN is_clinical
+    THEN CONCAT('Client ', UPPER(SUBSTR(raw_sender_name, 1, 1)), '.')
+    ELSE raw_sender_name
+  END AS sender_name,
+  subject,
+  CASE WHEN is_clinical THEN NULL ELSE raw_snippet END AS snippet,
+  received_at,
+  labels,
+  is_flagged,
+  is_unread,
+  needs_response,
+  clinical_contact_id,
+  is_clinical,
   source_system,
   connection_name,
   idem_key,
   CURRENT_TIMESTAMP() AS projected_at
-FROM `{project}.{dataset}.canonical_objects`
-WHERE canonical_schema = 'iglu:org.canonical/email_jmap_lite/jsonschema/1-0-0'
-  AND TIMESTAMP(JSON_VALUE(payload, '$.receivedAt')) > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 14 DAY)
+FROM (
+  SELECT
+    *,
+    (
+      -- Signal 1: sender matches a known client contact
+      clinical_contact_id IS NOT NULL
+      -- Signal 2: sender domain is a known clinical referral platform
+      OR REGEXP_EXTRACT(LOWER(raw_sender_email), r'@(.+)$')
+         IN ({clinical_sender_domains})
+      -- Signal 3: email was sent TO a specific practice mailbox
+      OR EXISTS (
+        SELECT 1 FROM UNNEST(JSON_EXTRACT_ARRAY(payload, '$.to')) AS addr
+        WHERE LOWER(JSON_VALUE(addr, '$.email'))
+          IN ({practice_recipient_emails})
+      )
+    ) AS is_clinical
+  FROM email_base
+)
 ORDER BY received_at DESC
 """
 
@@ -119,7 +219,10 @@ MOLT_PROJECTIONS: dict[str, str] = {
 
 
 def get_molt_projection_sql(name: str, project: str, dataset: str) -> str:
-    """Get molt projection SQL with project and dataset substituted.
+    """Get molt projection SQL with project, dataset, and PHI config substituted.
+
+    For context_emails, also loads phi_clinical.yaml and injects clinical
+    detection config (sender domains, practice recipient emails).
 
     Args:
         name: Projection name (e.g., 'context_emails')
@@ -131,6 +234,7 @@ def get_molt_projection_sql(name: str, project: str, dataset: str) -> str:
 
     Raises:
         KeyError: If projection name not found
+        FileNotFoundError: If phi_clinical.yaml is missing (context_emails only)
     """
     if name not in MOLT_PROJECTIONS:
         raise KeyError(
@@ -139,4 +243,16 @@ def get_molt_projection_sql(name: str, project: str, dataset: str) -> str:
         )
 
     sql_template = MOLT_PROJECTIONS[name]
-    return sql_template.format(project=project, dataset=dataset)
+
+    format_args: dict[str, str] = {"project": project, "dataset": dataset}
+
+    if name == "context_emails":
+        phi_config = _load_phi_config()
+        format_args["clinical_sender_domains"] = _to_sql_in(
+            phi_config["clinical_sender_domains"]
+        )
+        format_args["practice_recipient_emails"] = _to_sql_in(
+            phi_config["practice_recipient_emails"]
+        )
+
+    return sql_template.format(**format_args)

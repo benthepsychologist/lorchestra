@@ -121,7 +121,7 @@ class BigQueryStorageClient:
         if self.test_table:
             return f"test_{base_name}"
         return base_name
-    
+
     def _dataset_for_table(self, table_name: str) -> str:
         """Resolve dataset based on table type/name."""
         # This is a bit of a heuristic. Ideally we'd map table -> dataset explicitly.
@@ -213,7 +213,7 @@ class BigQueryStorageClient:
         raw_base = "raw_objects"
         raw_table = self._table_name(raw_base)
         raw_dataset = self._dataset_for_table(raw_base)
-        
+
         canonical_base = "canonical_objects"
         canonical_table = self._table_name(canonical_base)
         canonical_dataset = self._dataset_for_table(canonical_base)
