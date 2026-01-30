@@ -1,0 +1,11 @@
+job_id: workman_create_project
+version: '1.0'
+steps:
+- step_id: create_project
+  op: call.workman
+  params:
+    op: pm.project.create
+    payload:
+      name: "@payload.name"
+    ctx:
+      producer: lorchestra

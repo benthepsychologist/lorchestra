@@ -114,7 +114,7 @@ def _compute_idempotency_key(item: dict, method: str) -> str:
     """
     # Extract stable identity fields if present
     identity: dict = {}
-    for key in ("idem_key", "stream_id", "event_id", "entity_id", "version", "id"):
+    for key in ("idem_key", "idempotency_key", "stream_id", "event_id", "entity_id", "version", "id"):
         if key in item:
             identity[key] = item[key]
 
