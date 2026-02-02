@@ -213,9 +213,9 @@ def _apply_field_params(
     """
     Apply field filtering, mapping, and defaults to items.
 
-    Processing order:
-    1. field_map: rename keys (new_key -> old_key mapping)
-    2. field_defaults: backfill missing keys with defaults
+    Processing order (matches batch path in _build_batch_plan):
+    1. field_defaults: backfill missing keys with defaults
+    2. field_map: rename keys (new_key -> old_key mapping)
     3. fields: filter to allowlist (fail fast on missing required fields)
 
     Args:
@@ -237,17 +237,17 @@ def _apply_field_params(
     for item in items:
         processed = dict(item)
 
-        # 1. Apply field_map (rename keys)
-        if field_map:
-            for new_key, old_key in field_map.items():
-                if old_key in processed:
-                    processed[new_key] = processed.pop(old_key)
-
-        # 2. Apply field_defaults (backfill missing keys)
+        # 1. Apply field_defaults (backfill missing keys)
         if field_defaults:
             for key, default in field_defaults.items():
                 if key not in processed:
                     processed[key] = default
+
+        # 2. Apply field_map (rename keys)
+        if field_map:
+            for new_key, old_key in field_map.items():
+                if old_key in processed:
+                    processed[new_key] = processed.pop(old_key)
 
         # 3. Apply fields filter (allowlist)
         if fields:
@@ -263,6 +263,79 @@ def _apply_field_params(
     return result
 
 
+def _resolve_dataset(logical_name: str) -> str:
+    """
+    Resolve logical dataset name to actual BQ dataset name via config.
+
+    Logical names: "raw", "canonical", "derived"
+    Actual names come from LorchestraConfig (e.g., "raw", "canonical", "derived"
+    or environment-specific overrides like "events_dev").
+
+    If the name is not a known logical name, it is returned as-is
+    (allows direct BQ dataset names as an escape hatch).
+
+    TODO(e005b-08): load_config() reads config.yaml on every call.
+    Fine for single plan builds, but if we ever batch-build plans
+    in a tight loop, add an @lru_cache or accept config as a param.
+
+    Args:
+        logical_name: Logical dataset name from YAML job def
+
+    Returns:
+        Actual BQ dataset name
+    """
+    from lorchestra.config import load_config
+
+    _LOGICAL_MAP = {
+        "raw": "dataset_raw",
+        "canonical": "dataset_canonical",
+        "derived": "dataset_derived",
+    }
+
+    attr = _LOGICAL_MAP.get(logical_name)
+    if attr is None:
+        return logical_name
+
+    config = load_config()
+    return getattr(config, attr)
+
+
+def _compute_idem_key(
+    item: dict,
+    id_field: str,
+    field_defaults: dict[str, Any] | None = None,
+) -> str:
+    """
+    Compute idem_key from raw item identity field + metadata.
+
+    Pattern: {source_system}:{connection_name}:{object_type}:{item[id_field]}
+
+    Args:
+        item: Raw item dict (pre-wrapping, original callable output)
+        id_field: Key to extract the unique identifier from the raw item
+        field_defaults: Metadata dict containing source_system, connection_name, object_type
+
+    Returns:
+        Idem key string
+
+    Raises:
+        ValueError: If id_field not found in item or required metadata missing
+    """
+    defaults = field_defaults or {}
+    id_value = item.get(id_field)
+    if id_value is None:
+        raise ValueError(
+            f"id_field '{id_field}' not found in item. "
+            f"Available keys: {list(item.keys())}"
+        )
+
+    source_system = defaults.get("source_system", "")
+    connection_name = defaults.get("connection_name", "")
+    object_type = defaults.get("object_type", "")
+
+    return f"{source_system}:{connection_name}:{object_type}:{id_value}"
+
+
 def build_plan_from_items(
     items: list[dict],
     correlation_id: str,
@@ -270,6 +343,12 @@ def build_plan_from_items(
     fields: list[str] | None = None,
     field_map: dict[str, str] | None = None,
     field_defaults: dict[str, Any] | None = None,
+    # Batch wrapping params (e005b-07)
+    dataset: str | None = None,
+    table: str | None = None,
+    key_columns: list[str] | None = None,
+    payload_wrap: bool = False,
+    id_field: str | None = None,
 ) -> StoraclePlan:
     """
     Build StoraclePlan from raw items. Used by plan.build native op.
@@ -278,6 +357,14 @@ def build_plan_from_items(
     a previous step's output (via @run.step_id.items), not from a
     CallableResult directly.
 
+    When dataset + table + key_columns are all provided, enters **batch
+    wrapping mode**: processes items through payload wrapping, idem_key
+    computation, metadata injection, field transforms, and bundles all
+    rows into a single bq.upsert op.
+
+    When batch params are NOT provided, keeps current behavior: one op
+    per item, item dict becomes params directly.
+
     Args:
         items: List of item dicts to convert to storacle ops
         correlation_id: Correlation ID for tracing
@@ -285,10 +372,33 @@ def build_plan_from_items(
         fields: Optional allowlist of keys to persist
         field_map: Optional key rename mapping {new_key: old_key}
         field_defaults: Optional default values for missing keys
+        dataset: Logical dataset name (triggers batch mode with table + key_columns)
+        table: Target table name
+        key_columns: Merge key columns for bq.upsert
+        payload_wrap: If true, nest each raw item as JSON payload column
+        id_field: Field name to extract unique ID for idem_key computation
 
     Returns:
         StoraclePlan ready for submission to storacle
     """
+    batch_mode = dataset is not None and table is not None and key_columns is not None
+
+    if batch_mode:
+        return _build_batch_plan(
+            items=items,
+            correlation_id=correlation_id,
+            method=method,
+            fields=fields,
+            field_map=field_map,
+            field_defaults=field_defaults,
+            dataset=dataset,
+            table=table,
+            key_columns=key_columns,
+            payload_wrap=payload_wrap,
+            id_field=id_field,
+        )
+
+    # Non-batch mode: one op per item (existing behavior)
     processed = _apply_field_params(items, fields, field_map, field_defaults)
 
     ops: list[StoracleOp] = []
@@ -304,4 +414,88 @@ def build_plan_from_items(
     return StoraclePlan(
         correlation_id=correlation_id,
         ops=ops,
+    )
+
+
+def _build_batch_plan(
+    items: list[dict],
+    correlation_id: str,
+    method: str,
+    fields: list[str] | None,
+    field_map: dict[str, str] | None,
+    field_defaults: dict[str, Any] | None,
+    dataset: str,
+    table: str,
+    key_columns: list[str],
+    payload_wrap: bool,
+    id_field: str | None,
+) -> StoraclePlan:
+    """
+    Build a batch StoraclePlan: all rows bundled into a single op.
+
+    Processing order per spec:
+    1. payload_wrap: nest raw item as JSON payload column
+    2. field_defaults: add metadata columns
+    3. id_field: compute idem_key
+    4. field_map: rename keys
+    5. fields: column allowlist
+    6. Bundle into single {dataset, table, key_columns, rows} op
+    """
+    rows: list[dict] = []
+
+    for item in items:
+        row: dict[str, Any] = {}
+
+        # 1. Payload wrapping
+        if payload_wrap:
+            row["payload"] = json.dumps(item, default=str)
+        else:
+            row = dict(item)
+
+        # 2. Field defaults (metadata injection)
+        if field_defaults:
+            for key, default in field_defaults.items():
+                if key not in row:
+                    row[key] = default
+
+        # 3. Idem key computation (before field_map/fields, uses raw item)
+        if id_field:
+            row["idem_key"] = _compute_idem_key(item, id_field, field_defaults)
+
+        # 4. Field map (rename keys)
+        if field_map:
+            for new_key, old_key in field_map.items():
+                if old_key in row:
+                    row[new_key] = row.pop(old_key)
+
+        # 5. Fields allowlist
+        if fields:
+            missing = [f for f in fields if f not in row]
+            if missing:
+                raise ValueError(
+                    f"Item missing required field(s): {missing}. "
+                    f"Available: {list(row.keys())}"
+                )
+            row = {k: v for k, v in row.items() if k in fields}
+
+        rows.append(row)
+
+    # Resolve logical dataset name
+    resolved_dataset = _resolve_dataset(dataset)
+
+    # Bundle all rows into a single op
+    op = StoracleOp(
+        op_id=str(uuid.uuid4()),
+        method=method,
+        params={
+            "dataset": resolved_dataset,
+            "table": table,
+            "key_columns": key_columns,
+            "rows": rows,
+        },
+    )
+
+    return StoraclePlan(
+        correlation_id=correlation_id,
+        ops=[op],
     )

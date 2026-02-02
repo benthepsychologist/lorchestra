@@ -10,7 +10,17 @@ steps:
   op: plan.build
   params:
     items: '@run.ingest.items'
-    method: wal.append
+    method: bq.upsert
+    dataset: raw
+    table: raw_objects
+    key_columns:
+    - idem_key
+    payload_wrap: true
+    id_field: responseId
+    field_defaults:
+      source_system: google_forms
+      connection_name: google-forms-ipip120
+      object_type: form_response
 - step_id: write
   op: storacle.submit
   params:

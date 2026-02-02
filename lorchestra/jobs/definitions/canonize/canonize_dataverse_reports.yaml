@@ -12,7 +12,11 @@ steps:
   op: plan.build
   params:
     items: '@run.canonize.items'
-    method: wal.append
+    method: bq.upsert
+    dataset: canonical
+    table: canonical_objects
+    key_columns:
+    - idem_key
 - step_id: write
   op: storacle.submit
   params:

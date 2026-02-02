@@ -10,7 +10,17 @@ steps:
   op: plan.build
   params:
     items: '@run.ingest.items'
-    method: wal.append
+    method: bq.upsert
+    dataset: raw
+    table: raw_objects
+    key_columns:
+    - idem_key
+    payload_wrap: true
+    id_field: id
+    field_defaults:
+      source_system: exchange
+      connection_name: exchange-ben-efs
+      object_type: email
 - step_id: write
   op: storacle.submit
   params:

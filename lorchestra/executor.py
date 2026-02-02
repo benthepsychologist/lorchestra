@@ -660,6 +660,13 @@ class Executor:
         field_map = manifest.resolved_params.get("field_map")
         field_defaults = manifest.resolved_params.get("field_defaults")
 
+        # Batch wrapping params (e005b-07)
+        dataset = manifest.resolved_params.get("dataset")
+        table = manifest.resolved_params.get("table")
+        key_columns = manifest.resolved_params.get("key_columns")
+        payload_wrap = manifest.resolved_params.get("payload_wrap", False)
+        id_field = manifest.resolved_params.get("id_field")
+
         plan = build_plan_from_items(
             items=items,
             correlation_id=correlation_id,
@@ -667,6 +674,11 @@ class Executor:
             fields=fields,
             field_map=field_map,
             field_defaults=field_defaults,
+            dataset=dataset,
+            table=table,
+            key_columns=key_columns,
+            payload_wrap=payload_wrap,
+            id_field=id_field,
         )
         return {"plan": plan.to_dict()}
 

@@ -1,18 +1,25 @@
-"""Tests for plan builder (e005b-01).
+"""Tests for plan builder (e005b-01, e005b-07).
 
 Tests cover:
 - CallableResult to StoraclePlan conversion
 - items_ref raises NotImplementedError
 - Idempotency key computation
+- Batch wrapping mode (e005b-07): payload_wrap, id_field, dataset resolution
 """
+
+import json
+from unittest.mock import patch
 
 import pytest
 from lorchestra.callable import CallableResult
 from lorchestra.plan_builder import (
     build_plan,
+    build_plan_from_items,
     StoraclePlan,
     _compute_idempotency_key,
+    _compute_idem_key,
     _hash_canonical,
+    _resolve_dataset,
 )
 
 
@@ -234,3 +241,403 @@ class TestStoraclePlanToDict:
         assert "id" in op
         assert "method" in op
         assert "params" in op
+
+
+# ============================================================================
+# e005b-07: Batch wrapping mode
+# ============================================================================
+
+
+def _mock_config(**overrides):
+    """Create a mock LorchestraConfig for dataset resolution tests."""
+    from lorchestra.config import LorchestraConfig
+    defaults = {
+        "project": "test-project",
+        "dataset_raw": "test_raw",
+        "dataset_canonical": "test_canonical",
+        "dataset_derived": "test_derived",
+        "sqlite_path": "/tmp/test.db",
+        "local_views_root": "/tmp/views",
+    }
+    defaults.update(overrides)
+    return LorchestraConfig(**defaults)
+
+
+class TestBatchWrappingMode:
+    """Tests for batch wrapping mode (e005b-07)."""
+
+    def test_batch_mode_triggers_on_dataset_table_key_columns(self):
+        """When dataset + table + key_columns provided, produces single batch op."""
+        items = [{"id": "a"}, {"id": "b"}]
+
+        with patch("lorchestra.config.load_config", return_value=_mock_config()):
+            plan = build_plan_from_items(
+                items=items,
+                correlation_id="test_batch",
+                method="bq.upsert",
+                dataset="raw",
+                table="raw_objects",
+                key_columns=["idem_key"],
+            )
+
+        assert len(plan.ops) == 1
+        op = plan.ops[0]
+        assert op.method == "bq.upsert"
+        assert op.params["dataset"] == "test_raw"
+        assert op.params["table"] == "raw_objects"
+        assert op.params["key_columns"] == ["idem_key"]
+        assert len(op.params["rows"]) == 2
+
+    def test_non_batch_mode_without_batch_params(self):
+        """Without batch params, each item becomes its own op."""
+        items = [{"id": "a"}, {"id": "b"}]
+
+        plan = build_plan_from_items(
+            items=items,
+            correlation_id="test_non_batch",
+            method="bq.upsert",
+        )
+
+        assert len(plan.ops) == 2
+
+    def test_batch_mode_empty_items(self):
+        """Batch mode with empty items produces single op with empty rows."""
+        with patch("lorchestra.config.load_config", return_value=_mock_config()):
+            plan = build_plan_from_items(
+                items=[],
+                correlation_id="test_empty",
+                method="bq.upsert",
+                dataset="raw",
+                table="raw_objects",
+                key_columns=["idem_key"],
+            )
+
+        assert len(plan.ops) == 1
+        assert plan.ops[0].params["rows"] == []
+
+    def test_batch_mode_no_idempotency_key(self):
+        """Batch ops should not have an idempotency_key (bq.upsert uses rows)."""
+        items = [{"id": "a"}]
+
+        with patch("lorchestra.config.load_config", return_value=_mock_config()):
+            plan = build_plan_from_items(
+                items=items,
+                correlation_id="test",
+                method="bq.upsert",
+                dataset="raw",
+                table="raw_objects",
+                key_columns=["idem_key"],
+            )
+
+        assert plan.ops[0].idempotency_key is None
+
+
+class TestPayloadWrap:
+    """Tests for payload_wrap feature (e005b-07)."""
+
+    def test_payload_wrap_nests_item_as_json(self):
+        """payload_wrap=True should nest each item as JSON payload column."""
+        items = [{"id": "cus_123", "name": "Alice", "email": "a@test.com"}]
+
+        with patch("lorchestra.config.load_config", return_value=_mock_config()):
+            plan = build_plan_from_items(
+                items=items,
+                correlation_id="test_wrap",
+                method="bq.upsert",
+                dataset="raw",
+                table="raw_objects",
+                key_columns=["idem_key"],
+                payload_wrap=True,
+            )
+
+        row = plan.ops[0].params["rows"][0]
+        assert "payload" in row
+        parsed = json.loads(row["payload"])
+        assert parsed["id"] == "cus_123"
+        assert parsed["name"] == "Alice"
+        # Original keys should NOT be in row (they're nested in payload)
+        assert "name" not in row
+        assert "email" not in row
+
+    def test_payload_wrap_false_passes_item_through(self):
+        """payload_wrap=False should pass item fields through directly."""
+        items = [{"idem_key": "ik-1", "payload": {"data": "test"}, "source_system": "stripe"}]
+
+        with patch("lorchestra.config.load_config", return_value=_mock_config()):
+            plan = build_plan_from_items(
+                items=items,
+                correlation_id="test_no_wrap",
+                method="bq.upsert",
+                dataset="canonical",
+                table="canonical_objects",
+                key_columns=["idem_key"],
+                payload_wrap=False,
+            )
+
+        row = plan.ops[0].params["rows"][0]
+        assert row["idem_key"] == "ik-1"
+        assert row["payload"] == {"data": "test"}
+        assert row["source_system"] == "stripe"
+
+    def test_payload_wrap_with_field_defaults(self):
+        """payload_wrap + field_defaults should add metadata to wrapped row."""
+        items = [{"id": "cus_123", "name": "Alice"}]
+
+        with patch("lorchestra.config.load_config", return_value=_mock_config()):
+            plan = build_plan_from_items(
+                items=items,
+                correlation_id="test",
+                method="bq.upsert",
+                dataset="raw",
+                table="raw_objects",
+                key_columns=["idem_key"],
+                payload_wrap=True,
+                field_defaults={
+                    "source_system": "stripe",
+                    "connection_name": "stripe-prod",
+                    "object_type": "customer",
+                },
+            )
+
+        row = plan.ops[0].params["rows"][0]
+        assert row["source_system"] == "stripe"
+        assert row["connection_name"] == "stripe-prod"
+        assert row["object_type"] == "customer"
+        assert "payload" in row
+
+
+class TestIdemKeyComputation:
+    """Tests for id_field-based idem_key computation (e005b-07)."""
+
+    def test_id_field_computes_idem_key(self):
+        """id_field should compute idem_key from item + field_defaults."""
+        items = [{"id": "cus_123", "name": "Alice"}]
+
+        with patch("lorchestra.config.load_config", return_value=_mock_config()):
+            plan = build_plan_from_items(
+                items=items,
+                correlation_id="test",
+                method="bq.upsert",
+                dataset="raw",
+                table="raw_objects",
+                key_columns=["idem_key"],
+                payload_wrap=True,
+                id_field="id",
+                field_defaults={
+                    "source_system": "stripe",
+                    "connection_name": "stripe-prod",
+                    "object_type": "customer",
+                },
+            )
+
+        row = plan.ops[0].params["rows"][0]
+        assert row["idem_key"] == "stripe:stripe-prod:customer:cus_123"
+
+    def test_id_field_responseId(self):
+        """id_field=responseId for Google Forms."""
+        items = [{"responseId": "ACYDBNi84", "answers": []}]
+
+        with patch("lorchestra.config.load_config", return_value=_mock_config()):
+            plan = build_plan_from_items(
+                items=items,
+                correlation_id="test",
+                method="bq.upsert",
+                dataset="raw",
+                table="raw_objects",
+                key_columns=["idem_key"],
+                payload_wrap=True,
+                id_field="responseId",
+                field_defaults={
+                    "source_system": "google_forms",
+                    "connection_name": "google-forms-intake-01",
+                    "object_type": "form_response",
+                },
+            )
+
+        row = plan.ops[0].params["rows"][0]
+        assert row["idem_key"] == "google_forms:google-forms-intake-01:form_response:ACYDBNi84"
+
+    def test_id_field_missing_raises(self):
+        """Missing id_field in item should raise ValueError."""
+        items = [{"name": "Alice"}]
+
+        with patch("lorchestra.config.load_config", return_value=_mock_config()):
+            with pytest.raises(ValueError, match="id_field 'id' not found"):
+                build_plan_from_items(
+                    items=items,
+                    correlation_id="test",
+                    method="bq.upsert",
+                    dataset="raw",
+                    table="raw_objects",
+                    key_columns=["idem_key"],
+                    id_field="id",
+                )
+
+    def test_compute_idem_key_function(self):
+        """_compute_idem_key should follow the pattern."""
+        item = {"contactid": "abc-123"}
+        defaults = {
+            "source_system": "dataverse",
+            "connection_name": "dataverse-clinic",
+            "object_type": "contact",
+        }
+
+        key = _compute_idem_key(item, "contactid", defaults)
+        assert key == "dataverse:dataverse-clinic:contact:abc-123"
+
+
+class TestDatasetResolution:
+    """Tests for dataset name resolution (e005b-07)."""
+
+    def test_resolves_raw(self):
+        """'raw' should resolve to config.dataset_raw."""
+        with patch("lorchestra.config.load_config", return_value=_mock_config()):
+            assert _resolve_dataset("raw") == "test_raw"
+
+    def test_resolves_canonical(self):
+        """'canonical' should resolve to config.dataset_canonical."""
+        with patch("lorchestra.config.load_config", return_value=_mock_config()):
+            assert _resolve_dataset("canonical") == "test_canonical"
+
+    def test_resolves_derived(self):
+        """'derived' should resolve to config.dataset_derived."""
+        with patch("lorchestra.config.load_config", return_value=_mock_config()):
+            assert _resolve_dataset("derived") == "test_derived"
+
+    def test_unknown_name_passthrough(self):
+        """Unknown dataset name should pass through as-is."""
+        with patch("lorchestra.config.load_config", return_value=_mock_config()):
+            assert _resolve_dataset("events_dev") == "events_dev"
+
+    def test_dataset_in_batch_plan(self):
+        """Resolved dataset should appear in batch op params."""
+        items = [{"id": "a"}]
+
+        with patch("lorchestra.config.load_config", return_value=_mock_config(dataset_raw="my_raw_dataset")):
+            plan = build_plan_from_items(
+                items=items,
+                correlation_id="test",
+                method="bq.upsert",
+                dataset="raw",
+                table="raw_objects",
+                key_columns=["idem_key"],
+            )
+
+        assert plan.ops[0].params["dataset"] == "my_raw_dataset"
+
+
+class TestBatchProcessingOrder:
+    """Tests for batch processing order (spec: wrap -> defaults -> idem -> map -> fields)."""
+
+    def test_full_ingest_pipeline(self):
+        """Simulate a full ingest pipeline: raw item -> wrapped row with idem_key."""
+        items = [
+            {"id": "cus_001", "name": "Alice", "email": "a@test.com"},
+            {"id": "cus_002", "name": "Bob", "email": "b@test.com"},
+        ]
+
+        with patch("lorchestra.config.load_config", return_value=_mock_config()):
+            plan = build_plan_from_items(
+                items=items,
+                correlation_id="ingest_test",
+                method="bq.upsert",
+                dataset="raw",
+                table="raw_objects",
+                key_columns=["idem_key"],
+                payload_wrap=True,
+                id_field="id",
+                field_defaults={
+                    "source_system": "stripe",
+                    "connection_name": "stripe-prod",
+                    "object_type": "customer",
+                },
+            )
+
+        assert len(plan.ops) == 1
+        op = plan.ops[0]
+        assert op.method == "bq.upsert"
+        assert op.params["dataset"] == "test_raw"
+        assert op.params["table"] == "raw_objects"
+        assert op.params["key_columns"] == ["idem_key"]
+        assert len(op.params["rows"]) == 2
+
+        row0 = op.params["rows"][0]
+        assert row0["idem_key"] == "stripe:stripe-prod:customer:cus_001"
+        assert row0["source_system"] == "stripe"
+        assert row0["connection_name"] == "stripe-prod"
+        assert row0["object_type"] == "customer"
+        payload = json.loads(row0["payload"])
+        assert payload["id"] == "cus_001"
+        assert payload["name"] == "Alice"
+
+        row1 = op.params["rows"][1]
+        assert row1["idem_key"] == "stripe:stripe-prod:customer:cus_002"
+
+    def test_canonize_pipeline_no_wrap(self):
+        """Simulate canonize pipeline: items already shaped, just batch bundle."""
+        items = [
+            {
+                "idem_key": "stripe:stripe-prod:customer:cus_001#customer",
+                "source_system": "stripe",
+                "connection_name": "stripe-prod",
+                "object_type": "customer",
+                "canonical_schema": "iglu:org.canonical/customer/jsonschema/1-0-0",
+                "transform_ref": "customer/stripe_to_canonical@1-0-0",
+                "payload": {"canonical": "data"},
+            },
+        ]
+
+        with patch("lorchestra.config.load_config", return_value=_mock_config()):
+            plan = build_plan_from_items(
+                items=items,
+                correlation_id="canonize_test",
+                method="bq.upsert",
+                dataset="canonical",
+                table="canonical_objects",
+                key_columns=["idem_key"],
+            )
+
+        assert len(plan.ops) == 1
+        op = plan.ops[0]
+        assert op.params["dataset"] == "test_canonical"
+        assert op.params["table"] == "canonical_objects"
+        row = op.params["rows"][0]
+        assert row["idem_key"] == "stripe:stripe-prod:customer:cus_001#customer"
+        assert row["payload"] == {"canonical": "data"}
+
+    def test_field_map_applied_in_batch(self):
+        """field_map should rename keys in batch mode rows."""
+        items = [{"old_name": "value"}]
+
+        with patch("lorchestra.config.load_config", return_value=_mock_config()):
+            plan = build_plan_from_items(
+                items=items,
+                correlation_id="test",
+                method="bq.upsert",
+                dataset="raw",
+                table="raw_objects",
+                key_columns=["idem_key"],
+                field_map={"new_name": "old_name"},
+            )
+
+        row = plan.ops[0].params["rows"][0]
+        assert "new_name" in row
+        assert "old_name" not in row
+
+    def test_fields_allowlist_in_batch(self):
+        """fields should filter columns in batch mode rows."""
+        items = [{"keep": "yes", "drop": "no"}]
+
+        with patch("lorchestra.config.load_config", return_value=_mock_config()):
+            plan = build_plan_from_items(
+                items=items,
+                correlation_id="test",
+                method="bq.upsert",
+                dataset="raw",
+                table="raw_objects",
+                key_columns=["idem_key"],
+                fields=["keep"],
+            )
+
+        row = plan.ops[0].params["rows"][0]
+        assert row == {"keep": "yes"}
