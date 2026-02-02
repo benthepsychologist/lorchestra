@@ -1,7 +1,17 @@
 job_id: ingest_google_forms_ipip120
-version: "1.0"
+version: '2.0'
 steps:
-  - step_id: ingest
-    op: call.injest
-    params:
-      source: "google_forms_ipip120"
+- step_id: ingest
+  op: call
+  params:
+    callable: injest
+    source: google_forms_ipip120
+- step_id: persist
+  op: plan.build
+  params:
+    items: '@run.ingest.items'
+    method: wal.append
+- step_id: write
+  op: storacle.submit
+  params:
+    plan: '@run.persist.plan'

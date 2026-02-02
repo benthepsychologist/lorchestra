@@ -1,0 +1,21 @@
+pipeline_id: pipeline.project
+description: Run BQ sync and file projection jobs
+stages:
+  - name: bq_to_sqlite_sync
+    jobs:
+      - sync_proj_clients
+      - sync_proj_sessions
+      - sync_proj_transcripts
+      - sync_proj_clinical_documents
+      - sync_proj_form_responses
+      - sync_proj_contact_events
+      - sync_measurement_events
+      - sync_observations
+  - name: sqlite_to_markdown
+    jobs:
+      - file_proj_clients
+      - file_proj_transcripts
+      - file_proj_session_notes
+      - file_proj_session_summaries
+      - file_proj_reports
+stop_on_failure: false

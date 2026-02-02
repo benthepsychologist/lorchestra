@@ -1,13 +1,29 @@
 {
   "job_id": "test_exec_smoke",
-  "version": "1.0.0",
+  "version": "2.0",
   "steps": [
     {
       "step_id": "noop_injest",
-      "op": "call.injest",
+      "op": "call",
       "params": {
+        "callable": "injest",
         "source_system": "test",
         "object_type": "smoke_check"
+      }
+    },
+    {
+      "step_id": "persist",
+      "op": "plan.build",
+      "params": {
+        "items": "@run.noop_injest.items",
+        "method": "wal.append"
+      }
+    },
+    {
+      "step_id": "write",
+      "op": "storacle.submit",
+      "params": {
+        "plan": "@run.persist.plan"
       }
     }
   ]

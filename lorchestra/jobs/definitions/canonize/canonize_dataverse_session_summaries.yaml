@@ -1,9 +1,19 @@
 job_id: canonize_dataverse_session_summaries
-version: '1.0'
+version: '2.0'
 steps:
 - step_id: canonize
-  op: call.canonizer
+  op: call
   params:
+    callable: canonizer
     source_type: dataverse
     config:
       transform_id: session_summary/dataverse_to_canonical@2-0-0
+- step_id: persist
+  op: plan.build
+  params:
+    items: '@run.canonize.items'
+    method: wal.append
+- step_id: write
+  op: storacle.submit
+  params:
+    plan: '@run.persist.plan'

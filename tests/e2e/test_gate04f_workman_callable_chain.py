@@ -1,7 +1,7 @@
 """Gate 04f: Validate workman callable chain through execute(envelope).
 
 Confirms:
-- call.workman dispatches through CallableHandler
+- Generic call op dispatches to workman callable by name
 - workman.execute() returns CallableResult with domain event items
 - plan_builder converts items to StoraclePlan with wal.append ops
 - Each wal.append op carries a deterministic idempotency_key
@@ -22,16 +22,15 @@ def _reset_callable_registry():
 
 
 def test_workman_dispatch_returns_callable_result():
-    """call.workman -> workman.execute() returns well-formed CallableResult."""
+    """call -> workman.execute() returns well-formed CallableResult."""
     from lorchestra.callable.dispatch import dispatch_callable
-    from lorchestra.schemas.ops import Op
 
     params = {
         "op": "pm.project.create",
         "payload": {"name": "Gate 04f Test Project", "project_id": "proj_TEST_04F_001"},
         "ctx": {"producer": "lorchestra", "correlation_id": "gate_04f"},
     }
-    result = dispatch_callable(Op.CALL_WORKMAN, params)
+    result = dispatch_callable("workman", params)
 
     assert result.schema_version == "1.0"
     assert len(result.items) == 1
@@ -50,7 +49,6 @@ def test_workman_dispatch_returns_callable_result():
 def test_workman_plan_builder_wal_append_with_idempotency():
     """plan_builder converts workman items to wal.append ops with idempotency_key."""
     from lorchestra.callable.dispatch import dispatch_callable
-    from lorchestra.schemas.ops import Op
     from lorchestra.plan_builder import build_plan
 
     params = {
@@ -58,7 +56,7 @@ def test_workman_plan_builder_wal_append_with_idempotency():
         "payload": {"name": "Idem Test", "project_id": "proj_IDEM_04F"},
         "ctx": {"producer": "lorchestra", "correlation_id": "idem_04f"},
     }
-    result = dispatch_callable(Op.CALL_WORKMAN, params)
+    result = dispatch_callable("workman", params)
     plan = build_plan(result, correlation_id="idem_04f")
 
     assert plan.kind == "storacle.plan"
@@ -78,7 +76,6 @@ def test_workman_plan_builder_wal_append_with_idempotency():
 def test_workman_idempotency_key_deterministic():
     """Same input to workman produces identical idempotency keys."""
     from lorchestra.callable.dispatch import dispatch_callable
-    from lorchestra.schemas.ops import Op
     from lorchestra.plan_builder import build_plan
 
     params = {
@@ -87,10 +84,10 @@ def test_workman_idempotency_key_deterministic():
         "ctx": {"producer": "lorchestra", "correlation_id": "det_04f"},
     }
 
-    result1 = dispatch_callable(Op.CALL_WORKMAN, params)
+    result1 = dispatch_callable("workman", params)
     plan1 = build_plan(result1, correlation_id="det_04f")
 
-    result2 = dispatch_callable(Op.CALL_WORKMAN, params)
+    result2 = dispatch_callable("workman", params)
     plan2 = build_plan(result2, correlation_id="det_04f")
 
     # Item-level keys match
@@ -115,10 +112,11 @@ def test_workman_job_def_compiles():
     instance = compile_envelope(envelope)
 
     assert instance.job_id == "workman_create_project"
-    assert len(instance.steps) == 1
+    assert len(instance.steps) == 3  # call, plan.build, storacle.submit
 
     step = instance.steps[0]
-    assert step.op.value == "call.workman"
+    assert step.op.value == "call"
+    assert step.params["callable"] == "workman"
     assert step.params["op"] == "pm.project.create"
     assert step.params["payload"]["name"] == "Compile Test Project"
     assert step.params["ctx"]["producer"] == "lorchestra"

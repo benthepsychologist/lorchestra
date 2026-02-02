@@ -888,6 +888,98 @@ def exec_run(ctx, job_id: str, ctx_json: str, payload_json: str, envelope_json: 
             _exec_cleanup_smoke(smoke_namespace, ctx)
 
 
+@exec_group.command("pipeline")
+@click.argument("pipeline_id")
+@click.option(
+    "--smoke-namespace",
+    type=str,
+    default=None,
+    help="Smoke test namespace (routes BQ writes to isolated smoke_<namespace> dataset)",
+)
+@click.option(
+    "--clean-up",
+    is_flag=True,
+    help="Delete smoke dataset after run (requires --smoke-namespace)",
+)
+@click.pass_context
+def exec_pipeline(ctx, pipeline_id: str, smoke_namespace: str = None, clean_up: bool = False):
+    """Run a pipeline (sequential execution of jobs).
+
+    Loads a pipeline YAML definition and executes each child job
+    via execute(). This is the v2 replacement for composite jobs.
+
+    Examples:
+
+        lorchestra exec pipeline pipeline.formation
+
+        lorchestra exec pipeline pipeline.daily_all
+
+        lorchestra exec pipeline pipeline.ingest --smoke-namespace test_ns
+    """
+    from lorchestra.pipeline import load_pipeline, run_pipeline
+
+    # Validate flag combinations
+    if clean_up and not smoke_namespace:
+        raise click.UsageError("--clean-up requires --smoke-namespace")
+
+    # Print mode banner
+    if smoke_namespace:
+        smoke_dataset = f"smoke_{smoke_namespace}"
+        click.echo("=" * 50)
+        click.echo("=== SMOKE TEST MODE ===")
+        click.echo(f"Dataset:      {smoke_dataset}")
+        if clean_up:
+            click.echo("Cleanup:      enabled (will delete dataset after run)")
+        click.echo("=" * 50)
+        click.echo()
+
+    try:
+        spec = load_pipeline(pipeline_id, DEFINITIONS_DIR)
+    except FileNotFoundError as e:
+        click.echo(f"Pipeline not found: {e}", err=True)
+        raise SystemExit(1)
+
+    click.echo(f"Pipeline: {pipeline_id}")
+    stages = spec.get("stages", [])
+    total = sum(len(s.get("jobs", [])) for s in stages)
+    click.echo(f"  {len(stages)} stages, {total} jobs")
+    click.echo(f"  stop_on_failure: {spec.get('stop_on_failure', False)}")
+    click.echo()
+
+    try:
+        result = run_pipeline(spec, smoke_namespace=smoke_namespace, definitions_dir=DEFINITIONS_DIR)
+
+        # Display results
+        click.echo()
+        status_str = click.style("SUCCESS", fg="green") if result.success else click.style("FAILED", fg="red")
+        click.echo(f"Result: {status_str}")
+        click.echo(f"  succeeded: {result.succeeded}/{result.total}")
+        click.echo(f"  failed: {result.failed}/{result.total}")
+        click.echo(f"  duration: {result.duration_ms}ms")
+
+        if result.failures:
+            click.echo()
+            click.echo("Failures:")
+            for f in result.failures:
+                click.echo(f"  - {f['job_id']}: {f['error']}")
+
+        if result.stopped_early:
+            click.echo()
+            click.echo(click.style("Pipeline stopped early (stop_on_failure=true)", fg="yellow"))
+
+        if not result.success:
+            raise SystemExit(1)
+
+    except SystemExit:
+        raise
+    except Exception as e:
+        click.echo(f"Pipeline execution failed: {e}", err=True)
+        raise SystemExit(1)
+    finally:
+        if clean_up and smoke_namespace:
+            _exec_cleanup_smoke(smoke_namespace, ctx)
+
+
 @exec_group.command("status")
 @click.argument("run_id")
 @click.option("--store-dir", type=click.Path(exists=True), required=True, help="Run artifacts directory")

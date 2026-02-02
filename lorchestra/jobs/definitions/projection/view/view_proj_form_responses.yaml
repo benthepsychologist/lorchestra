@@ -1,0 +1,17 @@
+job_id: view_proj_form_responses
+version: '2.0'
+steps:
+- step_id: generate
+  op: call
+  params:
+    callable: view_creator
+    projection_name: proj_form_responses
+- step_id: persist
+  op: plan.build
+  params:
+    items: '@run.generate.items'
+    method: bq.execute
+- step_id: write
+  op: storacle.submit
+  params:
+    plan: '@run.persist.plan'

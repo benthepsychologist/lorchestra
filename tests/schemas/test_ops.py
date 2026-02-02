@@ -1,8 +1,8 @@
-"""Tests for lorchestra Op enum (e005b-01).
+"""Tests for lorchestra Op enum (e005b-05).
 
 Tests cover:
 - Op enum members exist
-- Removed ops (query.*, write.*, assert.*) raise AttributeError
+- Removed ops (query.*, write.*, assert.*, call.*-specific) raise AttributeError
 - Backend property returns correct values
 """
 
@@ -13,25 +13,17 @@ from lorchestra.schemas.ops import Op
 class TestOpEnumMembers:
     """Tests for Op enum member existence."""
 
-    def test_call_injest_exists(self):
-        """call.injest op should exist."""
-        assert Op.CALL_INJEST.value == "call.injest"
+    def test_call_exists(self):
+        """Generic call op should exist."""
+        assert Op.CALL.value == "call"
 
-    def test_call_canonizer_exists(self):
-        """call.canonizer op should exist."""
-        assert Op.CALL_CANONIZER.value == "call.canonizer"
+    def test_plan_build_exists(self):
+        """plan.build op should exist."""
+        assert Op.PLAN_BUILD.value == "plan.build"
 
-    def test_call_finalform_exists(self):
-        """call.finalform op should exist."""
-        assert Op.CALL_FINALFORM.value == "call.finalform"
-
-    def test_call_projectionist_exists(self):
-        """call.projectionist op should exist."""
-        assert Op.CALL_PROJECTIONIST.value == "call.projectionist"
-
-    def test_call_workman_exists(self):
-        """call.workman op should exist."""
-        assert Op.CALL_WORKMAN.value == "call.workman"
+    def test_storacle_submit_exists(self):
+        """storacle.submit op should exist."""
+        assert Op.STORACLE_SUBMIT.value == "storacle.submit"
 
     def test_compute_llm_exists(self):
         """compute.llm op should exist."""
@@ -44,6 +36,31 @@ class TestOpEnumMembers:
 
 class TestRemovedOps:
     """Tests that removed ops raise AttributeError."""
+
+    def test_call_injest_removed(self):
+        """call.injest should be removed (replaced by generic call)."""
+        with pytest.raises(AttributeError):
+            _ = Op.CALL_INJEST
+
+    def test_call_canonizer_removed(self):
+        """call.canonizer should be removed (replaced by generic call)."""
+        with pytest.raises(AttributeError):
+            _ = Op.CALL_CANONIZER
+
+    def test_call_finalform_removed(self):
+        """call.finalform should be removed (replaced by generic call)."""
+        with pytest.raises(AttributeError):
+            _ = Op.CALL_FINALFORM
+
+    def test_call_projectionist_removed(self):
+        """call.projectionist should be removed (replaced by generic call)."""
+        with pytest.raises(AttributeError):
+            _ = Op.CALL_PROJECTIONIST
+
+    def test_call_workman_removed(self):
+        """call.workman should be removed (replaced by generic call)."""
+        with pytest.raises(AttributeError):
+            _ = Op.CALL_WORKMAN
 
     def test_query_raw_objects_removed(self):
         """query.raw_objects should be removed."""
@@ -99,25 +116,17 @@ class TestRemovedOps:
 class TestBackendProperty:
     """Tests for Op.backend property."""
 
-    def test_call_injest_backend_is_callable(self):
-        """call.injest backend should be 'callable'."""
-        assert Op.CALL_INJEST.backend == "callable"
+    def test_call_backend_is_callable(self):
+        """call backend should be 'callable'."""
+        assert Op.CALL.backend == "callable"
 
-    def test_call_canonizer_backend_is_callable(self):
-        """call.canonizer backend should be 'callable'."""
-        assert Op.CALL_CANONIZER.backend == "callable"
+    def test_plan_build_backend_is_native(self):
+        """plan.build backend should be 'native'."""
+        assert Op.PLAN_BUILD.backend == "native"
 
-    def test_call_finalform_backend_is_callable(self):
-        """call.finalform backend should be 'callable'."""
-        assert Op.CALL_FINALFORM.backend == "callable"
-
-    def test_call_projectionist_backend_is_callable(self):
-        """call.projectionist backend should be 'callable'."""
-        assert Op.CALL_PROJECTIONIST.backend == "callable"
-
-    def test_call_workman_backend_is_callable(self):
-        """call.workman backend should be 'callable'."""
-        assert Op.CALL_WORKMAN.backend == "callable"
+    def test_storacle_submit_backend_is_native(self):
+        """storacle.submit backend should be 'native'."""
+        assert Op.STORACLE_SUBMIT.backend == "native"
 
     def test_compute_llm_backend_is_inferometer(self):
         """compute.llm backend should be 'inferometer'."""
@@ -131,9 +140,17 @@ class TestBackendProperty:
 class TestFromString:
     """Tests for Op.from_string() method."""
 
-    def test_from_string_call_injest(self):
-        """from_string should parse 'call.injest'."""
-        assert Op.from_string("call.injest") == Op.CALL_INJEST
+    def test_from_string_call(self):
+        """from_string should parse 'call'."""
+        assert Op.from_string("call") == Op.CALL
+
+    def test_from_string_plan_build(self):
+        """from_string should parse 'plan.build'."""
+        assert Op.from_string("plan.build") == Op.PLAN_BUILD
+
+    def test_from_string_storacle_submit(self):
+        """from_string should parse 'storacle.submit'."""
+        assert Op.from_string("storacle.submit") == Op.STORACLE_SUBMIT
 
     def test_from_string_compute_llm(self):
         """from_string should parse 'compute.llm'."""
@@ -152,3 +169,8 @@ class TestFromString:
         """from_string should raise for invalid strings."""
         with pytest.raises(ValueError, match="Unknown operation"):
             Op.from_string("not.an.op")
+
+    def test_from_string_old_call_ops_raise(self):
+        """from_string should raise for removed call.* ops."""
+        with pytest.raises(ValueError, match="Unknown operation"):
+            Op.from_string("call.injest")

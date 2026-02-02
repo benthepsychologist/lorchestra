@@ -1,11 +1,21 @@
 job_id: workman_create_project
-version: '1.0'
+version: '2.0'
 steps:
 - step_id: create_project
-  op: call.workman
+  op: call
   params:
+    callable: workman
     op: pm.project.create
     payload:
-      name: "@payload.name"
+      name: '@payload.name'
     ctx:
       producer: lorchestra
+- step_id: persist
+  op: plan.build
+  params:
+    items: '@run.create_project.items'
+    method: wal.append
+- step_id: write
+  op: storacle.submit
+  params:
+    plan: '@run.persist.plan'

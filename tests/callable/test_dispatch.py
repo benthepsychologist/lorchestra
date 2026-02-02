@@ -1,7 +1,7 @@
-"""Tests for callable dispatch (e005b-01).
+"""Tests for callable dispatch (e005b-05).
 
 Tests cover:
-- CALLABLES map dispatch
+- Name-based dispatch to callables
 - Exception propagation (not classification)
 - Register callable for testing
 """
@@ -9,7 +9,6 @@ Tests cover:
 import pytest
 from lorchestra.callable import CallableResult, dispatch_callable, register_callable
 from lorchestra.callable.dispatch import get_callables
-from lorchestra.schemas.ops import Op
 from lorchestra.errors import TransientError, PermanentError
 
 
@@ -22,23 +21,18 @@ class TestDispatchCallable:
         def mock_injest(params: dict) -> dict:
             return {"items": [{"id": 1}], "stats": {"count": 1}}
 
-        register_callable(Op.CALL_INJEST, mock_injest)
+        register_callable("injest", mock_injest)
 
-        result = dispatch_callable(Op.CALL_INJEST, {"source": "test"})
+        result = dispatch_callable("injest", {"source": "test"})
 
         assert isinstance(result, CallableResult)
         assert result.items == [{"id": 1}]
         assert result.stats == {"count": 1}
 
-    def test_dispatch_non_call_op_raises(self):
-        """dispatch_callable should raise for non-call.* ops."""
-        with pytest.raises(ValueError, match="only handles call"):
-            dispatch_callable(Op.COMPUTE_LLM, {})
-
-    def test_dispatch_non_call_op_job_run_raises(self):
-        """dispatch_callable should raise for job.run."""
-        with pytest.raises(ValueError, match="only handles call"):
-            dispatch_callable(Op.JOB_RUN, {})
+    def test_dispatch_unknown_callable_raises(self):
+        """dispatch_callable should raise for unknown callable names."""
+        with pytest.raises(ValueError, match="Unknown callable"):
+            dispatch_callable("nonexistent_module", {})
 
 
 class TestExceptionPropagation:
@@ -49,52 +43,44 @@ class TestExceptionPropagation:
         def raise_transient(params: dict) -> dict:
             raise TransientError("Rate limited")
 
-        register_callable(Op.CALL_CANONIZER, raise_transient)
+        register_callable("canonizer", raise_transient)
 
         with pytest.raises(TransientError, match="Rate limited"):
-            dispatch_callable(Op.CALL_CANONIZER, {})
+            dispatch_callable("canonizer", {})
 
     def test_permanent_error_propagated(self):
         """PermanentError should be propagated unchanged."""
         def raise_permanent(params: dict) -> dict:
             raise PermanentError("Invalid input")
 
-        register_callable(Op.CALL_FINALFORM, raise_permanent)
+        register_callable("finalform", raise_permanent)
 
         with pytest.raises(PermanentError, match="Invalid input"):
-            dispatch_callable(Op.CALL_FINALFORM, {})
+            dispatch_callable("finalform", {})
 
     def test_generic_exception_propagated(self):
         """Generic exceptions should be propagated unchanged."""
         def raise_generic(params: dict) -> dict:
             raise RuntimeError("Something went wrong")
 
-        register_callable(Op.CALL_PROJECTIONIST, raise_generic)
+        register_callable("projectionist", raise_generic)
 
         with pytest.raises(RuntimeError, match="Something went wrong"):
-            dispatch_callable(Op.CALL_PROJECTIONIST, {})
+            dispatch_callable("projectionist", {})
 
 
 class TestRegisterCallable:
     """Tests for register_callable function."""
 
-    def test_register_call_op_succeeds(self):
-        """Should be able to register call.* ops."""
+    def test_register_callable_succeeds(self):
+        """Should be able to register callables by name."""
         def custom_callable(params: dict) -> dict:
             return {"items": [], "stats": {"custom": True}}
 
-        register_callable(Op.CALL_WORKMAN, custom_callable)
+        register_callable("workman", custom_callable)
 
-        result = dispatch_callable(Op.CALL_WORKMAN, {})
+        result = dispatch_callable("workman", {})
         assert result.stats == {"custom": True}
-
-    def test_register_non_call_op_raises(self):
-        """Should raise when registering non-call.* ops."""
-        def some_callable(params: dict) -> dict:
-            return {"items": []}
-
-        with pytest.raises(ValueError, match="Can only register call"):
-            register_callable(Op.COMPUTE_LLM, some_callable)
 
 
 class TestCallablesRegistry:
@@ -105,27 +91,27 @@ class TestCallablesRegistry:
         callables = get_callables()
         assert isinstance(callables, dict)
 
-    def test_all_call_ops_in_registry(self):
-        """All call.* ops should be in the registry."""
+    def test_all_callable_names_in_registry(self):
+        """All callable module names should be in the registry."""
         callables = get_callables()
 
-        expected_ops = [
-            Op.CALL_INJEST,
-            Op.CALL_CANONIZER,
-            Op.CALL_FINALFORM,
-            Op.CALL_PROJECTIONIST,
-            Op.CALL_WORKMAN,
+        expected_names = [
+            "injest",
+            "canonizer",
+            "finalform",
+            "projectionist",
+            "workman",
         ]
 
-        for op in expected_ops:
-            assert op in callables, f"{op} should be in registry"
+        for name in expected_names:
+            assert name in callables, f"{name} should be in registry"
 
-    def test_non_call_ops_not_in_registry(self):
-        """Non-call.* ops should not be in the registry."""
+    def test_non_callable_names_not_in_registry(self):
+        """Non-callable names should not be in the registry."""
         callables = get_callables()
 
-        assert Op.COMPUTE_LLM not in callables
-        assert Op.JOB_RUN not in callables
+        assert "compute.llm" not in callables
+        assert "job.run" not in callables
 
 
 class TestStubCallables:
@@ -137,7 +123,7 @@ class TestStubCallables:
         from lorchestra.callable.dispatch import _stub_callable
 
         stub = _stub_callable("test_module")
-        register_callable(Op.CALL_INJEST, stub)
+        register_callable("injest", stub)
 
         with pytest.raises(NotImplementedError, match="not installed"):
-            dispatch_callable(Op.CALL_INJEST, {})
+            dispatch_callable("injest", {})

@@ -1,0 +1,20 @@
+job_id: sync_molt_actions
+version: '2.0'
+steps:
+- step_id: project
+  op: call
+  params:
+    callable: molt_projector
+    query_name: context_actions
+    sink_project: molt-chatbot
+    sink_dataset: molt
+    sink_table: context_actions
+- step_id: persist
+  op: plan.build
+  params:
+    items: '@run.project.items'
+    method: bq.execute
+- step_id: write
+  op: storacle.submit
+  params:
+    plan: '@run.persist.plan'

@@ -8,11 +8,9 @@
       "type": "string",
       "description": "Valid operation identifiers",
       "enum": [
-        "call.injest",
-        "call.canonizer",
-        "call.finalform",
-        "call.projectionist",
-        "call.workman",
+        "call",
+        "plan.build",
+        "storacle.submit",
         "compute.llm",
         "job.run"
       ]
@@ -20,18 +18,20 @@
     "OpCategory": {
       "type": "string",
       "description": "High-level operation categories",
-      "enum": ["call", "compute", "job"]
+      "enum": ["call", "plan", "storacle", "compute", "job"]
     },
     "Backend": {
       "type": "string",
       "description": "Backend responsible for executing operations",
-      "enum": ["callable", "inferometer", "orchestration"]
+      "enum": ["callable", "native", "inferometer", "orchestration"]
     },
     "OpBackendMapping": {
       "description": "Mapping of operations to backends",
       "type": "object",
       "properties": {
-        "call.*": { "const": "callable" },
+        "call": { "const": "callable" },
+        "plan.*": { "const": "native" },
+        "storacle.*": { "const": "native" },
         "compute.*": { "const": "inferometer" },
         "job.*": { "const": "orchestration" }
       }

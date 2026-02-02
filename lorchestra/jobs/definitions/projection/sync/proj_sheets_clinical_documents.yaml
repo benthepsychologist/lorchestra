@@ -1,9 +1,10 @@
 job_id: proj_sheets_clinical_documents
-version: '1.0'
+version: '2.0'
 steps:
 - step_id: project
-  op: call.projectionist
+  op: call
   params:
+    callable: projectionist
     projection_id: sheets
     config:
       query: SELECT * FROM `${PROJECT}.${DATASET_CANONICAL}.proj_clinical_documents`
@@ -11,3 +12,12 @@ steps:
       sheet_name: clinical_documents
       strategy: replace
       account: acct1
+- step_id: persist
+  op: plan.build
+  params:
+    items: '@run.project.items'
+    method: wal.append
+- step_id: write
+  op: storacle.submit
+  params:
+    plan: '@run.persist.plan'

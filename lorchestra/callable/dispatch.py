@@ -1,8 +1,8 @@
 """
 Callable dispatch - In-proc dispatch to callables.
 
-This module provides the dispatch layer for call.* operations:
-1. Maps Op to callable function via explicit registry
+This module provides the dispatch layer for the generic `call` operation:
+1. Maps callable name string to callable function via explicit registry
 2. Invokes callable with params
 3. Returns CallableResult
 
@@ -19,7 +19,6 @@ allow graceful handling when callable modules are not installed.
 from typing import Callable
 
 from lorchestra.callable.result import CallableResult
-from lorchestra.schemas.ops import Op
 
 
 # Type alias for callable functions
@@ -42,37 +41,37 @@ def _try_import_callable(module_name: str) -> CallableFn | None:
     return None
 
 
-def _get_callables() -> dict[Op, CallableFn]:
+def _get_callables() -> dict[str, CallableFn]:
     """
     Build the callable registry with lazy imports.
 
     This function is called once and cached. It attempts to import
     each callable module and only registers those that are available.
 
-    For v0, we use stub implementations. As the actual callable
-    libraries are implemented, replace stubs with real imports:
-
-        import injest
-        CALL_INJEST: injest.execute,
+    External callables are top-level packages (injest, canonizer, etc.).
+    Internal callables live in lorchestra.callable.* and are registered
+    under their short name (e.g., "view_creator").
     """
-    callables: dict[Op, CallableFn] = {}
+    # External packages (top-level imports)
+    external = ["injest", "canonizer", "finalform", "projectionist", "workman"]
+    # Internal callables (lorchestra.callable.*)
+    internal = ["view_creator", "molt_projector", "bq_reader", "file_renderer", "measurement_projector", "observation_projector"]
 
-    # Map of Op to module name
-    op_modules = {
-        Op.CALL_INJEST: "injest",
-        Op.CALL_CANONIZER: "canonizer",
-        Op.CALL_FINALFORM: "finalform",
-        Op.CALL_PROJECTIONIST: "projectionist",
-        Op.CALL_WORKMAN: "workman",
-    }
+    callables: dict[str, CallableFn] = {}
 
-    # Try to import each callable module
-    for op, module_name in op_modules.items():
-        fn = _try_import_callable(module_name)
+    for name in external:
+        fn = _try_import_callable(name)
         if fn is not None:
-            callables[op] = fn
+            callables[name] = fn
         else:
-            callables[op] = _stub_callable(module_name)
+            callables[name] = _stub_callable(name)
+
+    for name in internal:
+        fn = _try_import_callable(f"lorchestra.callable.{name}")
+        if fn is not None:
+            callables[name] = fn
+        else:
+            callables[name] = _stub_callable(name)
 
     return callables
 
@@ -88,10 +87,10 @@ def _stub_callable(name: str) -> CallableFn:
 
 
 # Lazy-initialized callable registry
-_CALLABLES: dict[Op, CallableFn] | None = None
+_CALLABLES: dict[str, CallableFn] | None = None
 
 
-def get_callables() -> dict[Op, CallableFn]:
+def get_callables() -> dict[str, CallableFn]:
     """Get the callable registry, initializing if needed."""
     global _CALLABLES
     if _CALLABLES is None:
@@ -99,35 +98,32 @@ def get_callables() -> dict[Op, CallableFn]:
     return _CALLABLES
 
 
-def dispatch_callable(op: Op, params: dict) -> CallableResult:
+def dispatch_callable(name: str, params: dict) -> CallableResult:
     """
-    Dispatch to in-proc callable and return CallableResult.
+    Dispatch to in-proc callable by name and return CallableResult.
 
     Callables raise TransientError or PermanentError on failure.
     This function does NOT classify - it just propagates.
     Classification happens at the source (callables) or executor boundary.
 
     Args:
-        op: The call.* operation to dispatch
+        name: The callable module name (e.g., "injest", "workman")
         params: Parameters to pass to the callable
 
     Returns:
         CallableResult with items or items_ref
 
     Raises:
-        ValueError: If op is not a call.* operation
+        ValueError: If callable name is not registered
         TransientError: Propagated from callable (safe to retry)
         PermanentError: Propagated from callable (do not retry)
         NotImplementedError: If callable is not installed
     """
-    if not op.value.startswith("call."):
-        raise ValueError(f"dispatch_callable only handles call.* ops, got: {op}")
-
     callables = get_callables()
-    fn = callables.get(op)
+    fn = callables.get(name)
 
     if fn is None:
-        raise ValueError(f"Unknown callable op: {op}")
+        raise ValueError(f"Unknown callable: {name}")
 
     # Invoke callable - exceptions propagate unchanged
     result_dict = fn(params)
@@ -136,18 +132,15 @@ def dispatch_callable(op: Op, params: dict) -> CallableResult:
     return CallableResult(**result_dict)
 
 
-def register_callable(op: Op, fn: CallableFn) -> None:
+def register_callable(name: str, fn: CallableFn) -> None:
     """
-    Register a callable function for an op.
+    Register a callable function by name.
 
     This is primarily for testing - allows injecting mock callables.
 
     Args:
-        op: The call.* operation
+        name: The callable name (e.g., "injest", "workman")
         fn: Function that takes params dict and returns result dict
     """
-    if not op.value.startswith("call."):
-        raise ValueError(f"Can only register call.* ops, got: {op}")
-
     callables = get_callables()
-    callables[op] = fn
+    callables[name] = fn

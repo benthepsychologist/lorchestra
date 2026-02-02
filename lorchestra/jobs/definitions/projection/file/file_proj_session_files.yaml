@@ -1,0 +1,22 @@
+job_id: file_proj_session_files
+version: '2.0'
+steps:
+- step_id: render
+  op: call
+  params:
+    callable: file_renderer
+    sqlite_path: ~/clinical-vault/local.db
+    query: SELECT * FROM proj_client_sessions ORDER BY client_id, started_at
+    base_path: ~/clinical-vault/views
+    path_template: '{client_id}/sessions/{started_at}_{session_id}.md'
+    content_template: "# {started_at} \u2014 Session {session_id}\n\n## Summary\n\
+      \n{session_summary_md}\n\n## Transcript\n\n{transcript_md}"
+- step_id: persist
+  op: plan.build
+  params:
+    items: '@run.render.items'
+    method: file.write
+- step_id: write
+  op: storacle.submit
+  params:
+    plan: '@run.persist.plan'

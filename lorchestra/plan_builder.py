@@ -29,6 +29,7 @@ import hashlib
 import json
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
 from lorchestra.callable.result import CallableResult
 
@@ -159,6 +160,109 @@ def build_plan(
     items = result.items or []
 
     for item in items:
+        op = StoracleOp(
+            op_id=str(uuid.uuid4()),
+            method=method,
+            params=item,
+            idempotency_key=_compute_idempotency_key(item, method) if method == "wal.append" else None,
+        )
+        ops.append(op)
+
+    return StoraclePlan(
+        correlation_id=correlation_id,
+        ops=ops,
+    )
+
+
+def _apply_field_params(
+    items: list[dict],
+    fields: list[str] | None = None,
+    field_map: dict[str, str] | None = None,
+    field_defaults: dict[str, Any] | None = None,
+) -> list[dict]:
+    """
+    Apply field filtering, mapping, and defaults to items.
+
+    Processing order:
+    1. field_map: rename keys (new_key -> old_key mapping)
+    2. field_defaults: backfill missing keys with defaults
+    3. fields: filter to allowlist (fail fast on missing required fields)
+
+    Args:
+        items: List of item dicts to process
+        fields: Allowlist of keys to keep (items missing these keys raise ValueError)
+        field_map: Rename mapping {new_key: old_key}
+        field_defaults: Default values for missing keys
+
+    Returns:
+        Processed items list
+
+    Raises:
+        ValueError: If fields specified and an item is missing a required field
+    """
+    if not fields and not field_map and not field_defaults:
+        return items
+
+    result = []
+    for item in items:
+        processed = dict(item)
+
+        # 1. Apply field_map (rename keys)
+        if field_map:
+            for new_key, old_key in field_map.items():
+                if old_key in processed:
+                    processed[new_key] = processed.pop(old_key)
+
+        # 2. Apply field_defaults (backfill missing keys)
+        if field_defaults:
+            for key, default in field_defaults.items():
+                if key not in processed:
+                    processed[key] = default
+
+        # 3. Apply fields filter (allowlist)
+        if fields:
+            missing = [f for f in fields if f not in processed]
+            if missing:
+                raise ValueError(
+                    f"Item missing required field(s): {missing}. "
+                    f"Available: {list(processed.keys())}"
+                )
+            processed = {k: v for k, v in processed.items() if k in fields}
+
+        result.append(processed)
+    return result
+
+
+def build_plan_from_items(
+    items: list[dict],
+    correlation_id: str,
+    method: str = "wal.append",
+    fields: list[str] | None = None,
+    field_map: dict[str, str] | None = None,
+    field_defaults: dict[str, Any] | None = None,
+) -> StoraclePlan:
+    """
+    Build StoraclePlan from raw items. Used by plan.build native op.
+
+    This is the explicit plan building entry point — items come from
+    a previous step's output (via @run.step_id.items), not from a
+    CallableResult directly.
+
+    Args:
+        items: List of item dicts to convert to storacle ops
+        correlation_id: Correlation ID for tracing
+        method: Storacle method (default: "wal.append")
+        fields: Optional allowlist of keys to persist
+        field_map: Optional key rename mapping {new_key: old_key}
+        field_defaults: Optional default values for missing keys
+
+    Returns:
+        StoraclePlan ready for submission to storacle
+    """
+    processed = _apply_field_params(items, fields, field_map, field_defaults)
+
+    ops: list[StoracleOp] = []
+    for item in processed:
         op = StoracleOp(
             op_id=str(uuid.uuid4()),
             method=method,

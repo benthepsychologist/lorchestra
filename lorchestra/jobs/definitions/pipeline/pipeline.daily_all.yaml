@@ -1,0 +1,16 @@
+pipeline_id: pipeline.daily_all
+description: "Run full daily pipeline: ingest \u2192 canonize \u2192 formation \u2192 project"
+stages:
+  - name: ingest
+    jobs:
+      - pipeline.ingest
+  - name: canonize
+    jobs:
+      - pipeline.canonize
+  - name: formation
+    jobs:
+      - pipeline.formation
+  - name: project
+    jobs:
+      - pipeline.project
+stop_on_failure: true

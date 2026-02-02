@@ -1,9 +1,19 @@
 job_id: canonize_exchange_jmap
-version: '1.0'
+version: '2.0'
 steps:
 - step_id: canonize
-  op: call.canonizer
+  op: call
   params:
+    callable: canonizer
     source_type: exchange
     config:
       transform_id: email/exchange_to_jmap_lite@1.1.0
+- step_id: persist
+  op: plan.build
+  params:
+    items: '@run.canonize.items'
+    method: wal.append
+- step_id: write
+  op: storacle.submit
+  params:
+    plan: '@run.persist.plan'

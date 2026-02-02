@@ -1,0 +1,20 @@
+job_id: proj_obs_followup
+version: '2.0'
+steps:
+- step_id: score
+  op: call
+  params:
+    callable: observation_projector
+    binding_id: followup
+    binding_version: '1.0.0'
+    measurement_table: measurement_events
+    observation_table: observations
+- step_id: persist
+  op: plan.build
+  params:
+    items: '@run.score.items'
+    method: bq.upsert
+- step_id: write
+  op: storacle.submit
+  params:
+    plan: '@run.persist.plan'

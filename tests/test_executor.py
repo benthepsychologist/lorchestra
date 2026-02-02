@@ -43,12 +43,12 @@ def simple_job_def() -> JobDef:
     """A simple job definition for testing."""
     return JobDef(
         job_id="test_job",
-        version="1.0.0",
+        version="2.0",
         steps=(
             StepDef(
                 step_id="injest_data",
-                op=Op.CALL_INJEST,
-                params={"source_system": "test", "object_type": "test_obj"},
+                op=Op.CALL,
+                params={"callable": "injest", "source_system": "test", "object_type": "test_obj"},
             ),
             StepDef(
                 step_id="llm_process",
@@ -56,9 +56,9 @@ def simple_job_def() -> JobDef:
                 params={"prompt": "Process data", "input_rows": "@run.injest_data.items"},
             ),
             StepDef(
-                step_id="canonize_result",
-                op=Op.CALL_CANONIZER,
-                params={"schema": "output", "data": "@run.llm_process.response"},
+                step_id="persist",
+                op=Op.PLAN_BUILD,
+                params={"items": "@run.llm_process.response", "method": "wal.append"},
             ),
         ),
     )
@@ -69,17 +69,17 @@ def job_with_conditions() -> JobDef:
     """A job with conditional steps."""
     return JobDef(
         job_id="conditional_job",
-        version="1.0.0",
+        version="2.0",
         steps=(
             StepDef(
                 step_id="always_run",
-                op=Op.CALL_INJEST,
-                params={"source_system": "@ctx.source", "object_type": "default"},
+                op=Op.CALL,
+                params={"callable": "injest", "source_system": "@ctx.source", "object_type": "default"},
             ),
             StepDef(
                 step_id="prod_only",
-                op=Op.CALL_CANONIZER,
-                params={"schema": "prod_schema"},
+                op=Op.PLAN_BUILD,
+                params={"items": "@run.always_run.items", "method": "wal.append"},
                 if_="@ctx.env == 'prod'",
             ),
             StepDef(
@@ -101,9 +101,9 @@ def temp_definitions_dir(tmp_path) -> Path:
     # Simple job
     simple_job = {
         "job_id": "simple_job",
-        "version": "1.0.0",
+        "version": "2.0",
         "steps": [
-            {"step_id": "step1", "op": "call.injest", "params": {"source_system": "test", "object_type": "test"}},
+            {"step_id": "step1", "op": "call", "params": {"callable": "injest", "source_system": "test", "object_type": "test"}},
         ],
     }
     (defs_dir / "simple_job.json").write_text(json.dumps(simple_job))
@@ -113,13 +113,13 @@ def temp_definitions_dir(tmp_path) -> Path:
     ingest_dir.mkdir()
     ingest_job = {
         "job_id": "ingest_test",
-        "version": "1.0.0",
+        "version": "2.0",
         "steps": [
-            {"step_id": "fetch", "op": "call.injest", "params": {"source_system": "api", "object_type": "data"}},
+            {"step_id": "fetch", "op": "call", "params": {"callable": "injest", "source_system": "api", "object_type": "data"}},
             {
-                "step_id": "canonize",
-                "op": "call.canonizer",
-                "params": {"schema": "raw"},
+                "step_id": "persist",
+                "op": "plan.build",
+                "params": {"items": "@run.fetch.items", "method": "wal.append"},
             },
         ],
     }
@@ -142,7 +142,7 @@ class TestJobRegistry:
         job = registry.load("simple_job")
 
         assert job.job_id == "simple_job"
-        assert job.version == "1.0.0"
+        assert job.version == "2.0"
         assert len(job.steps) == 1
 
     def test_load_job_from_subdirectory(self, temp_definitions_dir):
@@ -207,7 +207,7 @@ class TestCompiler:
         instance = compile_job(simple_job_def)
 
         assert instance.job_id == "test_job"
-        assert instance.job_version == "1.0.0"
+        assert instance.job_version == "2.0"
         assert len(instance.steps) == 3
         assert instance.job_def_sha256
 
@@ -231,7 +231,7 @@ class TestCompiler:
             steps=(
                 StepDef(
                     step_id="s1",
-                    op=Op.CALL_INJEST,
+                    op=Op.CALL,
                     params={"id": "@payload.entity_id"},
                 ),
             ),
@@ -387,7 +387,7 @@ class TestInMemoryRunStore:
         manifest = StepManifest.from_op(
             run_id="test-run-id",
             step_id="step1",
-            op=Op.CALL_INJEST,
+            op=Op.CALL,
             resolved_params={"source_system": "test", "object_type": "data"},
             idempotency_key="test-key",
         )
@@ -528,20 +528,20 @@ class TestIdempotencyKey:
     def test_run_scope_key(self, simple_job_def):
         """Run-scoped key includes run_id and step_id."""
         instance = compile_job(simple_job_def)
-        step = instance.get_step("query_data")
+        step = instance.get_step("injest_data")
 
         key = _compute_idempotency_key(
-            "run-123", "query_data", step, {}, None
+            "run-123", "injest_data", step, {}, None
         )
 
         assert "run-123" in key
-        assert "query_data" in key
+        assert "injest_data" in key
 
     def test_semantic_scope_key(self):
         """Semantic-scoped key uses semantic_key_ref."""
         step = JobStepInstance(
             step_id="canonize",
-            op=Op.CALL_CANONIZER,
+            op=Op.CALL,
             params={"entity_id": "ent-456"},
         )
         idempotency = IdempotencyConfig(
@@ -559,7 +559,7 @@ class TestIdempotencyKey:
         """include_payload_hash adds hash suffix."""
         step = JobStepInstance(
             step_id="canonize",
-            op=Op.CALL_CANONIZER,
+            op=Op.CALL,
             params={"data": "test"},
         )
         idempotency = IdempotencyConfig(scope="run", include_payload_hash=True)
@@ -578,24 +578,40 @@ class MockBackend:
 
     def execute(self, manifest: StepManifest) -> dict:
         """Return mock output based on operation."""
-        if manifest.op == Op.CALL_INJEST:
-            return {"items": [{"id": 1}, {"id": 2}], "stats": {"count": 2}}
-        elif manifest.op == Op.COMPUTE_LLM:
+        if manifest.op == Op.COMPUTE_LLM:
             return {"response": "processed", "model": "test", "usage": {}}
-        elif manifest.op.value.startswith("call."):
-            return {"items": [], "stats": {"count": 0}}
         else:
             return {"status": "ok"}
 
 
-def _make_mock_backends():
-    """Create mock backends for testing."""
+def _mock_handle_call(manifest: StepManifest) -> dict:
+    """Mock native call handler."""
+    return {"items": [{"id": 1}, {"id": 2}], "stats": {"count": 2}}
+
+
+def _mock_handle_plan_build(manifest: StepManifest) -> dict:
+    """Mock native plan.build handler."""
+    return {"plan": {"ops": []}}
+
+
+def _mock_handle_storacle_submit(manifest: StepManifest) -> dict:
+    """Mock native storacle.submit handler."""
+    return {"status": "submitted"}
+
+
+def _make_mock_executor(store) -> Executor:
+    """Create an executor with mocked native ops and mock backends for non-native ops."""
     mock = MockBackend()
-    return {
-        "callable": mock,
+    backends = {
         "inferometer": mock,
         "orchestration": NoOpBackend(),
     }
+    executor = Executor(store=store, backends=backends)
+    # Patch native op handlers to avoid calling real callables/storacle
+    executor._handle_call = _mock_handle_call
+    executor._handle_plan_build = _mock_handle_plan_build
+    executor._handle_storacle_submit = _mock_handle_storacle_submit
+    return executor
 
 
 class TestExecutor:
@@ -604,7 +620,7 @@ class TestExecutor:
     def test_execute_simple_job(self, simple_job_def):
         """Execute a simple job successfully."""
         store = InMemoryRunStore()
-        executor = Executor(store=store, backends=_make_mock_backends())
+        executor = _make_mock_executor(store)
         instance = compile_job(simple_job_def)
 
         result = executor.execute(instance)
@@ -616,7 +632,7 @@ class TestExecutor:
     def test_execute_creates_run_record(self, simple_job_def):
         """Execution creates a run record."""
         store = InMemoryRunStore()
-        executor = Executor(store=store, backends=_make_mock_backends())
+        executor = _make_mock_executor(store)
         instance = compile_job(simple_job_def)
 
         result = executor.execute(instance, envelope={"test": True})
@@ -629,7 +645,7 @@ class TestExecutor:
     def test_execute_records_step_outcomes(self, simple_job_def):
         """Execution records outcome for each step."""
         store = InMemoryRunStore()
-        executor = Executor(store=store, backends=_make_mock_backends())
+        executor = _make_mock_executor(store)
         instance = compile_job(simple_job_def)
 
         result = executor.execute(instance)
@@ -643,7 +659,7 @@ class TestExecutor:
     def test_execute_skips_compiled_skip_steps(self, job_with_conditions):
         """Steps with compiled_skip=True are skipped."""
         store = InMemoryRunStore()
-        executor = Executor(store=store)
+        executor = _make_mock_executor(store)
         instance = compile_job(
             job_with_conditions,
             ctx={"source": "test", "env": "dev"},
@@ -659,7 +675,7 @@ class TestExecutor:
     def test_execute_stores_manifests(self, simple_job_def):
         """Execution stores manifest for each step."""
         store = InMemoryRunStore()
-        executor = Executor(store=store)
+        executor = _make_mock_executor(store)
         instance = compile_job(simple_job_def)
 
         result = executor.execute(instance)
@@ -681,21 +697,22 @@ class TestExecutor:
             def execute(self, manifest):
                 self.calls.append(manifest)
                 # Return mock output that enables @run.* resolution
-                if manifest.step_id == "injest_data":
-                    return {"items": [{"id": 1}, {"id": 2}], "stats": {"count": 2}}
-                elif manifest.step_id == "llm_process":
+                if manifest.op == Op.COMPUTE_LLM:
                     return {"response": "processed_data", "model": "test", "usage": {}}
                 return {"status": "ok"}
 
         tracking = TrackingBackend()
         backends = {
-            "callable": tracking,
             "inferometer": tracking,
             "orchestration": NoOpBackend(),
         }
 
         store = InMemoryRunStore()
         executor = Executor(store=store, backends=backends)
+        # Patch native op handlers
+        executor._handle_call = lambda m: {"items": [{"id": 1}, {"id": 2}], "stats": {"count": 2}}
+        executor._handle_plan_build = lambda m: {"plan": {"ops": []}}
+        executor._handle_storacle_submit = lambda m: {"status": "submitted"}
         instance = compile_job(simple_job_def)
 
         result = executor.execute(instance)
@@ -709,20 +726,31 @@ class TestExecutor:
 class TestExecuteJobFunction:
     """Tests for the execute_job() function (internal API)."""
 
+    @pytest.fixture(autouse=True)
+    def _mock_native_ops(self, monkeypatch):
+        """Mock native op handlers on Executor so tests don't need real callables."""
+        monkeypatch.setattr(Executor, "_handle_call", lambda self, m: {"items": [{"id": 1}], "stats": {"count": 1}})
+        monkeypatch.setattr(Executor, "_handle_plan_build", lambda self, m: {"plan": {"ops": []}})
+        monkeypatch.setattr(Executor, "_handle_storacle_submit", lambda self, m: {"status": "submitted"})
+
     def test_execute_job_compiles_and_runs(self, simple_job_def):
         """execute_job() compiles and executes in one call."""
-        result = execute_job(simple_job_def, backends=_make_mock_backends())
+        mock = MockBackend()
+        backends = {"inferometer": mock, "orchestration": NoOpBackend()}
+        result = execute_job(simple_job_def, backends=backends)
 
         assert result.success
         assert result.run_record.job_id == "test_job"
 
     def test_execute_job_with_context(self, job_with_conditions):
         """execute_job() accepts ctx and payload."""
+        mock = MockBackend()
+        backends = {"inferometer": mock, "orchestration": NoOpBackend()}
         result = execute_job(
             job_with_conditions,
             ctx={"source": "api", "env": "prod"},
             payload={"enabled": True},
-            backends=_make_mock_backends(),
+            backends=backends,
         )
 
         assert result.success
@@ -732,10 +760,12 @@ class TestExecuteJobFunction:
 
     def test_execute_job_with_envelope(self, simple_job_def):
         """execute_job() passes envelope to runtime."""
+        mock = MockBackend()
+        backends = {"inferometer": mock, "orchestration": NoOpBackend()}
         result = execute_job(
             simple_job_def,
             envelope={"run_context": "test"},
-            backends=_make_mock_backends(),
+            backends=backends,
         )
 
         assert result.run_record.envelope == {"run_context": "test"}
@@ -764,7 +794,7 @@ class TestEndToEnd:
 
         # 3. Execute
         store = InMemoryRunStore()
-        executor = Executor(store=store)
+        executor = _make_mock_executor(store)
         result = executor.execute(instance, envelope={"source": "test"})
 
         assert result.success
@@ -786,7 +816,7 @@ class TestEndToEnd:
         # Execute job
         compiler = Compiler(registry)
         instance = compiler.compile("simple_job")
-        executor = Executor(store=store)
+        executor = _make_mock_executor(store)
         result = executor.execute(instance)
 
         # Verify files created

@@ -18,18 +18,16 @@
     },
     "backend": {
       "type": "string",
-      "description": "Target backend derived from op prefix (callable for call.*, inferometer for compute.*, orchestration for job.*)",
-      "enum": ["callable", "inferometer", "orchestration"]
+      "description": "Target backend derived from op (callable for call, native for plan.build/storacle.submit, inferometer for compute.*, orchestration for job.*)",
+      "enum": ["callable", "native", "inferometer", "orchestration"]
     },
     "op": {
       "type": "string",
       "description": "The operation to execute",
       "enum": [
-        "call.injest",
-        "call.canonizer",
-        "call.finalform",
-        "call.projectionist",
-        "call.workman",
+        "call",
+        "plan.build",
+        "storacle.submit",
         "compute.llm",
         "job.run"
       ]

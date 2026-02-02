@@ -1,0 +1,19 @@
+pipeline_id: pipeline.canonize
+description: Run all canonization jobs
+stages:
+  - name: canonization
+    jobs:
+      - canonize_gmail_jmap
+      - canonize_exchange_jmap
+      - canonize_dataverse_contacts
+      - canonize_dataverse_sessions
+      - canonize_dataverse_transcripts
+      - canonize_dataverse_session_notes
+      - canonize_dataverse_session_summaries
+      - canonize_dataverse_reports
+      - canonize_stripe_customers
+      - canonize_stripe_invoices
+      - canonize_stripe_payment_intents
+      - canonize_stripe_refunds
+      - canonize_google_forms
+stop_on_failure: false

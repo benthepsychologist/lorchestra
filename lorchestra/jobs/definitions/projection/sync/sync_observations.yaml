@@ -1,0 +1,20 @@
+job_id: sync_observations
+version: '2.0'
+steps:
+- step_id: read
+  op: call
+  params:
+    callable: bq_reader
+    projection: observations
+    sqlite_path: ~/clinical-vault/local.db
+    table: observations
+    dataset: derived
+- step_id: persist
+  op: plan.build
+  params:
+    items: '@run.read.items'
+    method: sqlite.sync
+- step_id: write
+  op: storacle.submit
+  params:
+    plan: '@run.persist.plan'

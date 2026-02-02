@@ -9,9 +9,8 @@ v2 API (e005-command-plane):
 
   Envelope schema: {job_id: str, ctx: dict, payload: dict, handlers: HandlerRegistry}
 
-Handler Architecture (e005b-01):
-  - HandlerRegistry dispatches StepManifests to appropriate handlers
-  - CallableHandler: call.* (in-proc callables → storacle)
+Handler Architecture (e005b-05):
+  - Native ops (call, plan.build, storacle.submit) handled by Executor directly
   - ComputeHandler: compute.llm (via inferometer service)
   - OrchestrationHandler: job.* (via lorchestra itself)
 """
@@ -29,7 +28,7 @@ __all__ = [
     "compile",
     "execute",
     "ExecutionResult",
-    # v2 handlers (e005b-01)
+    # v2 handlers (e005b-05)
     "HandlerRegistry",
 ]
 
@@ -38,6 +37,6 @@ from .config import LorchestraConfig, load_config, get_lorchestra_home
 # v2 public API per epic e005-command-plane
 from .executor import compile, execute, ExecutionResult
 
-# v2 handlers - handler registry for step dispatch (e005b-01)
+# v2 handlers - handler registry for step dispatch (e005b-05)
 from .handlers import HandlerRegistry
 

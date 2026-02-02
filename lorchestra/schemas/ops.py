@@ -2,9 +2,11 @@
 Op enum defining the operation taxonomy for lorchestra.
 
 Operations are categorized by their backend:
-- call.*    -> callable: in-proc callable dispatch
-- compute.* -> inferometer: LLM and external compute
-- job.*     -> orchestration: sub-job execution
+- call           -> callable: in-proc callable dispatch (generic, name in params)
+- plan.build     -> native: lorchestra-native plan construction
+- storacle.submit -> native: lorchestra-native storacle submission
+- compute.*      -> inferometer: LLM and external compute
+- job.*          -> orchestration: sub-job execution
 """
 
 from enum import Enum
@@ -15,19 +17,19 @@ class Op(str, Enum):
     """
     Enumeration of all valid operations in lorchestra.
 
-    Naming convention: {category}.{action}
-
     Backend mapping:
-    - call.* => callable (in-proc dispatch)
-    - compute.* => inferometer (LLM service)
-    - job.* => orchestration (lorchestra)
+    - call              => callable (in-proc dispatch, callable name in params)
+    - plan.build        => native (lorchestra plan construction)
+    - storacle.submit   => native (lorchestra storacle submission)
+    - compute.*         => inferometer (LLM service)
+    - job.*             => orchestration (lorchestra)
     """
-    # Callable dispatch (in-proc)
-    CALL_INJEST = "call.injest"
-    CALL_CANONIZER = "call.canonizer"
-    CALL_FINALFORM = "call.finalform"
-    CALL_PROJECTIONIST = "call.projectionist"
-    CALL_WORKMAN = "call.workman"
+    # Callable dispatch (in-proc, generic)
+    CALL = "call"
+
+    # Native lorchestra ops
+    PLAN_BUILD = "plan.build"
+    STORACLE_SUBMIT = "storacle.submit"
 
     # LLM (via inferometer)
     COMPUTE_LLM = "compute.llm"
@@ -36,17 +38,20 @@ class Op(str, Enum):
     JOB_RUN = "job.run"
 
     @property
-    def backend(self) -> Literal["callable", "inferometer", "orchestration"]:
+    def backend(self) -> Literal["callable", "native", "inferometer", "orchestration"]:
         """
         Get the backend responsible for executing this operation.
 
         Returns:
-            - "callable" for call.* (handled by in-proc callable dispatch)
+            - "callable" for call (handled by in-proc callable dispatch)
+            - "native" for plan.build, storacle.submit (handled by executor directly)
             - "inferometer" for compute.* (handled by inferometer service)
             - "orchestration" for job.* (handled by lorchestra itself)
         """
-        if self.value.startswith("call."):
+        if self.value == "call":
             return "callable"
+        elif self.value in ("plan.build", "storacle.submit"):
+            return "native"
         elif self.value.startswith("compute."):
             return "inferometer"
         else:

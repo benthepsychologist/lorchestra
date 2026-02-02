@@ -1,8 +1,8 @@
 """Projectionist processor — DEPRECATED (e005b-04e).
 
 This processor is superseded by the execute(envelope) path:
-    lorchestra.execute(envelope) -> CallableHandler -> call.projectionist
-    -> projectionist.execute() -> CallableResult -> plan_builder -> storacle
+    lorchestra.execute(envelope) -> call (callable=projectionist)
+    -> projectionist.execute() -> CallableResult -> plan.build -> storacle.submit
 
 New-style YAML job defs in jobs/definitions/projection/sync/*.yaml
 replace the old JSON defs that used this processor.

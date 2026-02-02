@@ -1,15 +1,14 @@
-"""Tests for the handlers module (e005b-01).
+"""Tests for the handlers module (e005b-05).
 
 Tests cover:
 - Handler base class and NoOpHandler
-- CallableHandler dispatch
 - ComputeClient protocol and NoOpComputeClient
 - ComputeHandler dispatch
 - OrchestrationHandler
 - HandlerRegistry dispatch and factory methods
 
-Note: This test file has been updated for e005b-01 which replaced
-DataPlaneHandler with CallableHandler for call.* ops.
+Note: CallableHandler was removed in e005b-05. Native ops (call, plan.build,
+storacle.submit) are handled directly by the Executor.
 """
 
 import pytest
@@ -17,13 +16,11 @@ import pytest
 from lorchestra.handlers import (
     NoOpHandler,
     HandlerRegistry,
-    CallableHandler,
     ComputeHandler,
     OrchestrationHandler,
 )
 from lorchestra.handlers.compute import NoOpComputeClient
 from lorchestra.schemas import StepManifest, Op
-from lorchestra.callable import register_callable
 
 
 # -----------------------------------------------------------------------------
@@ -32,12 +29,13 @@ from lorchestra.callable import register_callable
 
 
 def _make_call_manifest() -> StepManifest:
-    """Create a call.injest manifest for testing."""
+    """Create a call manifest for testing."""
     return StepManifest.from_op(
         run_id="01TEST00000000000000000000",
         step_id="test_call",
-        op=Op.CALL_INJEST,
+        op=Op.CALL,
         resolved_params={
+            "callable": "injest",
             "source_system": "test",
             "object_type": "test_obj",
         },
@@ -84,47 +82,11 @@ class TestNoOpHandler:
     def test_noop_handler_returns_empty_result(self):
         """NoOpHandler returns status noop."""
         handler = NoOpHandler()
-        manifest = _make_call_manifest()
+        manifest = _make_llm_manifest()
 
         result = handler.execute(manifest)
 
         assert result["status"] == "noop"
-
-
-# -----------------------------------------------------------------------------
-# CallableHandler Tests
-# -----------------------------------------------------------------------------
-
-
-class TestCallableHandler:
-    """Tests for CallableHandler dispatch."""
-
-    def test_callable_handler_dispatches_call_op(self):
-        """CallableHandler dispatches call.* ops to callables."""
-        # Register a mock callable
-        def mock_injest(params: dict) -> dict:
-            return {
-                "items": [{"id": 1, "data": params.get("source_system")}],
-                "stats": {"count": 1},
-            }
-
-        register_callable(Op.CALL_INJEST, mock_injest)
-
-        handler = CallableHandler()
-        manifest = _make_call_manifest()
-
-        result = handler.execute(manifest)
-
-        assert "callable_result" in result
-        assert result["callable_result"]["items_count"] == 1
-
-    def test_callable_handler_rejects_non_call_ops(self):
-        """CallableHandler rejects non-call.* ops."""
-        handler = CallableHandler()
-        manifest = _make_llm_manifest()
-
-        with pytest.raises(ValueError, match="only handles call"):
-            handler.execute(manifest)
 
 
 # -----------------------------------------------------------------------------
@@ -218,23 +180,22 @@ class TestHandlerRegistry:
     def test_registry_dispatch(self):
         """dispatch routes to correct handler."""
         registry = HandlerRegistry()
-        registry.register("callable", NoOpHandler())
+        registry.register("inferometer", NoOpHandler())
 
-        manifest = _make_call_manifest()
+        manifest = _make_llm_manifest()
         result = registry.dispatch(manifest)
 
         assert result["status"] == "noop"
 
     def test_create_noop_registry(self):
-        """create_noop creates registry with all NoOp handlers."""
+        """create_noop creates registry with NoOp handlers for non-native backends."""
         registry = HandlerRegistry.create_noop()
 
-        assert registry.has("callable")
         assert registry.has("inferometer")
         assert registry.has("orchestration")
 
         # All should return noop
-        manifest = _make_call_manifest()
+        manifest = _make_llm_manifest()
         result = registry.dispatch(manifest)
         assert result["status"] == "noop"
 
@@ -242,7 +203,6 @@ class TestHandlerRegistry:
         """create_default creates registry with default handlers."""
         registry = HandlerRegistry.create_default()
 
-        assert registry.has("callable")
         assert registry.has("inferometer")
         assert registry.has("orchestration")
 
@@ -255,8 +215,8 @@ class TestHandlerRegistry:
 class TestBackendRouting:
     """Tests for correct backend routing in registry."""
 
-    def test_call_ops_route_to_callable(self):
-        """call.* ops route to callable backend."""
+    def test_call_op_routes_to_callable(self):
+        """call op routes to callable backend."""
         manifest = _make_call_manifest()
         assert manifest.backend == "callable"
 
@@ -269,3 +229,23 @@ class TestBackendRouting:
         """job.* ops route to orchestration backend."""
         manifest = _make_job_run_manifest()
         assert manifest.backend == "orchestration"
+
+    def test_native_ops_route_to_native(self):
+        """plan.build and storacle.submit route to native backend."""
+        plan_manifest = StepManifest.from_op(
+            run_id="01TEST00000000000000000000",
+            step_id="test_plan",
+            op=Op.PLAN_BUILD,
+            resolved_params={"items": [], "method": "wal.append"},
+            idempotency_key="test:test_plan",
+        )
+        assert plan_manifest.backend == "native"
+
+        storacle_manifest = StepManifest.from_op(
+            run_id="01TEST00000000000000000000",
+            step_id="test_storacle",
+            op=Op.STORACLE_SUBMIT,
+            resolved_params={"plan": {}},
+            idempotency_key="test:test_storacle",
+        )
+        assert storacle_manifest.backend == "native"

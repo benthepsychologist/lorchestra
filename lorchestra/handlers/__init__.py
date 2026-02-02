@@ -2,20 +2,19 @@
 Handlers module for lorchestra execution backends.
 
 This module provides the handler abstraction layer that enforces clean boundaries:
-- lorchestra orchestrates (JobDef → JobInstance → RunRecord → StepManifest)
-- handlers dispatch to appropriate backends
+- lorchestra orchestrates (JobDef -> JobInstance -> RunRecord -> StepManifest)
+- handlers dispatch to appropriate backends for non-native ops
 
-Backend types (per e005b-01):
-- callable: call.* ops dispatched to in-proc callables
+Native ops (call, plan.build, storacle.submit) are handled directly by the
+Executor. Handlers are used for:
 - inferometer: compute.* ops dispatched to LLM service
 - orchestration: job.* ops handled by lorchestra itself
 
 Usage:
-    from lorchestra.handlers import HandlerRegistry, CallableHandler, ComputeHandler
+    from lorchestra.handlers import HandlerRegistry, ComputeHandler
 
     # Create registry with configured handlers
     registry = HandlerRegistry()
-    registry.register("callable", CallableHandler())
     registry.register("inferometer", ComputeHandler(compute_client))
 
     # Or use factory with defaults
@@ -24,7 +23,6 @@ Usage:
 
 from lorchestra.handlers.base import Handler, NoOpHandler
 from lorchestra.handlers.registry import HandlerRegistry
-from lorchestra.handlers.callable_handler import CallableHandler
 from lorchestra.handlers.compute import ComputeHandler, ComputeClient
 from lorchestra.handlers.orchestration import OrchestrationHandler
 
@@ -32,7 +30,6 @@ __all__ = [
     "Handler",
     "NoOpHandler",
     "HandlerRegistry",
-    "CallableHandler",
     "ComputeHandler",
     "ComputeClient",
     "OrchestrationHandler",

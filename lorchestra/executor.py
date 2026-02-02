@@ -2,7 +2,8 @@
 Executor - Step dispatch and execution engine.
 
 The Executor implements:
-- Step dispatch to appropriate handlers (callable, inferometer, orchestration)
+- Native op handling (call, plan.build, storacle.submit) directly
+- Handler dispatch for compute.* and job.* ops via HandlerRegistry
 - Reference resolution (@run.* refs from previous step outputs)
 - Idempotency key computation
 - Retry logic with continue_on_error semantics
@@ -15,13 +16,16 @@ Execution flow:
    a. Resolve @run.* references from previous outputs
    b. Compute idempotency key
    c. Create StepManifest
-   d. Dispatch to handler via HandlerRegistry
-   e. Record StepOutcome
+   d. Dispatch: native ops handled inline, others via HandlerRegistry
+   e. Record StepOutcome (output available via @run.step_id.*)
 4. Update AttemptRecord with final status
 
-Handler Architecture (e005b-01):
-- HandlerRegistry dispatches StepManifests to appropriate handlers
-- CallableHandler: call.* (in-proc callables → storacle)
+Native ops (e005b-05):
+- call: dispatch to callable by name, surface CallableResult as step output
+- plan.build: build StoraclePlan from items + method
+- storacle.submit: submit plan to storacle boundary
+
+Handler-dispatched ops:
 - ComputeHandler: compute.llm (via inferometer service)
 - OrchestrationHandler: job.* (via lorchestra itself)
 """
@@ -278,7 +282,6 @@ class Executor:
         registry = HandlerRegistry.create_default()
         # Or manually configure:
         # registry = HandlerRegistry()
-        # registry.register("callable", CallableHandler())
         # registry.register("inferometer", ComputeHandler(compute_client))
 
         executor = Executor(
@@ -287,13 +290,8 @@ class Executor:
         )
         result = executor.execute(instance, envelope={"key": "value"})
 
-    Usage (legacy - with backends dict, deprecated):
-        executor = Executor(
-            store=InMemoryRunStore(),
-            backends={
-                "callable": SomeBackend(),
-            },
-        )
+    Native ops (call, plan.build, storacle.submit) are handled directly
+    by the Executor and do not go through the HandlerRegistry.
     """
 
     def __init__(
@@ -563,6 +561,9 @@ class Executor:
         """
         Dispatch a manifest to the appropriate handler or backend.
 
+        Native ops (call, plan.build, storacle.submit) are handled directly
+        by the executor. Other ops (compute.*, job.*) go through HandlerRegistry.
+
         Args:
             manifest: The StepManifest to execute
             step: The step instance (for error reporting)
@@ -573,7 +574,17 @@ class Executor:
         Raises:
             ExecutionError: If no handler/backend is configured for the backend type
         """
-        # Use handlers (new pattern) if available
+        from lorchestra.schemas.ops import Op
+
+        # Native ops: handled directly by executor
+        if manifest.op == Op.CALL:
+            return self._handle_call(manifest)
+        elif manifest.op == Op.PLAN_BUILD:
+            return self._handle_plan_build(manifest)
+        elif manifest.op == Op.STORACLE_SUBMIT:
+            return self._handle_storacle_submit(manifest)
+
+        # Handler-dispatched ops (compute.*, job.*)
         if self._handlers is not None:
             try:
                 return self._handlers.dispatch(manifest)
@@ -598,6 +609,99 @@ class Executor:
             step.step_id,
             "No handlers or backends configured",
         )
+
+    def _handle_call(self, manifest: StepManifest) -> dict[str, Any]:
+        """
+        Handle the generic `call` op: dispatch to callable by name.
+
+        The callable name is in params["callable"]. All other params
+        are forwarded to the callable. The CallableResult is surfaced
+        as the step output so downstream steps can reference @run.step_id.items.
+
+        Args:
+            manifest: StepManifest with op=call
+
+        Returns:
+            Dict with items, stats, schema_version from CallableResult
+        """
+        from lorchestra.callable.dispatch import dispatch_callable
+
+        callable_name = manifest.resolved_params["callable"]
+        # Forward all params except "callable" to the callable
+        params = {k: v for k, v in manifest.resolved_params.items() if k != "callable"}
+        result = dispatch_callable(callable_name, params)
+        return {
+            "items": result.items,
+            "stats": result.stats,
+            "schema_version": result.schema_version,
+        }
+
+    def _handle_plan_build(self, manifest: StepManifest) -> dict[str, Any]:
+        """
+        Handle the `plan.build` native op: build StoraclePlan from items.
+
+        Reads items from params (typically @run.step_id.items resolved),
+        plus method and optional field params, and produces a StoraclePlan.
+
+        Args:
+            manifest: StepManifest with op=plan.build
+
+        Returns:
+            Dict with plan (serialized StoraclePlan)
+        """
+        from lorchestra.plan_builder import build_plan_from_items
+
+        items = manifest.resolved_params["items"]
+        method = manifest.resolved_params.get("method", "wal.append")
+        correlation_id = f"{manifest.run_id}:{manifest.step_id}"
+
+        # Phase 2 field params (optional)
+        fields = manifest.resolved_params.get("fields")
+        field_map = manifest.resolved_params.get("field_map")
+        field_defaults = manifest.resolved_params.get("field_defaults")
+
+        plan = build_plan_from_items(
+            items=items,
+            correlation_id=correlation_id,
+            method=method,
+            fields=fields,
+            field_map=field_map,
+            field_defaults=field_defaults,
+        )
+        return {"plan": plan.to_dict()}
+
+    def _handle_storacle_submit(self, manifest: StepManifest) -> dict[str, Any]:
+        """
+        Handle the `storacle.submit` native op: submit plan to storacle.
+
+        Reads the plan dict from params (typically @run.persist.plan resolved)
+        and submits it to storacle via the client boundary.
+
+        Args:
+            manifest: StepManifest with op=storacle.submit
+
+        Returns:
+            Dict with storacle response
+        """
+        from lorchestra.storacle.client import submit_plan, RpcMeta
+        from lorchestra.plan_builder import StoraclePlan, StoracleOp
+
+        plan_dict = manifest.resolved_params["plan"]
+        plan = StoraclePlan(
+            kind=plan_dict.get("kind", "storacle.plan"),
+            version=plan_dict.get("version", "0.1"),
+            correlation_id=plan_dict.get("correlation_id", ""),
+            ops=[
+                StoracleOp(**op_data)
+                for op_data in plan_dict.get("ops", [])
+            ],
+        )
+        meta = RpcMeta(
+            run_id=manifest.run_id,
+            step_id=manifest.step_id,
+            correlation_id=plan.correlation_id,
+        )
+        return submit_plan(plan, meta)
 
 
 def execute_job(

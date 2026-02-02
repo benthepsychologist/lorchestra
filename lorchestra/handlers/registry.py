@@ -1,12 +1,11 @@
 """
 Handler Registry for dispatching operations to appropriate handlers.
 
-The registry maps backend types (callable, inferometer, orchestration) to
-their corresponding Handler implementations, providing a central dispatch
-mechanism for the Executor.
+The registry maps backend types to their corresponding Handler implementations,
+providing a central dispatch mechanism for the Executor.
 
-Backend types (per e005b-01):
-- callable: call.* ops dispatched to in-proc callables
+Native ops (call, plan.build, storacle.submit) are handled directly by the
+Executor and do NOT go through the registry. The registry handles:
 - inferometer: compute.* ops dispatched to LLM service
 - orchestration: job.* ops handled by lorchestra itself
 """
@@ -25,11 +24,12 @@ class HandlerRegistry:
     """
     Registry for handler dispatch by backend type.
 
-    Maps backend names (callable, inferometer, orchestration) to Handler instances.
+    Maps backend names (inferometer, orchestration) to Handler instances.
+    Native ops (call, plan.build, storacle.submit) are handled directly
+    by the Executor and do not go through the registry.
 
     Usage:
         registry = HandlerRegistry()
-        registry.register("callable", CallableHandler())
         registry.register("inferometer", ComputeHandler(compute_client))
 
         # Dispatch a manifest
@@ -48,7 +48,7 @@ class HandlerRegistry:
         Register a handler for a backend type.
 
         Args:
-            backend: Backend type name (callable, inferometer, orchestration)
+            backend: Backend type name (e.g. inferometer, orchestration)
             handler: Handler instance for this backend
         """
         self._handlers[backend] = handler
@@ -121,6 +121,9 @@ class HandlerRegistry:
         """
         Create a registry with default handlers.
 
+        Native ops (call, plan.build, storacle.submit) are handled by the
+        Executor directly and are NOT registered here.
+
         If clients are not provided, NoOpHandler will be used.
 
         Args:
@@ -131,10 +134,6 @@ class HandlerRegistry:
             Configured HandlerRegistry
         """
         registry = cls()
-
-        # Callable handler (in-proc dispatch)
-        from lorchestra.handlers.callable_handler import CallableHandler
-        registry.register("callable", CallableHandler())
 
         # Inferometer handler (LLM service)
         if compute_client is not None:
@@ -158,12 +157,12 @@ class HandlerRegistry:
         Create a registry with all NoOp handlers.
 
         Useful for testing and dry-run mode.
+        Native ops are handled by the Executor, not the registry.
 
         Returns:
-            HandlerRegistry with NoOp handlers for all backends
+            HandlerRegistry with NoOp handlers for non-native backends
         """
         registry = cls()
-        registry.register("callable", NoOpHandler())
         registry.register("inferometer", NoOpHandler())
         registry.register("orchestration", NoOpHandler())
         return registry

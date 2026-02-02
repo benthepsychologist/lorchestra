@@ -3,8 +3,8 @@
 Tests the JobDef -> JobInstance -> RunRecord -> StepManifest -> AttemptRecord lifecycle
 and validates all schema invariants from the e005b specification.
 
-Note: This test file has been updated for e005b-01 which removed query.*, write.*, assert.*
-ops in favor of call.* ops for callable dispatch.
+Note: Updated for e005b-05 which collapsed call.* ops into a generic `call` op
+with callable name in params, and added native ops (plan.build, storacle.submit).
 """
 
 import pytest
@@ -46,13 +46,12 @@ class TestOp:
     """Tests for Op enum."""
 
     def test_op_values(self):
-        """All expected ops exist with correct values (per e005b spec)."""
-        # Call ops (in-proc callable dispatch)
-        assert Op.CALL_INJEST.value == "call.injest"
-        assert Op.CALL_CANONIZER.value == "call.canonizer"
-        assert Op.CALL_FINALFORM.value == "call.finalform"
-        assert Op.CALL_PROJECTIONIST.value == "call.projectionist"
-        assert Op.CALL_WORKMAN.value == "call.workman"
+        """All expected ops exist with correct values (per e005b-05 spec)."""
+        # Generic call op (callable name in params)
+        assert Op.CALL.value == "call"
+        # Native ops
+        assert Op.PLAN_BUILD.value == "plan.build"
+        assert Op.STORACLE_SUBMIT.value == "storacle.submit"
         # Compute ops - only compute.llm in v0
         assert Op.COMPUTE_LLM.value == "compute.llm"
         # Job ops
@@ -60,10 +59,11 @@ class TestOp:
 
     def test_op_backends(self):
         """Ops map to correct backends."""
-        # callable for call.*
-        assert Op.CALL_INJEST.backend == "callable"
-        assert Op.CALL_CANONIZER.backend == "callable"
-        assert Op.CALL_FINALFORM.backend == "callable"
+        # callable for call
+        assert Op.CALL.backend == "callable"
+        # native for plan.build / storacle.submit
+        assert Op.PLAN_BUILD.backend == "native"
+        assert Op.STORACLE_SUBMIT.backend == "native"
         # inferometer for compute.*
         assert Op.COMPUTE_LLM.backend == "inferometer"
         # orchestration for job.*
@@ -71,8 +71,9 @@ class TestOp:
 
     def test_op_from_string(self):
         """Op.from_string parses correctly."""
-        assert Op.from_string("call.injest") == Op.CALL_INJEST
-        assert Op.from_string("call.canonizer") == Op.CALL_CANONIZER
+        assert Op.from_string("call") == Op.CALL
+        assert Op.from_string("plan.build") == Op.PLAN_BUILD
+        assert Op.from_string("storacle.submit") == Op.STORACLE_SUBMIT
         assert Op.from_string("compute.llm") == Op.COMPUTE_LLM
         assert Op.from_string("job.run") == Op.JOB_RUN
 
@@ -134,9 +135,9 @@ class TestStepDef:
 
     def test_basic_step(self):
         """Basic step with required fields."""
-        step = StepDef(step_id="step1", op=Op.CALL_INJEST)
+        step = StepDef(step_id="step1", op=Op.CALL)
         assert step.step_id == "step1"
-        assert step.op == Op.CALL_INJEST
+        assert step.op == Op.CALL
         assert step.params == {}
         assert step.phase_id is None
         assert step.timeout_s == 300  # Default per e005 spec
@@ -148,7 +149,7 @@ class TestStepDef:
         """Step with parameter references."""
         step = StepDef(
             step_id="step1",
-            op=Op.CALL_INJEST,
+            op=Op.CALL,
             params={"entity_type": "@ctx.entity", "filter": "@payload.filter"},
         )
         assert step.params["entity_type"] == "@ctx.entity"
@@ -158,7 +159,7 @@ class TestStepDef:
         """Step with all optional fields."""
         step = StepDef(
             step_id="step1",
-            op=Op.CALL_INJEST,
+            op=Op.CALL,
             phase_id="phase1",
             timeout_s=30,
             continue_on_error=True,
@@ -171,7 +172,7 @@ class TestStepDef:
         """if_ condition allows @ctx.* references."""
         step = StepDef(
             step_id="step1",
-            op=Op.CALL_INJEST,
+            op=Op.CALL,
             if_="@ctx.enabled == true",
         )
         assert step.if_ == "@ctx.enabled == true"
@@ -180,7 +181,7 @@ class TestStepDef:
         """if_ condition allows @payload.* references."""
         step = StepDef(
             step_id="step1",
-            op=Op.CALL_INJEST,
+            op=Op.CALL,
             if_="@payload.count > 0",
         )
         assert step.if_ == "@payload.count > 0"
@@ -190,7 +191,7 @@ class TestStepDef:
         with pytest.raises(CompileError, match="@run.* references are not allowed"):
             StepDef(
                 step_id="step1",
-                op=Op.CALL_INJEST,
+                op=Op.CALL,
                 if_="@run.previous_result.count > 0",
             )
 
@@ -198,7 +199,7 @@ class TestStepDef:
         """Steps can have idempotency config."""
         step = StepDef(
             step_id="step1",
-            op=Op.CALL_INJEST,
+            op=Op.CALL,
             idempotency=IdempotencyConfig(scope="run"),
         )
         assert step.idempotency.scope == "run"
@@ -218,8 +219,8 @@ class TestJobDef:
             job_id="job1",
             version="1.0.0",
             steps=(
-                StepDef(step_id="step1", op=Op.CALL_INJEST),
-                StepDef(step_id="step2", op=Op.CALL_CANONIZER),
+                StepDef(step_id="step1", op=Op.CALL),
+                StepDef(step_id="step2", op=Op.PLAN_BUILD),
             ),
         )
         assert job.job_id == "job1"
@@ -233,8 +234,8 @@ class TestJobDef:
                 job_id="job1",
                 version="1.0.0",
                 steps=(
-                    StepDef(step_id="step1", op=Op.CALL_INJEST),
-                    StepDef(step_id="step1", op=Op.CALL_CANONIZER),
+                    StepDef(step_id="step1", op=Op.CALL),
+                    StepDef(step_id="step1", op=Op.PLAN_BUILD),
                 ),
             )
 
@@ -244,12 +245,12 @@ class TestJobDef:
             job_id="job1",
             version="1.0.0",
             steps=(
-                StepDef(step_id="step1", op=Op.CALL_INJEST),
-                StepDef(step_id="step2", op=Op.CALL_CANONIZER),
+                StepDef(step_id="step1", op=Op.CALL),
+                StepDef(step_id="step2", op=Op.PLAN_BUILD),
             ),
         )
-        assert job.get_step("step1").op == Op.CALL_INJEST
-        assert job.get_step("step2").op == Op.CALL_CANONIZER
+        assert job.get_step("step1").op == Op.CALL
+        assert job.get_step("step2").op == Op.PLAN_BUILD
         assert job.get_step("nonexistent") is None
 
     def test_to_dict_and_from_dict(self):
@@ -260,13 +261,13 @@ class TestJobDef:
             steps=(
                 StepDef(
                     step_id="step1",
-                    op=Op.CALL_INJEST,
+                    op=Op.CALL,
                     params={"entity_type": "records"},
                     phase_id="phase1",
                 ),
                 StepDef(
                     step_id="step2",
-                    op=Op.CALL_CANONIZER,
+                    op=Op.PLAN_BUILD,
                     idempotency=IdempotencyConfig(
                         scope="semantic",
                         semantic_key_ref="@payload.id",
@@ -298,7 +299,7 @@ class TestJobStepInstance:
         """Basic step instance."""
         step = JobStepInstance(
             step_id="step1",
-            op=Op.CALL_INJEST,
+            op=Op.CALL,
             params={"entity_type": "records"},
         )
         assert step.step_id == "step1"
@@ -308,7 +309,7 @@ class TestJobStepInstance:
         """compiled_skip marks step for skipping."""
         step = JobStepInstance(
             step_id="step1",
-            op=Op.CALL_INJEST,
+            op=Op.CALL,
             compiled_skip=True,
         )
         assert step.compiled_skip is True
@@ -326,8 +327,8 @@ class TestJobInstance:
             job_def_sha256="a" * 64,
             compiled_at=now,
             steps=(
-                JobStepInstance(step_id="step1", op=Op.CALL_INJEST),
-                JobStepInstance(step_id="step2", op=Op.CALL_CANONIZER, compiled_skip=True),
+                JobStepInstance(step_id="step1", op=Op.CALL),
+                JobStepInstance(step_id="step2", op=Op.PLAN_BUILD, compiled_skip=True),
             ),
         )
         assert instance.job_id == "job1"
@@ -341,9 +342,9 @@ class TestJobInstance:
             job_def_sha256="a" * 64,
             compiled_at=utcnow(),
             steps=(
-                JobStepInstance(step_id="step1", op=Op.CALL_INJEST),
-                JobStepInstance(step_id="step2", op=Op.CALL_INJEST, compiled_skip=True),
-                JobStepInstance(step_id="step3", op=Op.CALL_CANONIZER),
+                JobStepInstance(step_id="step1", op=Op.CALL),
+                JobStepInstance(step_id="step2", op=Op.CALL, compiled_skip=True),
+                JobStepInstance(step_id="step3", op=Op.PLAN_BUILD),
             ),
         )
         executable = instance.get_executable_steps()
@@ -362,7 +363,7 @@ class TestJobInstance:
             steps=(
                 JobStepInstance(
                     step_id="step1",
-                    op=Op.CALL_INJEST,
+                    op=Op.CALL,
                     phase_id="phase1",
                     timeout_s=60,
                 ),
@@ -429,7 +430,7 @@ class TestStepManifest:
             run_id="01HGVZ8X1MXYZABC123456789A",
             step_id="step1",
             backend="callable",
-            op=Op.CALL_INJEST,
+            op=Op.CALL,
             resolved_params={"entity_type": "records"},
             idempotency_key="key123",
         )
@@ -443,8 +444,8 @@ class TestStepManifest:
             StepManifest(
                 run_id="01HGVZ8X1MXYZABC123456789A",
                 step_id="step1",
-                backend="inferometer",  # Wrong! call.injest should be callable
-                op=Op.CALL_INJEST,
+                backend="inferometer",  # Wrong! call should be callable
+                op=Op.CALL,
                 idempotency_key="key123",
             )
 
@@ -476,7 +477,7 @@ class TestStepManifest:
         original = StepManifest.from_op(
             run_id="01HGVZ8X1MXYZABC123456789A",
             step_id="step1",
-            op=Op.CALL_INJEST,
+            op=Op.CALL,
             resolved_params={"entity_type": "records"},
             idempotency_key="key123",
         )
@@ -664,7 +665,7 @@ class TestSchemaInvariants:
     def test_phase_id_has_no_execution_semantics(self):
         """phase_id is just metadata with no execution semantics in v0."""
         # We just verify it can be set without affecting behavior
-        step = StepDef(step_id="step1", op=Op.CALL_INJEST, phase_id="load_phase")
+        step = StepDef(step_id="step1", op=Op.CALL, phase_id="load_phase")
         assert step.phase_id == "load_phase"
         # No execution semantics - just stored as metadata
 
@@ -673,7 +674,7 @@ class TestSchemaInvariants:
         manifest = StepManifest.from_op(
             run_id="01HGVZ8X1MXYZABC123456789A",
             step_id="step1",
-            op=Op.CALL_INJEST,
+            op=Op.CALL,
             resolved_params={"entity_type": "records"},
             idempotency_key="run:01HGVZ8X1MXYZABC123456789A:step1",
         )
@@ -686,10 +687,11 @@ class TestSchemaInvariants:
         assert manifest.idempotency_key is not None
 
     def test_backend_derived_from_op_prefix(self):
-        """Backend is correctly derived from op prefix."""
+        """Backend is correctly derived from op."""
         test_cases = [
-            (Op.CALL_INJEST, "callable"),
-            (Op.CALL_CANONIZER, "callable"),
+            (Op.CALL, "callable"),
+            (Op.PLAN_BUILD, "native"),
+            (Op.STORACLE_SUBMIT, "native"),
             (Op.COMPUTE_LLM, "inferometer"),
             (Op.JOB_RUN, "orchestration"),
         ]
