@@ -336,6 +336,32 @@ def _compute_idem_key(
     return f"{source_system}:{connection_name}:{object_type}:{id_value}"
 
 
+def _extract_external_id(item: dict) -> str | None:
+    """
+    Extract natural external_id from a raw item payload.
+
+    Probes common ID field names across providers, matching the V1
+    logic in event_client._extract_external_id().
+
+    Args:
+        item: Raw item dict from callable output
+
+    Returns:
+        External ID as string, or None
+    """
+    val = (
+        item.get("id") or
+        item.get("message_id") or
+        item.get("external_id") or
+        item.get("uuid") or
+        item.get("responseId") or
+        item.get("contactid") or
+        item.get("cre92_clientsessionid") or
+        item.get("cre92_clientreportid")
+    )
+    return str(val) if val else None
+
+
 def build_plan_from_items(
     items: list[dict],
     correlation_id: str,
@@ -349,6 +375,8 @@ def build_plan_from_items(
     key_columns: list[str] | None = None,
     payload_wrap: bool = False,
     id_field: str | None = None,
+    auto_external_id: bool = False,
+    auto_timestamp_columns: list[str] | None = None,
 ) -> StoraclePlan:
     """
     Build StoraclePlan from raw items. Used by plan.build native op.
@@ -377,6 +405,8 @@ def build_plan_from_items(
         key_columns: Merge key columns for bq.upsert
         payload_wrap: If true, nest each raw item as JSON payload column
         id_field: Field name to extract unique ID for idem_key computation
+        auto_external_id: If true, probe raw item for external_id (V1 compat)
+        auto_timestamp_columns: Column names to auto-fill with current UTC timestamp
 
     Returns:
         StoraclePlan ready for submission to storacle
@@ -396,6 +426,8 @@ def build_plan_from_items(
             key_columns=key_columns,
             payload_wrap=payload_wrap,
             id_field=id_field,
+            auto_external_id=auto_external_id,
+            auto_timestamp_columns=auto_timestamp_columns,
         )
 
     # Non-batch mode: one op per item (existing behavior)
@@ -429,18 +461,26 @@ def _build_batch_plan(
     key_columns: list[str],
     payload_wrap: bool,
     id_field: str | None,
+    auto_external_id: bool = False,
+    auto_timestamp_columns: list[str] | None = None,
 ) -> StoraclePlan:
     """
     Build a batch StoraclePlan: all rows bundled into a single op.
 
     Processing order per spec:
     1. payload_wrap: nest raw item as JSON payload column
-    2. field_defaults: add metadata columns
-    3. id_field: compute idem_key
-    4. field_map: rename keys
-    5. fields: column allowlist
-    6. Bundle into single {dataset, table, key_columns, rows} op
+    2. auto_external_id: extract external_id from raw item (before wrapping hides it)
+    3. field_defaults: add metadata columns
+    4. auto_timestamp_columns: set timestamp columns to current UTC time
+    5. correlation_id: inject into each row
+    6. id_field: compute idem_key
+    7. field_map: rename keys
+    8. fields: column allowlist
+    9. Bundle into single {dataset, table, key_columns, rows} op
     """
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
     rows: list[dict] = []
 
     for item in items:
@@ -452,23 +492,36 @@ def _build_batch_plan(
         else:
             row = dict(item)
 
-        # 2. Field defaults (metadata injection)
+        # 2. Extract external_id from raw item (before payload_wrap hides fields)
+        if auto_external_id:
+            row["external_id"] = _extract_external_id(item)
+
+        # 3. Field defaults (metadata injection)
         if field_defaults:
             for key, default in field_defaults.items():
                 if key not in row:
                     row[key] = default
 
-        # 3. Idem key computation (before field_map/fields, uses raw item)
+        # 4. Auto timestamp columns (e.g. first_seen, last_seen, canonicalized_at)
+        if auto_timestamp_columns:
+            for col in auto_timestamp_columns:
+                row[col] = now
+
+        # 5. Correlation ID — inject into each row (V1 stores it per-row)
+        if "correlation_id" not in row:
+            row["correlation_id"] = correlation_id
+
+        # 6. Idem key computation (before field_map/fields, uses raw item)
         if id_field:
             row["idem_key"] = _compute_idem_key(item, id_field, field_defaults)
 
-        # 4. Field map (rename keys)
+        # 7. Field map (rename keys)
         if field_map:
             for new_key, old_key in field_map.items():
                 if old_key in row:
                     row[new_key] = row.pop(old_key)
 
-        # 5. Fields allowlist
+        # 8. Fields allowlist
         if fields:
             missing = [f for f in fields if f not in row]
             if missing:

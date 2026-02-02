@@ -18,6 +18,7 @@ from lorchestra.plan_builder import (
     StoraclePlan,
     _compute_idempotency_key,
     _compute_idem_key,
+    _extract_external_id,
     _hash_canonical,
     _resolve_dataset,
 )
@@ -641,3 +642,242 @@ class TestBatchProcessingOrder:
 
         row = plan.ops[0].params["rows"][0]
         assert row == {"keep": "yes"}
+
+
+# =============================================================================
+# V1 vs V2 ROW EQUIVALENCE TESTS
+# =============================================================================
+
+
+class TestIngestRowEquivalence:
+    """Prove V2 plan.build produces identical raw_objects rows to V1 event_client.
+
+    V1 row shape (event_client._upsert_objects_batch lines 459-471):
+        idem_key, source_system, connection_name, object_type,
+        external_id, payload (raw obj), first_seen, last_seen,
+        correlation_id
+
+    V2 must match this exactly.
+    """
+
+    STRIPE_CUSTOMER = {"id": "cus_ABC123", "email": "test@example.com", "name": "Alice"}
+    GMAIL_MESSAGE = {"id": "18c5a7b2e3f4d5c6", "subject": "Hello", "from": "a@b.com"}
+    GOOGLE_FORM = {"responseId": "ACYDBNi84", "createTime": "2024-01-01T00:00:00Z"}
+    DATAVERSE_CONTACT = {"contactid": "739330df-5757-f011", "fullname": "Bob"}
+
+    def _v1_ingest_row(self, raw_item, source_system, connection_name, object_type, idem_key_fn):
+        """Replicate V1 event_client._upsert_objects_batch row construction."""
+        from lorchestra.stack_clients.event_client import _extract_external_id as v1_extract
+
+        return {
+            "idem_key": idem_key_fn(raw_item),
+            "source_system": source_system,
+            "connection_name": connection_name,
+            "object_type": object_type,
+            "external_id": str(v1_extract(raw_item)) if v1_extract(raw_item) else None,
+            "payload": raw_item,
+            "first_seen": "TIMESTAMP",  # placeholder — both use now()
+            "last_seen": "TIMESTAMP",
+            "correlation_id": "CORR_ID",
+        }
+
+    def _v2_ingest_row(self, raw_item, source_system, connection_name, object_type, id_field):
+        """Build a V2 row using build_plan_from_items with ingest YAML params."""
+        with patch("lorchestra.config.load_config", return_value=_mock_config()):
+            plan = build_plan_from_items(
+                items=[raw_item],
+                correlation_id="CORR_ID",
+                method="bq.upsert",
+                dataset="raw",
+                table="raw_objects",
+                key_columns=["idem_key"],
+                payload_wrap=True,
+                id_field=id_field,
+                auto_external_id=True,
+                auto_timestamp_columns=["first_seen", "last_seen"],
+                field_defaults={
+                    "source_system": source_system,
+                    "connection_name": connection_name,
+                    "object_type": object_type,
+                },
+            )
+        row = plan.ops[0].params["rows"][0]
+        # Normalize: V1 stores payload as dict, V2 stores as JSON string
+        row["payload"] = json.loads(row["payload"])
+        # Normalize timestamps to placeholder for comparison
+        row["first_seen"] = "TIMESTAMP"
+        row["last_seen"] = "TIMESTAMP"
+        return row
+
+    def test_stripe_customer_rows_match(self):
+        """Stripe customer: V1 and V2 produce identical row."""
+        from lorchestra.idem_keys import stripe_idem_key
+        idem_fn = stripe_idem_key("stripe", "stripe-prod", "customer")
+
+        v1 = self._v1_ingest_row(self.STRIPE_CUSTOMER, "stripe", "stripe-prod", "customer", idem_fn)
+        v2 = self._v2_ingest_row(self.STRIPE_CUSTOMER, "stripe", "stripe-prod", "customer", "id")
+
+        assert v1["idem_key"] == v2["idem_key"] == "stripe:stripe-prod:customer:cus_ABC123"
+        assert v1["external_id"] == v2["external_id"] == "cus_ABC123"
+        assert v1["payload"] == v2["payload"] == self.STRIPE_CUSTOMER
+        assert set(v1.keys()) == set(v2.keys()), f"Column mismatch: V1={sorted(v1.keys())} V2={sorted(v2.keys())}"
+        assert v1 == v2
+
+    def test_gmail_rows_match(self):
+        """Gmail message: V1 and V2 produce identical row."""
+        from lorchestra.idem_keys import gmail_idem_key
+        idem_fn = gmail_idem_key("gmail", "gmail-acct1")
+
+        v1 = self._v1_ingest_row(self.GMAIL_MESSAGE, "gmail", "gmail-acct1", "email", idem_fn)
+        v2 = self._v2_ingest_row(self.GMAIL_MESSAGE, "gmail", "gmail-acct1", "email", "id")
+
+        assert v1["idem_key"] == v2["idem_key"] == "gmail:gmail-acct1:email:18c5a7b2e3f4d5c6"
+        assert v1["external_id"] == v2["external_id"] == "18c5a7b2e3f4d5c6"
+        assert v1 == v2
+
+    def test_google_forms_rows_match(self):
+        """Google Forms response: V1 and V2 produce identical row."""
+        from lorchestra.idem_keys import google_forms_idem_key
+        idem_fn = google_forms_idem_key("google_forms", "google-forms-intake-01")
+
+        v1 = self._v1_ingest_row(self.GOOGLE_FORM, "google_forms", "google-forms-intake-01", "form_response", idem_fn)
+        v2 = self._v2_ingest_row(self.GOOGLE_FORM, "google_forms", "google-forms-intake-01", "form_response", "responseId")
+
+        assert v1["idem_key"] == v2["idem_key"] == "google_forms:google-forms-intake-01:form_response:ACYDBNi84"
+        assert v1["external_id"] == v2["external_id"] == "ACYDBNi84"
+        assert v1 == v2
+
+    def test_dataverse_contact_rows_match(self):
+        """Dataverse contact: V1 and V2 produce identical row."""
+        from lorchestra.idem_keys import dataverse_idem_key
+        idem_fn = dataverse_idem_key("dataverse", "dataverse-clinic", "contact", "contactid")
+
+        v1 = self._v1_ingest_row(self.DATAVERSE_CONTACT, "dataverse", "dataverse-clinic", "contact", idem_fn)
+        v2 = self._v2_ingest_row(self.DATAVERSE_CONTACT, "dataverse", "dataverse-clinic", "contact", "contactid")
+
+        assert v1["idem_key"] == v2["idem_key"] == "dataverse:dataverse-clinic:contact:739330df-5757-f011"
+        assert v1["external_id"] == v2["external_id"] == "739330df-5757-f011"
+        assert v1 == v2
+
+    def test_all_v1_columns_present_in_v2(self):
+        """V2 row must have every column that V1 produces."""
+        v1_columns = {
+            "idem_key", "source_system", "connection_name", "object_type",
+            "external_id", "payload", "first_seen", "last_seen", "correlation_id",
+        }
+
+        v2 = self._v2_ingest_row(self.STRIPE_CUSTOMER, "stripe", "stripe-prod", "customer", "id")
+        missing = v1_columns - set(v2.keys())
+        assert not missing, f"V2 row missing V1 columns: {missing}"
+
+
+class TestExtractExternalId:
+    """Tests for _extract_external_id matching V1 event_client._extract_external_id."""
+
+    def test_id_field(self):
+        assert _extract_external_id({"id": "cus_123"}) == "cus_123"
+
+    def test_message_id_field(self):
+        assert _extract_external_id({"message_id": "msg_456"}) == "msg_456"
+
+    def test_response_id_field(self):
+        assert _extract_external_id({"responseId": "ACY123"}) == "ACY123"
+
+    def test_contactid_field(self):
+        assert _extract_external_id({"contactid": "abc-def"}) == "abc-def"
+
+    def test_session_id_field(self):
+        assert _extract_external_id({"cre92_clientsessionid": "sess-123"}) == "sess-123"
+
+    def test_report_id_field(self):
+        assert _extract_external_id({"cre92_clientreportid": "rpt-789"}) == "rpt-789"
+
+    def test_no_id_returns_none(self):
+        assert _extract_external_id({"name": "Alice", "email": "a@b.com"}) is None
+
+    def test_priority_order_matches_v1(self):
+        """'id' should take priority over 'responseId' (matches V1 probe order)."""
+        assert _extract_external_id({"id": "first", "responseId": "second"}) == "first"
+
+
+class TestAutoTimestampColumns:
+    """Tests for auto_timestamp_columns feature."""
+
+    def test_timestamps_set_on_all_rows(self):
+        """All rows should have identical timestamp values."""
+        items = [{"id": "a"}, {"id": "b"}, {"id": "c"}]
+
+        with patch("lorchestra.config.load_config", return_value=_mock_config()):
+            plan = build_plan_from_items(
+                items=items,
+                correlation_id="test",
+                method="bq.upsert",
+                dataset="raw",
+                table="raw_objects",
+                key_columns=["idem_key"],
+                auto_timestamp_columns=["first_seen", "last_seen"],
+            )
+
+        rows = plan.ops[0].params["rows"]
+        ts = rows[0]["first_seen"]
+        for row in rows:
+            assert row["first_seen"] == ts, "All rows must share same timestamp"
+            assert row["last_seen"] == ts
+
+    def test_canonize_timestamps(self):
+        """Canonize jobs use canonicalized_at and created_at."""
+        items = [{"idem_key": "k1", "payload": {"data": 1}}]
+
+        with patch("lorchestra.config.load_config", return_value=_mock_config()):
+            plan = build_plan_from_items(
+                items=items,
+                correlation_id="test",
+                method="bq.upsert",
+                dataset="canonical",
+                table="canonical_objects",
+                key_columns=["idem_key"],
+                auto_timestamp_columns=["canonicalized_at", "created_at"],
+            )
+
+        row = plan.ops[0].params["rows"][0]
+        assert "canonicalized_at" in row
+        assert "created_at" in row
+        assert row["canonicalized_at"] == row["created_at"]
+
+
+class TestCorrelationIdInjection:
+    """Tests for correlation_id injection into batch rows."""
+
+    def test_correlation_id_injected_when_missing(self):
+        """Rows without correlation_id should get it from the plan correlation_id."""
+        items = [{"id": "a"}]
+
+        with patch("lorchestra.config.load_config", return_value=_mock_config()):
+            plan = build_plan_from_items(
+                items=items,
+                correlation_id="run123:persist",
+                method="bq.upsert",
+                dataset="raw",
+                table="raw_objects",
+                key_columns=["idem_key"],
+            )
+
+        row = plan.ops[0].params["rows"][0]
+        assert row["correlation_id"] == "run123:persist"
+
+    def test_existing_correlation_id_preserved(self):
+        """Items that already have correlation_id should keep it."""
+        items = [{"id": "a", "correlation_id": "original"}]
+
+        with patch("lorchestra.config.load_config", return_value=_mock_config()):
+            plan = build_plan_from_items(
+                items=items,
+                correlation_id="run123:persist",
+                method="bq.upsert",
+                dataset="raw",
+                table="raw_objects",
+                key_columns=["idem_key"],
+            )
+
+        row = plan.ops[0].params["rows"][0]
+        assert row["correlation_id"] == "original"

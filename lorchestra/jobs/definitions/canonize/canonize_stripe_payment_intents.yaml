@@ -17,6 +17,9 @@ steps:
     table: canonical_objects
     key_columns:
     - idem_key
+    auto_timestamp_columns:
+    - canonicalized_at
+    - created_at
 - step_id: write
   op: storacle.submit
   params:

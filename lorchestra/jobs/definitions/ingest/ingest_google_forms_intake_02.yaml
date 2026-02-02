@@ -21,6 +21,10 @@ steps:
       source_system: google_forms
       connection_name: google-forms-intake-02
       object_type: form_response
+    auto_external_id: true
+    auto_timestamp_columns:
+    - first_seen
+    - last_seen
 - step_id: write
   op: storacle.submit
   params:

@@ -666,6 +666,8 @@ class Executor:
         key_columns = manifest.resolved_params.get("key_columns")
         payload_wrap = manifest.resolved_params.get("payload_wrap", False)
         id_field = manifest.resolved_params.get("id_field")
+        auto_external_id = manifest.resolved_params.get("auto_external_id", False)
+        auto_timestamp_columns = manifest.resolved_params.get("auto_timestamp_columns")
 
         plan = build_plan_from_items(
             items=items,
@@ -679,6 +681,8 @@ class Executor:
             key_columns=key_columns,
             payload_wrap=payload_wrap,
             id_field=id_field,
+            auto_external_id=auto_external_id,
+            auto_timestamp_columns=auto_timestamp_columns,
         )
         return {"plan": plan.to_dict()}
 
