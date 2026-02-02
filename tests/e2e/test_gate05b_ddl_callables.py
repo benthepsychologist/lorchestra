@@ -328,7 +328,7 @@ class TestPipelineIntegration:
             method="bq.execute",
         )
 
-        assert plan.kind == "storacle.plan"
+        assert plan.to_dict()["plan_version"] == "storacle.plan/1.0.0"
         assert len(plan.ops) == 1
         assert plan.ops[0].method == "bq.execute"
         assert "CREATE OR REPLACE VIEW" in plan.ops[0].params["sql"]
@@ -353,7 +353,7 @@ class TestPipelineIntegration:
             method="bq.execute",
         )
 
-        assert plan.kind == "storacle.plan"
+        assert plan.to_dict()["plan_version"] == "storacle.plan/1.0.0"
         assert len(plan.ops) == 1
         assert plan.ops[0].method == "bq.execute"
         assert "CREATE OR REPLACE TABLE" in plan.ops[0].params["sql"]

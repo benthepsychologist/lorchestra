@@ -4,17 +4,18 @@ Plan Builder - Convert CallableResult to StoraclePlan.
 This module converts the normalized CallableResult from callables
 into a StoraclePlan that can be submitted to storacle.
 
-StoraclePlan schema (from epic):
+StoraclePlan contract (storacle.plan/1.0.0):
 {
-  "kind": "storacle.plan",
-  "version": "0.1",
-  "correlation_id": "...",
+  "plan_version": "storacle.plan/1.0.0",
+  "plan_id": "sha256:...",
+  "jsonrpc": "2.0",
+  "meta": { "correlation_id": "..." },
   "ops": [
     {
-      "op_id": "uuid",
+      "jsonrpc": "2.0",
+      "id": "uuid",
       "method": "wal.append",
-      "idempotency_key": "sha256:...",
-      "params": { }
+      "params": { ... }
     }
   ]
 }
@@ -34,13 +35,28 @@ from typing import Any
 from lorchestra.callable.result import CallableResult
 
 
+PLAN_VERSION = "storacle.plan/1.0.0"
+
+
 @dataclass
 class StoracleOp:
-    """A single operation in a StoraclePlan."""
+    """A single JSON-RPC 2.0 operation in a StoraclePlan."""
     op_id: str
     method: str
     params: dict
     idempotency_key: str | None = None
+
+    def to_dict(self) -> dict:
+        """Convert to JSON-RPC 2.0 request object."""
+        d: dict = {
+            "jsonrpc": "2.0",
+            "id": self.op_id,
+            "method": self.method,
+            "params": dict(self.params),
+        }
+        if self.idempotency_key:
+            d["params"]["idempotency_key"] = self.idempotency_key
+        return d
 
 
 @dataclass
@@ -48,30 +64,44 @@ class StoraclePlan:
     """
     Plan for storacle to execute.
 
-    Contains a list of operations to be executed atomically
-    or in sequence by storacle.
+    Conforms to storacle.plan/1.0.0 contract:
+    - plan_version: "storacle.plan/1.0.0"
+    - plan_id: deterministic hash of ops
+    - jsonrpc: "2.0"
+    - ops: list of JSON-RPC 2.0 request objects
     """
-    kind: str = "storacle.plan"
-    version: str = "0.1"
     correlation_id: str = ""
     ops: list[StoracleOp] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        """Convert to dictionary for serialization."""
-        return {
-            "kind": self.kind,
-            "version": self.version,
-            "correlation_id": self.correlation_id,
-            "ops": [
-                {
-                    "op_id": op.op_id,
-                    "method": op.method,
-                    "params": op.params,
-                    "idempotency_key": op.idempotency_key,
-                }
-                for op in self.ops
-            ],
+        """Convert to storacle.plan/1.0.0 contract dict."""
+        ops_list = [op.to_dict() for op in self.ops]
+        plan = {
+            "plan_version": PLAN_VERSION,
+            "plan_id": _hash_canonical({"ops": ops_list}),
+            "jsonrpc": "2.0",
+            "meta": {
+                "correlation_id": self.correlation_id,
+            },
+            "ops": ops_list,
         }
+        return plan
+
+    @classmethod
+    def _from_dict(cls, d: dict) -> "StoraclePlan":
+        """Reconstruct from a serialized plan dict (round-trip support)."""
+        correlation_id = d.get("meta", {}).get("correlation_id", "")
+        ops = []
+        for op_data in d.get("ops", []):
+            params = dict(op_data.get("params", {}))
+            idem_key = params.pop("idempotency_key", None)
+            ops.append(StoracleOp(
+                op_id=op_data.get("id", str(uuid.uuid4())),
+                method=op_data["method"],
+                params=params,
+                idempotency_key=idem_key,
+            ))
+        return cls(correlation_id=correlation_id, ops=ops)
 
 
 def _hash_canonical(data: dict) -> str:

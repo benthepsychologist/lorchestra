@@ -299,7 +299,7 @@ class TestPipelineIntegration:
                 method="sqlite.sync",
             )
 
-        assert plan.kind == "storacle.plan"
+        assert plan.to_dict()["plan_version"] == "storacle.plan/1.0.0"
         assert len(plan.ops) == 1
         assert plan.ops[0].method == "sqlite.sync"
         assert plan.ops[0].params["table"] == "clients"

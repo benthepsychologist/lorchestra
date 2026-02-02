@@ -684,22 +684,19 @@ class Executor:
             Dict with storacle response
         """
         from lorchestra.storacle.client import submit_plan, RpcMeta
-        from lorchestra.plan_builder import StoraclePlan, StoracleOp
+        from lorchestra.plan_builder import StoraclePlan
 
         plan_dict = manifest.resolved_params["plan"]
-        plan = StoraclePlan(
-            kind=plan_dict.get("kind", "storacle.plan"),
-            version=plan_dict.get("version", "0.1"),
-            correlation_id=plan_dict.get("correlation_id", ""),
-            ops=[
-                StoracleOp(**op_data)
-                for op_data in plan_dict.get("ops", [])
-            ],
-        )
+
+        # plan_dict is already the serialized storacle.plan/1.0.0 contract
+        # from the plan.build step output. Reconstruct StoraclePlan for
+        # submit_plan(), which calls plan.to_dict() for the RPC boundary.
+        correlation_id = plan_dict.get("meta", {}).get("correlation_id", "")
+        plan = StoraclePlan._from_dict(plan_dict)
         meta = RpcMeta(
             run_id=manifest.run_id,
             step_id=manifest.step_id,
-            correlation_id=plan.correlation_id,
+            correlation_id=correlation_id,
         )
         return submit_plan(plan, meta)
 

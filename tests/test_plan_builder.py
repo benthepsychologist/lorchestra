@@ -35,14 +35,15 @@ class TestBuildPlan:
 
         assert plan.correlation_id == "corr-456"
 
-    def test_build_plan_default_kind_and_version(self):
-        """build_plan should set default kind and version."""
+    def test_build_plan_to_dict_has_plan_version(self):
+        """build_plan to_dict should have storacle.plan/1.0.0 plan_version."""
         result = CallableResult(items=[])
 
         plan = build_plan(result, correlation_id="corr")
+        d = plan.to_dict()
 
-        assert plan.kind == "storacle.plan"
-        assert plan.version == "0.1"
+        assert d["plan_version"] == "storacle.plan/1.0.0"
+        assert d["jsonrpc"] == "2.0"
 
     def test_build_plan_creates_ops_for_each_item(self):
         """build_plan should create one op per item."""
@@ -208,27 +209,28 @@ class TestStoraclePlanToDict:
     """Tests for StoraclePlan.to_dict() method."""
 
     def test_to_dict_structure(self):
-        """to_dict should return correct structure."""
+        """to_dict should return storacle.plan/1.0.0 contract."""
         result = CallableResult(items=[{"id": 1}])
         plan = build_plan(result, correlation_id="corr-123")
 
         d = plan.to_dict()
 
-        assert d["kind"] == "storacle.plan"
-        assert d["version"] == "0.1"
-        assert d["correlation_id"] == "corr-123"
+        assert d["plan_version"] == "storacle.plan/1.0.0"
+        assert d["jsonrpc"] == "2.0"
+        assert d["meta"]["correlation_id"] == "corr-123"
+        assert "plan_id" in d
         assert "ops" in d
         assert len(d["ops"]) == 1
 
     def test_to_dict_op_structure(self):
-        """to_dict ops should have correct structure."""
+        """to_dict ops should use JSON-RPC 2.0 format."""
         result = CallableResult(items=[{"id": 1}])
         plan = build_plan(result, correlation_id="corr")
 
         d = plan.to_dict()
         op = d["ops"][0]
 
-        assert "op_id" in op
+        assert op["jsonrpc"] == "2.0"
+        assert "id" in op
         assert "method" in op
         assert "params" in op
-        assert "idempotency_key" in op

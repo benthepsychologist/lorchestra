@@ -32,7 +32,7 @@ class TestPlanBuilderMethods:
         items = [{"sql": "CREATE OR REPLACE VIEW proj_clients AS SELECT 1"}]
         plan = build_plan_from_items(items, correlation_id="test_05a", method="bq.execute")
 
-        assert plan.kind == "storacle.plan"
+        assert plan.to_dict()["plan_version"] == "storacle.plan/1.0.0"
         assert len(plan.ops) == 1
         assert plan.ops[0].method == "bq.execute"
         assert plan.ops[0].params["sql"].startswith("CREATE")

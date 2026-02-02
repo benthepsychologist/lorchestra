@@ -82,13 +82,13 @@ def _submit_inproc(plan: StoraclePlan, meta: RpcMeta) -> dict:
     """
     try:
         # Try to import storacle - it may not be installed
-        from storacle import execute_plan  # type: ignore
+        from storacle.rpc import execute_plan  # type: ignore
     except ImportError:
         # Storacle not installed - use noop implementation
         return _noop_execute_plan(plan, meta)
 
     try:
-        result = execute_plan(plan.to_dict(), correlation_id=meta.correlation_id)
+        result = execute_plan(plan.to_dict())
         return result
     except TransientError:
         raise  # Already classified, propagate

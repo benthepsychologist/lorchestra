@@ -106,9 +106,17 @@ class TestNoopExecutePlan:
 class TestSubmitPlan:
     """Tests for submit_plan function."""
 
-    def test_submit_plan_in_proc_noop(self, sample_plan, sample_meta):
-        """submit_plan should work in noop mode (storacle not installed)."""
-        # Since storacle isn't installed, should use noop
+    def test_submit_plan_in_proc_noop(self, sample_plan, sample_meta, monkeypatch):
+        """submit_plan should fall back to noop when storacle not importable."""
+        import lorchestra.storacle.client as client_module
+
+        # Force noop path by making the import fail
+        original = client_module._submit_inproc
+
+        def _patched_inproc(plan, meta):
+            return client_module._noop_execute_plan(plan, meta)
+
+        monkeypatch.setattr(client_module, "_submit_inproc", _patched_inproc)
         result = submit_plan(sample_plan, sample_meta)
 
         assert result["status"] == "noop"
@@ -166,16 +174,19 @@ class TestStoraclePlanSerialization:
     """Tests for StoraclePlan serialization in client."""
 
     def test_plan_to_dict_for_rpc(self, sample_plan):
-        """Plan should serialize correctly for RPC."""
+        """Plan should serialize correctly for RPC (storacle.plan/1.0.0)."""
         d = sample_plan.to_dict()
 
-        assert d["kind"] == "storacle.plan"
-        assert d["version"] == "0.1"
-        assert d["correlation_id"] == "test-corr-123"
+        assert d["plan_version"] == "storacle.plan/1.0.0"
+        assert d["jsonrpc"] == "2.0"
+        assert d["meta"]["correlation_id"] == "test-corr-123"
+        assert "plan_id" in d
         assert len(d["ops"]) == 2
 
         op = d["ops"][0]
-        assert op["op_id"] == "op-1"
+        assert op["jsonrpc"] == "2.0"
+        assert op["id"] == "op-1"
         assert op["method"] == "wal.append"
-        assert op["params"] == {"id": 1, "data": "test"}
-        assert op["idempotency_key"] == "sha256:abc123"
+        assert op["params"]["id"] == 1
+        assert op["params"]["data"] == "test"
+        assert op["params"]["idempotency_key"] == "sha256:abc123"

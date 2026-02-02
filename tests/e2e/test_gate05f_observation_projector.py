@@ -506,7 +506,7 @@ class TestPipelineIntegration:
             method="bq.upsert",
         )
 
-        assert plan.kind == "storacle.plan"
+        assert plan.to_dict()["plan_version"] == "storacle.plan/1.0.0"
         assert len(plan.ops) == 1  # single batch op
         assert plan.ops[0].method == "bq.upsert"
         assert plan.ops[0].params["dataset"] == "test_derived"

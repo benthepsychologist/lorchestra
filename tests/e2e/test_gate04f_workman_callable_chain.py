@@ -59,7 +59,7 @@ def test_workman_plan_builder_wal_append_with_idempotency():
     result = dispatch_callable("workman", params)
     plan = build_plan(result, correlation_id="idem_04f")
 
-    assert plan.kind == "storacle.plan"
+    assert plan.to_dict()["plan_version"] == "storacle.plan/1.0.0"
     assert plan.correlation_id == "idem_04f"
     assert len(plan.ops) == 1
 

@@ -274,7 +274,7 @@ class TestPipelineIntegration:
             method="file.write",
         )
 
-        assert plan.kind == "storacle.plan"
+        assert plan.to_dict()["plan_version"] == "storacle.plan/1.0.0"
         assert len(plan.ops) == 2
         assert plan.ops[0].method == "file.write"
         assert plan.ops[0].params["path"].endswith("Alice.md")
