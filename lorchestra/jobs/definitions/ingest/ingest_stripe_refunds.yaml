@@ -6,6 +6,10 @@ steps:
   params:
     callable: injest
     source: stripe_refunds
+    auto_since:
+      source_system: stripe
+      connection_name: stripe-prod
+      object_type: refund
 - step_id: persist
   op: plan.build
   params:
@@ -25,6 +29,8 @@ steps:
     auto_timestamp_columns:
     - first_seen
     - last_seen
+    skip_update_columns:
+    - first_seen
 - step_id: write
   op: storacle.submit
   params:

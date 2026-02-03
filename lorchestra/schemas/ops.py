@@ -2,11 +2,12 @@
 Op enum defining the operation taxonomy for lorchestra.
 
 Operations are categorized by their backend:
-- call           -> callable: in-proc callable dispatch (generic, name in params)
-- plan.build     -> native: lorchestra-native plan construction
+- call            -> callable: in-proc callable dispatch (generic, name in params)
+- storacle.query  -> native: lorchestra-native BQ read via storacle
+- plan.build      -> native: lorchestra-native plan construction
 - storacle.submit -> native: lorchestra-native storacle submission
-- compute.*      -> inferometer: LLM and external compute
-- job.*          -> orchestration: sub-job execution
+- compute.*       -> inferometer: LLM and external compute
+- job.*           -> orchestration: sub-job execution
 """
 
 from enum import Enum
@@ -19,6 +20,7 @@ class Op(str, Enum):
 
     Backend mapping:
     - call              => callable (in-proc dispatch, callable name in params)
+    - storacle.query    => native (lorchestra BQ read via storacle)
     - plan.build        => native (lorchestra plan construction)
     - storacle.submit   => native (lorchestra storacle submission)
     - compute.*         => inferometer (LLM service)
@@ -28,6 +30,7 @@ class Op(str, Enum):
     CALL = "call"
 
     # Native lorchestra ops
+    STORACLE_QUERY = "storacle.query"
     PLAN_BUILD = "plan.build"
     STORACLE_SUBMIT = "storacle.submit"
 
@@ -50,7 +53,7 @@ class Op(str, Enum):
         """
         if self.value == "call":
             return "callable"
-        elif self.value in ("plan.build", "storacle.submit"):
+        elif self.value in ("storacle.query", "plan.build", "storacle.submit"):
             return "native"
         elif self.value.startswith("compute."):
             return "inferometer"

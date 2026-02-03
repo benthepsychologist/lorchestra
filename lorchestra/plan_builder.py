@@ -377,6 +377,10 @@ def build_plan_from_items(
     id_field: str | None = None,
     auto_external_id: bool = False,
     auto_timestamp_columns: list[str] | None = None,
+    # Suffix params (e005b-08)
+    idem_key_suffix: str | None = None,
+    # MERGE behavior params
+    skip_update_columns: list[str] | None = None,
 ) -> StoraclePlan:
     """
     Build StoraclePlan from raw items. Used by plan.build native op.
@@ -407,6 +411,8 @@ def build_plan_from_items(
         id_field: Field name to extract unique ID for idem_key computation
         auto_external_id: If true, probe raw item for external_id (V1 compat)
         auto_timestamp_columns: Column names to auto-fill with current UTC timestamp
+        skip_update_columns: Columns to exclude from UPDATE SET in MERGE
+            (still included in INSERT). For immutable columns like created_at.
 
     Returns:
         StoraclePlan ready for submission to storacle
@@ -428,6 +434,8 @@ def build_plan_from_items(
             id_field=id_field,
             auto_external_id=auto_external_id,
             auto_timestamp_columns=auto_timestamp_columns,
+            idem_key_suffix=idem_key_suffix,
+            skip_update_columns=skip_update_columns,
         )
 
     # Non-batch mode: one op per item (existing behavior)
@@ -463,6 +471,8 @@ def _build_batch_plan(
     id_field: str | None,
     auto_external_id: bool = False,
     auto_timestamp_columns: list[str] | None = None,
+    idem_key_suffix: str | None = None,
+    skip_update_columns: list[str] | None = None,
 ) -> StoraclePlan:
     """
     Build a batch StoraclePlan: all rows bundled into a single op.
@@ -515,6 +525,11 @@ def _build_batch_plan(
         if id_field:
             row["idem_key"] = _compute_idem_key(item, id_field, field_defaults)
 
+        # 6b. Idem key suffix: append #suffix to existing idem_key
+        if idem_key_suffix and "idem_key" in row:
+            raw_key = row["idem_key"]
+            row["idem_key"] = f"{raw_key}#{idem_key_suffix}"
+
         # 7. Field map (rename keys)
         if field_map:
             for new_key, old_key in field_map.items():
@@ -537,15 +552,19 @@ def _build_batch_plan(
     resolved_dataset = _resolve_dataset(dataset)
 
     # Bundle all rows into a single op
+    op_params: dict[str, Any] = {
+        "dataset": resolved_dataset,
+        "table": table,
+        "key_columns": key_columns,
+        "rows": rows,
+    }
+    if skip_update_columns:
+        op_params["skip_update_columns"] = skip_update_columns
+
     op = StoracleOp(
         op_id=str(uuid.uuid4()),
         method=method,
-        params={
-            "dataset": resolved_dataset,
-            "table": table,
-            "key_columns": key_columns,
-            "rows": rows,
-        },
+        params=op_params,
     )
 
     return StoraclePlan(

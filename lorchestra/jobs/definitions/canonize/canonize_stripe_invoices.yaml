@@ -1,11 +1,38 @@
 job_id: canonize_stripe_invoices
 version: '2.0'
 steps:
+- step_id: read
+  op: storacle.query
+  params:
+    dataset: raw
+    table: raw_objects
+    columns:
+    - idem_key
+    - source_system
+    - connection_name
+    - object_type
+    - payload
+    - correlation_id
+    filters:
+      source_system: stripe
+      object_type: invoice
+      validation_status: pass
+    parse_json_columns:
+    - payload
+    limit: 200
+    incremental:
+      target_dataset: canonical
+      target_table: canonical_objects
+      source_key: idem_key
+      target_key: idem_key
+      join_key_suffix: invoice
+      mode: left_anti
 - step_id: canonize
   op: call
   params:
     callable: canonizer
     source_type: stripe
+    items: '@run.read.items'
     config:
       transform_id: invoice/stripe_to_canonical@1-0-0
 - step_id: persist
@@ -17,8 +44,27 @@ steps:
     table: canonical_objects
     key_columns:
     - idem_key
+    idem_key_suffix: invoice
     auto_timestamp_columns:
     - canonicalized_at
+    - created_at
+    field_defaults:
+      canonical_schema: iglu:org.canonical/invoice/jsonschema/1-0-0
+      canonical_format: invoice
+      transform_ref: invoice/stripe_to_canonical@1-0-0
+    fields:
+    - idem_key
+    - source_system
+    - connection_name
+    - object_type
+    - canonical_schema
+    - canonical_format
+    - transform_ref
+    - correlation_id
+    - payload
+    - canonicalized_at
+    - created_at
+    skip_update_columns:
     - created_at
 - step_id: write
   op: storacle.submit

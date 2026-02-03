@@ -579,6 +579,8 @@ class Executor:
         # Native ops: handled directly by executor
         if manifest.op == Op.CALL:
             return self._handle_call(manifest)
+        elif manifest.op == Op.STORACLE_QUERY:
+            return self._handle_storacle_query(manifest)
         elif manifest.op == Op.PLAN_BUILD:
             return self._handle_plan_build(manifest)
         elif manifest.op == Op.STORACLE_SUBMIT:
@@ -610,6 +612,81 @@ class Executor:
             "No handlers or backends configured",
         )
 
+    def _handle_storacle_query(self, manifest: StepManifest) -> dict[str, Any]:
+        """
+        Handle the `storacle.query` native op: read rows from BQ via storacle.
+
+        Builds SQL from declarative YAML params using query_builder, submits
+        to storacle via bq.query RPC, parses JSON columns if requested, and
+        surfaces rows as step output (available via @run.{step_id}.items).
+
+        Args:
+            manifest: StepManifest with op=storacle.query
+
+        Returns:
+            Dict with items (list of row dicts)
+        """
+        import json as _json
+        from lorchestra.query_builder import build_query, QueryParam
+        from lorchestra.plan_builder import StoraclePlan, StoracleOp, _resolve_dataset
+        from lorchestra.storacle.client import submit_plan, RpcMeta
+
+        params = dict(manifest.resolved_params)
+        parse_json_columns = params.pop("parse_json_columns", None)
+
+        # Build SQL from declarative params
+        sql, query_params = build_query(params, resolve_dataset=_resolve_dataset)
+
+        # Build a single-op plan with bq.query method
+        op = StoracleOp(
+            op_id=str(__import__("uuid").uuid4()),
+            method="bq.query",
+            params={
+                "sql": sql,
+                "query_params": [
+                    {"name": qp.name, "type": qp.type, "value": qp.value}
+                    for qp in query_params
+                ],
+            },
+        )
+        plan = StoraclePlan(
+            correlation_id=f"{manifest.run_id}:{manifest.step_id}",
+            ops=[op],
+        )
+        meta = RpcMeta(
+            run_id=manifest.run_id,
+            step_id=manifest.step_id,
+            correlation_id=plan.correlation_id,
+        )
+
+        # Submit to storacle and extract rows from the response
+        result = submit_plan(plan, meta)
+
+        # result is a list of JSON-RPC responses (one per op)
+        rows = []
+        if isinstance(result, list) and len(result) > 0:
+            response = result[0]
+            if "result" in response:
+                rows = response["result"].get("rows", [])
+            elif "error" in response:
+                error_msg = response["error"].get("message", "Unknown error")
+                raise ExecutionError(manifest.step_id, f"storacle.query failed: {error_msg}")
+        elif isinstance(result, dict):
+            # noop client returns a flat dict
+            rows = result.get("rows", [])
+
+        # Parse JSON string columns if requested
+        if parse_json_columns and rows:
+            for row in rows:
+                for col in parse_json_columns:
+                    if col in row and isinstance(row[col], str):
+                        try:
+                            row[col] = _json.loads(row[col])
+                        except (_json.JSONDecodeError, TypeError):
+                            pass  # Leave as string if not valid JSON
+
+        return {"items": rows}
+
     def _handle_call(self, manifest: StepManifest) -> dict[str, Any]:
         """
         Handle the generic `call` op: dispatch to callable by name.
@@ -617,6 +694,10 @@ class Executor:
         The callable name is in params["callable"]. All other params
         are forwarded to the callable. The CallableResult is surfaced
         as the step output so downstream steps can reference @run.step_id.items.
+
+        Supports auto_since for incremental ingestion: if params contain
+        auto_since with source metadata, queries BQ for MAX(last_seen) and
+        injects 'since' into the callable's config.
 
         Args:
             manifest: StepManifest with op=call
@@ -627,14 +708,76 @@ class Executor:
         from lorchestra.callable.dispatch import dispatch_callable
 
         callable_name = manifest.resolved_params["callable"]
-        # Forward all params except "callable" to the callable
-        params = {k: v for k, v in manifest.resolved_params.items() if k != "callable"}
+        # Forward all params except "callable" and "auto_since" to the callable
+        params = {k: v for k, v in manifest.resolved_params.items()
+                  if k not in ("callable", "auto_since")}
+
+        # auto_since: query BQ for last sync timestamp and inject as config.since
+        auto_since = manifest.resolved_params.get("auto_since")
+        if auto_since and isinstance(auto_since, dict):
+            since = self._resolve_auto_since(auto_since)
+            if since:
+                params.setdefault("config", {})["since"] = since
+
         result = dispatch_callable(callable_name, params)
         return {
             "items": result.items,
             "stats": result.stats,
             "schema_version": result.schema_version,
         }
+
+    def _resolve_auto_since(self, auto_since: dict) -> str | None:
+        """Query BQ for MAX(last_seen) to determine incremental sync cursor.
+
+        Args:
+            auto_since: Dict with source_system, connection_name, object_type,
+                       and optional dataset (defaults to 'raw' -> config.dataset_raw).
+
+        Returns:
+            ISO timestamp string, or None if no previous sync found.
+        """
+        from lorchestra.plan_builder import _resolve_dataset
+        from lorchestra.storacle.client import submit_plan, RpcMeta
+        from lorchestra.plan_builder import StoraclePlan, StoracleOp
+
+        source_system = auto_since["source_system"]
+        connection_name = auto_since["connection_name"]
+        object_type = auto_since["object_type"]
+        dataset = _resolve_dataset(auto_since.get("dataset", "raw"))
+
+        sql = (
+            f"SELECT MAX(last_seen) as last_sync "
+            f"FROM `{dataset}.raw_objects` "
+            f"WHERE source_system = @source_system "
+            f"AND connection_name = @connection_name "
+            f"AND object_type = @object_type"
+        )
+
+        op = StoracleOp(
+            op_id=str(__import__("uuid").uuid4()),
+            method="bq.query",
+            params={
+                "sql": sql,
+                "query_params": [
+                    {"name": "source_system", "type": "STRING", "value": source_system},
+                    {"name": "connection_name", "type": "STRING", "value": connection_name},
+                    {"name": "object_type", "type": "STRING", "value": object_type},
+                ],
+            },
+        )
+        plan = StoraclePlan(correlation_id="auto_since", ops=[op])
+        meta = RpcMeta(step_id="auto_since", correlation_id="auto_since")
+
+        result = submit_plan(plan, meta)
+
+        if isinstance(result, list) and result:
+            rows = result[0].get("result", {}).get("rows", [])
+            if rows and rows[0].get("last_sync"):
+                ts = rows[0]["last_sync"]
+                if hasattr(ts, "isoformat"):
+                    return ts.isoformat()
+                return str(ts)
+        return None
 
     def _handle_plan_build(self, manifest: StepManifest) -> dict[str, Any]:
         """
@@ -669,6 +812,12 @@ class Executor:
         auto_external_id = manifest.resolved_params.get("auto_external_id", False)
         auto_timestamp_columns = manifest.resolved_params.get("auto_timestamp_columns")
 
+        # Suffix params (e005b-08)
+        idem_key_suffix = manifest.resolved_params.get("idem_key_suffix")
+
+        # MERGE behavior params
+        skip_update_columns = manifest.resolved_params.get("skip_update_columns")
+
         plan = build_plan_from_items(
             items=items,
             correlation_id=correlation_id,
@@ -683,6 +832,8 @@ class Executor:
             id_field=id_field,
             auto_external_id=auto_external_id,
             auto_timestamp_columns=auto_timestamp_columns,
+            idem_key_suffix=idem_key_suffix,
+            skip_update_columns=skip_update_columns,
         )
         return {"plan": plan.to_dict()}
 
@@ -769,6 +920,22 @@ def _load_job_def(envelope: dict[str, Any]) -> tuple[JobDef, dict[str, Any], dic
 
     version = envelope.get("version")
     job_def = registry.load(job_id, version=version)
+
+    # Inject limit into step params if provided via envelope
+    limit = envelope.get("limit")
+    if limit is not None:
+        for step in job_def.steps:
+            # For call steps (ingest): add limit to config, disable auto_since
+            if step.op == "call":
+                step.params.setdefault("config", {})["limit"] = limit
+                # When limit is set, disable auto_since so we fetch from scratch
+                step.params.pop("auto_since", None)
+            # For storacle.query steps (canonize reads): override limit, disable incremental
+            elif step.op == "storacle.query":
+                step.params["limit"] = limit
+                # When limit is set, disable incremental so we get deterministic results
+                # (incremental depends on what's already in target table)
+                step.params.pop("incremental", None)
 
     return job_def, ctx, payload
 

@@ -1,11 +1,38 @@
 job_id: canonize_google_forms
 version: '2.0'
 steps:
+- step_id: read
+  op: storacle.query
+  params:
+    dataset: raw
+    table: raw_objects
+    columns:
+    - idem_key
+    - source_system
+    - connection_name
+    - object_type
+    - payload
+    - correlation_id
+    filters:
+      source_system: google_forms
+      object_type: form_response
+      validation_status: pass
+    parse_json_columns:
+    - payload
+    limit: 100
+    incremental:
+      target_dataset: canonical
+      target_table: canonical_objects
+      source_key: idem_key
+      target_key: idem_key
+      join_key_suffix: form_response
+      mode: left_anti
 - step_id: canonize
   op: call
   params:
     callable: canonizer
     source_type: google_forms
+    items: '@run.read.items'
     config:
       transform_id: forms/google_forms_to_canonical@1.0.0
 - step_id: persist
@@ -17,8 +44,27 @@ steps:
     table: canonical_objects
     key_columns:
     - idem_key
+    idem_key_suffix: form_response
     auto_timestamp_columns:
     - canonicalized_at
+    - created_at
+    field_defaults:
+      canonical_schema: iglu:org.canonical/form_response/jsonschema/1-0-0
+      canonical_format: response
+      transform_ref: forms/google_forms_to_canonical@1.0.0
+    fields:
+    - idem_key
+    - source_system
+    - connection_name
+    - object_type
+    - canonical_schema
+    - canonical_format
+    - transform_ref
+    - correlation_id
+    - payload
+    - canonicalized_at
+    - created_at
+    skip_update_columns:
     - created_at
 - step_id: write
   op: storacle.submit

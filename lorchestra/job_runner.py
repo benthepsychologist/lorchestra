@@ -110,20 +110,26 @@ class BigQueryStorageClient:
     Implements the StorageClient protocol using the BigQuery client.
     """
 
-    def __init__(self, bq_client: bigquery.Client, config: LorchestraConfig, test_table: bool = False):
+    def __init__(self, bq_client: bigquery.Client, config: LorchestraConfig, test_table: bool = False,
+                 smoke_namespace: str | None = None):
         self.bq_client = bq_client
         self.config = config
         self.dataset = config.dataset_raw  # Default to raw, but methods might use others
         self.test_table = test_table
+        self.smoke_namespace = smoke_namespace
 
     def _table_name(self, base_name: str) -> str:
-        """Get actual table name (prefixed with test_ if in test mode)."""
+        """Get actual table name (prefixed with test_ if in test mode, or smoke prefix)."""
+        if self.smoke_namespace:
+            return f"smoke_{self.smoke_namespace}__{base_name}"
         if self.test_table:
             return f"test_{base_name}"
         return base_name
 
     def _dataset_for_table(self, table_name: str) -> str:
         """Resolve dataset based on table type/name."""
+        if self.smoke_namespace:
+            return f"smoke_{self.smoke_namespace}"
         # This is a bit of a heuristic. Ideally we'd map table -> dataset explicitly.
         # But for now, we know:
         # raw_objects -> dataset_raw
@@ -210,13 +216,11 @@ class BigQueryStorageClient:
             canonical_schema: Target canonical schema (important for 1:N raw->canonical mappings)
             idem_key_suffix: Explicit suffix for idem_key matching (e.g. 'session_note')
         """
-        raw_base = "raw_objects"
-        raw_table = self._table_name(raw_base)
-        raw_dataset = self._dataset_for_table(raw_base)
-
-        canonical_base = "canonical_objects"
-        canonical_table = self._table_name(canonical_base)
-        canonical_dataset = self._dataset_for_table(canonical_base)
+        # For canonization: always read raw_objects from production
+        # (even in smoke tests - we want to transform real data)
+        # Only writes go to smoke tables.
+        raw_table = "raw_objects"
+        raw_dataset = self.config.dataset_raw
         filters = filters or {}
 
         # Build WHERE clause conditions
@@ -224,40 +228,51 @@ class BigQueryStorageClient:
             "r.source_system = @source_system",
             "r.object_type = @object_type",
             "r.validation_status = 'pass'",
-            "(c.idem_key IS NULL OR r.last_seen > c.canonicalized_at)",
         ]
         params = [
             bigquery.ScalarQueryParameter("source_system", "STRING", source_system),
             bigquery.ScalarQueryParameter("object_type", "STRING", object_type),
         ]
 
-        # Build the JOIN condition - must include canonical object type to support
-        # 1:N mappings where one raw object produces multiple canonical objects
-        # (e.g., session -> clinical_session AND session -> session_transcript)
-        #
-        # Canonical idem_keys use format: raw_idem_key#suffix
-        # e.g. "dataverse:session:abc123#session_note"
-        #
-        # Use explicit idem_key_suffix when provided (preferred for stability across schema changes)
-        # Otherwise fall back to extracting from schema name
-        if idem_key_suffix:
-            # Explicit suffix provided - use it directly
-            canonical_object_type = idem_key_suffix
-        elif canonical_schema:
-            # Extract canonical object type from schema:
-            # iglu:org.canonical/session_transcript/jsonschema/2-0-0 -> session_transcript
-            schema_parts = canonical_schema.split("/")
-            canonical_object_type = schema_parts[1] if len(schema_parts) > 1 else ""
-        else:
-            canonical_object_type = None
+        # Incremental: skip records already canonized (unless in smoke mode)
+        # In smoke mode, target tables are empty so skip the LEFT JOIN
+        skip_incremental = bool(self.smoke_namespace)
 
-        if canonical_object_type:
-            # Match canonical idem_key = raw_idem_key + '#' + suffix
-            # This handles the 1:N mapping correctly
-            join_condition = f"c.idem_key = CONCAT(r.idem_key, '#{canonical_object_type}')"
-        else:
-            # Fallback: match any canonical record that starts with raw idem_key + '#'
-            join_condition = "c.idem_key LIKE CONCAT(r.idem_key, '#%')"
+        if not skip_incremental:
+            # Canonical table for incremental checks
+            canonical_base = "canonical_objects"
+            canonical_table = self._table_name(canonical_base)
+            canonical_dataset = self._dataset_for_table(canonical_base)
+
+            # Build the JOIN condition - must include canonical object type to support
+            # 1:N mappings where one raw object produces multiple canonical objects
+            # (e.g., session -> clinical_session AND session -> session_transcript)
+            #
+            # Canonical idem_keys use format: raw_idem_key#suffix
+            # e.g. "dataverse:session:abc123#session_note"
+            #
+            # Use explicit idem_key_suffix when provided (preferred for stability across schema changes)
+            # Otherwise fall back to extracting from schema name
+            if idem_key_suffix:
+                # Explicit suffix provided - use it directly
+                canonical_object_type = idem_key_suffix
+            elif canonical_schema:
+                # Extract canonical object type from schema:
+                # iglu:org.canonical/session_transcript/jsonschema/2-0-0 -> session_transcript
+                schema_parts = canonical_schema.split("/")
+                canonical_object_type = schema_parts[1] if len(schema_parts) > 1 else ""
+            else:
+                canonical_object_type = None
+
+            if canonical_object_type:
+                # Match canonical idem_key = raw_idem_key + '#' + suffix
+                # This handles the 1:N mapping correctly
+                join_condition = f"c.idem_key = CONCAT(r.idem_key, '#{canonical_object_type}')"
+            else:
+                # Fallback: match any canonical record that starts with raw idem_key + '#'
+                join_condition = "c.idem_key LIKE CONCAT(r.idem_key, '#%')"
+
+            conditions.append("(c.idem_key IS NULL OR r.last_seen > c.canonicalized_at)")
 
         # Add additional filters (skip validation_status since we hardcode it)
         for i, (key, value) in enumerate(filters.items()):
@@ -273,14 +288,27 @@ class BigQueryStorageClient:
         where_clause = " AND ".join(conditions)
         limit_clause = f"LIMIT {limit}" if limit else ""
 
-        query = f"""
-            SELECT r.idem_key, r.source_system, r.connection_name, r.object_type,
-                   r.payload, r.correlation_id, r.validation_status, r.last_seen
-            FROM `{raw_dataset}.{raw_table}` r
-            LEFT JOIN `{canonical_dataset}.{canonical_table}` c ON {join_condition}
-            WHERE {where_clause}
-            {limit_clause}
-        """
+        if skip_incremental:
+            # Simple query without LEFT JOIN (smoke mode)
+            query = f"""
+                SELECT r.idem_key, r.source_system, r.connection_name, r.object_type,
+                       r.payload, r.correlation_id, r.validation_status, r.last_seen
+                FROM `{raw_dataset}.{raw_table}` r
+                WHERE {where_clause}
+                ORDER BY r.idem_key
+                {limit_clause}
+            """
+        else:
+            # Full incremental query with LEFT JOIN
+            query = f"""
+                SELECT r.idem_key, r.source_system, r.connection_name, r.object_type,
+                       r.payload, r.correlation_id, r.validation_status, r.last_seen
+                FROM `{raw_dataset}.{raw_table}` r
+                LEFT JOIN `{canonical_dataset}.{canonical_table}` c ON {join_condition}
+                WHERE {where_clause}
+                ORDER BY r.idem_key
+                {limit_clause}
+            """
 
         job_config = bigquery.QueryJobConfig(query_parameters=params)
         result = self.bq_client.query(query, job_config=job_config).result()
@@ -1172,6 +1200,7 @@ def run_job(
     smoke_namespace: str | None = None,
     definitions_dir: Path | None = None,
     bq_client: bigquery.Client | None = None,
+    limit: int | None = None,
 ) -> None:
     """Run a job by ID.
 
@@ -1219,6 +1248,14 @@ def run_job(
     if not job_type:
         raise ValueError(f"Job definition missing job_type: {job_id}")
 
+    # Inject limit into options if provided
+    if limit is not None:
+        opts = job_def.setdefault("options", {})
+        opts["limit"] = limit
+        # When limit is set explicitly, disable auto_since so we get
+        # a deterministic slice from the source API (not incremental)
+        opts["auto_since"] = False
+
     logger.info(f"Starting job: {job_id} (type={job_type}, run_id={run_id})")
     if dry_run:
         logger.info("  DRY RUN mode enabled")
@@ -1235,7 +1272,8 @@ def run_job(
         bq_client = bigquery.Client(project=config.project)
 
     # Initialize shared clients with config
-    storage_client = BigQueryStorageClient(bq_client, config, test_table=test_table)
+    storage_client = BigQueryStorageClient(bq_client, config, test_table=test_table,
+                                              smoke_namespace=smoke_namespace)
     event_client = BigQueryEventClient(bq_client, config)
 
     # Create job context

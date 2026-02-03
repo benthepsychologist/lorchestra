@@ -881,3 +881,99 @@ class TestCorrelationIdInjection:
 
         row = plan.ops[0].params["rows"][0]
         assert row["correlation_id"] == "original"
+
+
+class TestIdemKeySuffix:
+    """Tests for idem_key_suffix (e005b-08)."""
+
+    def test_suffix_appended_to_idem_key(self):
+        """idem_key_suffix should append #suffix to computed idem_key."""
+        items = [{"id": "cus_123", "name": "Alice"}]
+
+        with patch("lorchestra.config.load_config", return_value=_mock_config()):
+            plan = build_plan_from_items(
+                items=items,
+                correlation_id="test",
+                method="bq.upsert",
+                dataset="canonical",
+                table="canonical_objects",
+                key_columns=["idem_key"],
+                id_field="id",
+                field_defaults={
+                    "source_system": "stripe",
+                    "connection_name": "stripe-prod",
+                    "object_type": "customer",
+                },
+                idem_key_suffix="customer",
+            )
+
+        row = plan.ops[0].params["rows"][0]
+        assert row["idem_key"] == "stripe:stripe-prod:customer:cus_123#customer"
+
+    def test_suffix_not_applied_without_id_field(self):
+        """idem_key_suffix without id_field means no idem_key computed, so no suffix."""
+        items = [{"idem_key": "existing_key", "data": "test"}]
+
+        with patch("lorchestra.config.load_config", return_value=_mock_config()):
+            plan = build_plan_from_items(
+                items=items,
+                correlation_id="test",
+                method="bq.upsert",
+                dataset="canonical",
+                table="canonical_objects",
+                key_columns=["idem_key"],
+                idem_key_suffix="customer",
+            )
+
+        row = plan.ops[0].params["rows"][0]
+        # idem_key was already in the item and id_field was not set,
+        # so _compute_idem_key was never called. Suffix is applied to
+        # existing idem_key.
+        assert row["idem_key"] == "existing_key#customer"
+
+    def test_suffix_none_leaves_idem_key_unchanged(self):
+        """No suffix should leave idem_key as computed."""
+        items = [{"id": "cus_123"}]
+
+        with patch("lorchestra.config.load_config", return_value=_mock_config()):
+            plan = build_plan_from_items(
+                items=items,
+                correlation_id="test",
+                method="bq.upsert",
+                dataset="raw",
+                table="raw_objects",
+                key_columns=["idem_key"],
+                id_field="id",
+                field_defaults={
+                    "source_system": "stripe",
+                    "connection_name": "stripe-prod",
+                    "object_type": "customer",
+                },
+            )
+
+        row = plan.ops[0].params["rows"][0]
+        assert "#" not in row["idem_key"]
+
+    def test_canonize_pipeline_suffix_equivalence(self):
+        """V2 canonize should produce idem_key matching V1 pattern: raw#suffix."""
+        # Simulate what happens after storacle.query returns raw rows
+        # and canonizer passes them through with idem_key intact
+        items = [
+            {"idem_key": "stripe:stripe-prod:customer:cus_123", "payload": {"transformed": True}},
+            {"idem_key": "stripe:stripe-prod:customer:cus_456", "payload": {"transformed": True}},
+        ]
+
+        with patch("lorchestra.config.load_config", return_value=_mock_config()):
+            plan = build_plan_from_items(
+                items=items,
+                correlation_id="test",
+                method="bq.upsert",
+                dataset="canonical",
+                table="canonical_objects",
+                key_columns=["idem_key"],
+                idem_key_suffix="customer",
+            )
+
+        rows = plan.ops[0].params["rows"]
+        assert rows[0]["idem_key"] == "stripe:stripe-prod:customer:cus_123#customer"
+        assert rows[1]["idem_key"] == "stripe:stripe-prod:customer:cus_456#customer"
