@@ -21,6 +21,7 @@ Pipeline YAML schema:
 import json
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -134,8 +135,10 @@ def _run_child(
         envelope: dict[str, Any] = {"job_id": job_id}
         if smoke_namespace:
             envelope["smoke_namespace"] = smoke_namespace
+            # Default limit for smoke tests to avoid full data loads
+            envelope["limit"] = 10
         if definitions_dir:
-            envelope["definitions_dir"] = definitions_dir
+            envelope["definitions_dir"] = str(definitions_dir)
 
         exec_result = execute(envelope)
         if exec_result.success:
@@ -149,6 +152,7 @@ def run_pipeline(
     pipeline_spec: dict,
     smoke_namespace: str | None = None,
     definitions_dir: Path | None = None,
+    progress_callback: Callable[..., Any] | None = None,
 ) -> PipelineResult:
     """Execute a pipeline — sequential run of jobs via execute().
 
@@ -160,6 +164,8 @@ def run_pipeline(
         pipeline_spec: Pipeline spec dict with stages and stop_on_failure
         smoke_namespace: Optional smoke test namespace for BQ routing
         definitions_dir: Override definitions directory for child job loading
+        progress_callback: Optional callback(event, **kwargs) for progress updates.
+            Events: 'stage_start', 'job_start', 'job_ok', 'job_fail'
 
     Returns:
         PipelineResult with execution summary
@@ -177,29 +183,37 @@ def run_pipeline(
     start_time = time.time()
     result = PipelineResult(pipeline_id=pipeline_id, total=total_jobs)
 
+    def _emit(event: str, **kwargs):
+        if progress_callback:
+            progress_callback(event, **kwargs)
+
     for stage in stages:
         stage_name = stage.get("name", "unnamed")
         jobs = stage.get("jobs", [])
         stage_had_failure = False
 
         logger.info(f"  Stage: {stage_name} ({len(jobs)} jobs)")
+        _emit("stage_start", stage_name=stage_name, job_count=len(jobs))
 
         for job_id in jobs:
             job_start = time.time()
 
             try:
                 logger.info(f"    Running: {job_id}")
+                _emit("job_start", job_id=job_id)
                 success, error_msg = _run_child(job_id, smoke_namespace, definitions_dir)
                 job_duration = int((time.time() - job_start) * 1000)
 
                 if success:
                     result.succeeded += 1
                     logger.info(f"    ok {job_id} ({job_duration}ms)")
+                    _emit("job_ok", job_id=job_id, duration_ms=job_duration)
                 else:
                     result.failed += 1
                     result.failures.append({"job_id": job_id, "error": error_msg})
                     stage_had_failure = True
                     logger.error(f"    FAIL {job_id}: {error_msg}")
+                    _emit("job_fail", job_id=job_id, duration_ms=job_duration, error=error_msg)
 
             except Exception as e:
                 job_duration = int((time.time() - job_start) * 1000)
@@ -207,6 +221,7 @@ def run_pipeline(
                 result.failures.append({"job_id": job_id, "error": str(e)})
                 stage_had_failure = True
                 logger.error(f"    FAIL {job_id}: {e}")
+                _emit("job_fail", job_id=job_id, duration_ms=job_duration, error=str(e))
 
         if stage_had_failure and stop_on_failure:
             logger.error(f"  Stage {stage_name} failed, stopping pipeline")

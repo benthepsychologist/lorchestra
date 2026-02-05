@@ -446,9 +446,10 @@ class TestFileRunStore:
 
         run = store.create_run(instance, {"key": "value"})
 
-        # Verify file was created
-        run_file = tmp_path / "runs" / f"{run.run_id}.json"
-        assert run_file.exists()
+        # Verify file was created (now organized by namespace/date/job_id with hhmmss prefix)
+        # Pattern: {hhmmss}_{run_id}.json
+        run_files = list((tmp_path / "runs").rglob(f"*_{run.run_id}.json"))
+        assert len(run_files) == 1
 
     def test_persistence(self, simple_job_def, tmp_path):
         """Data persists across store instances."""
@@ -819,10 +820,10 @@ class TestEndToEnd:
         executor = _make_mock_executor(store)
         result = executor.execute(instance)
 
-        # Verify files created
+        # Verify files created (now organized by date/job_id)
         runs_dir = tmp_path / "runs" / "runs"
         assert runs_dir.exists()
-        run_files = list(runs_dir.glob("*.json"))
+        run_files = list(runs_dir.rglob("*.json"))
         assert len(run_files) == 1
 
         # Reload from disk

@@ -1,5 +1,5 @@
 pipeline_id: pipeline.ingest
-description: Run all ingestion and validation jobs
+description: Run all ingestion jobs (validation is done by canonize jobs)
 stages:
   - name: ingestion
     jobs:
@@ -20,16 +20,4 @@ stages:
       - ingest_google_forms_intake_02
       - ingest_google_forms_followup
       - ingest_google_forms_ipip120
-  - name: validation
-    jobs:
-      - validate_gmail_source
-      - validate_exchange_source
-      - validate_google_forms_source
-      - validate_dataverse_contacts
-      - validate_dataverse_sessions
-      - validate_dataverse_reports
-      - validate_stripe_customers
-      - validate_stripe_invoices
-      - validate_stripe_payment_intents
-      - validate_stripe_refunds
 stop_on_failure: false

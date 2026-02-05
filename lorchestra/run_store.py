@@ -200,6 +200,30 @@ class RunStore(ABC):
         """
         pass
 
+    @abstractmethod
+    def finalize_run(
+        self,
+        run_id: str,
+        success: bool,
+        rows_read: int = 0,
+        rows_written: int = 0,
+        errors: list[str] | None = None,
+    ) -> Optional[RunRecord]:
+        """
+        Finalize a run with completion info.
+
+        Args:
+            run_id: The run ULID
+            success: True if run completed successfully
+            rows_read: Number of rows read from sources
+            rows_written: Number of rows written to BQ
+            errors: List of error messages (if any)
+
+        Returns:
+            The updated RunRecord, or None if not found
+        """
+        pass
+
 
 class InMemoryRunStore(RunStore):
     """
@@ -262,6 +286,31 @@ class InMemoryRunStore(RunStore):
         max_n = max(run_attempts.keys())
         return run_attempts[max_n]
 
+    def finalize_run(
+        self,
+        run_id: str,
+        success: bool,
+        rows_read: int = 0,
+        rows_written: int = 0,
+        errors: list[str] | None = None,
+    ) -> Optional[RunRecord]:
+        run = self._runs.get(run_id)
+        if run is None:
+            return None
+
+        completed_at = datetime.now(timezone.utc)
+        duration_ms = int((completed_at - run.started_at).total_seconds() * 1000)
+
+        # Update the run record (RunRecord is now mutable)
+        run.completed_at = completed_at
+        run.status = "success" if success else "failed"
+        run.duration_ms = duration_ms
+        run.rows_read = rows_read
+        run.rows_written = rows_written
+        run.errors = errors or []
+
+        return run
+
     def clear(self) -> None:
         """Clear all stored data (for testing)."""
         self._runs.clear()
@@ -274,10 +323,13 @@ class FileRunStore(RunStore):
     """
     File-based implementation of RunStore for development.
 
-    Stores artifacts as JSON files in a directory tree:
+    Stores artifacts as JSON files in a directory tree organized by namespace/date/job:
         store_dir/
             runs/
-                {run_id}.json
+                {namespace}/          # from STORACLE_NAMESPACE_SALT, e.g. "storacle-dev"
+                    {date}/
+                        {job_id}/
+                            {hhmmss}_{run_id}.json  # timestamp prefix for ordering
             manifests/
                 {run_id}/
                     {step_id}.json
@@ -287,10 +339,18 @@ class FileRunStore(RunStore):
             attempts/
                 {run_id}/
                     {attempt_n}.json
+
+    Run JSON includes completion info:
+        - run_id, job_id, job_def_sha256, envelope, started_at (initial)
+        - completed_at, status, duration_ms, rows_read, rows_written, errors (final)
     """
 
-    def __init__(self, store_dir: Path | str):
+    def __init__(self, store_dir: Path | str, namespace: str | None = None):
         self._store_dir = Path(store_dir)
+        # Use namespace_salt from env if not provided, default to "default"
+        import os
+        self._namespace = namespace or os.environ.get("STORACLE_NAMESPACE_SALT", "default")
+        self._run_paths: dict[str, Path] = {}  # run_id -> path (for finalize lookup)
         self._ensure_dirs()
 
     def _ensure_dirs(self) -> None:
@@ -298,20 +358,52 @@ class FileRunStore(RunStore):
         for subdir in ["runs", "manifests", "outputs", "attempts"]:
             (self._store_dir / subdir).mkdir(parents=True, exist_ok=True)
 
+    def _get_run_dir(self, job_id: str, started_at: datetime) -> Path:
+        """Get the run directory for a job, organized by namespace/date/job_id."""
+        date_str = started_at.strftime("%Y-%m-%d")
+        return self._store_dir / "runs" / self._namespace / date_str / job_id
+
+    def _get_run_filename(self, run_id: str, started_at: datetime) -> str:
+        """Get the run filename with hhmmss timestamp prefix for ordering."""
+        time_str = started_at.strftime("%H%M%S")
+        return f"{time_str}_{run_id}.json"
+
     def create_run(self, instance: JobInstance, envelope: dict[str, Any]) -> RunRecord:
         run_id = generate_ulid()
+        started_at = datetime.now(timezone.utc)
+
+        # Sanitize envelope: filter out non-JSON-serializable items (store, handlers, etc.)
+        # Keep only scalar/serializable runtime context
+        serializable_envelope = {}
+        for k, v in envelope.items():
+            # Skip non-serializable items
+            if k in ("store", "handlers", "backends"):
+                continue
+            # Convert Path to string
+            if isinstance(v, Path):
+                serializable_envelope[k] = str(v)
+            elif isinstance(v, (str, int, float, bool, type(None), list, dict)):
+                serializable_envelope[k] = v
+
         run = RunRecord(
             run_id=run_id,
             job_id=instance.job_id,
             job_def_sha256=instance.job_def_sha256,
-            envelope=envelope,
-            started_at=datetime.now(timezone.utc),
+            envelope=serializable_envelope,
+            started_at=started_at,
+            status="running",
         )
 
-        # Store the run record
-        run_path = self._store_dir / "runs" / f"{run_id}.json"
+        # Store the run record in namespace/date/job_id directory with hhmmss prefix
+        run_dir = self._get_run_dir(instance.job_id, started_at)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        run_filename = self._get_run_filename(run_id, started_at)
+        run_path = run_dir / run_filename
         with open(run_path, "w") as f:
             json.dump(run.to_dict(), f, indent=2)
+
+        # Cache path for finalize lookup
+        self._run_paths[run_id] = run_path
 
         # Create subdirectories for this run
         for subdir in ["manifests", "outputs", "attempts"]:
@@ -319,10 +411,90 @@ class FileRunStore(RunStore):
 
         return run
 
-    def get_run(self, run_id: str) -> Optional[RunRecord]:
-        run_path = self._store_dir / "runs" / f"{run_id}.json"
-        if not run_path.exists():
+    def finalize_run(
+        self,
+        run_id: str,
+        success: bool,
+        rows_read: int = 0,
+        rows_written: int = 0,
+        errors: list[str] | None = None,
+    ) -> Optional[RunRecord]:
+        """
+        Finalize a run with completion info.
+
+        Updates the run record with:
+        - completed_at timestamp
+        - status ('success' or 'failed')
+        - duration_ms
+        - rows_read, rows_written
+        - errors (if any)
+
+        Args:
+            run_id: The run ULID
+            success: True if run completed successfully
+            rows_read: Number of rows read from sources
+            rows_written: Number of rows written to BQ
+            errors: List of error messages (if any)
+
+        Returns:
+            The updated RunRecord, or None if not found
+        """
+        run = self.get_run(run_id)
+        if run is None:
             return None
+
+        completed_at = datetime.now(timezone.utc)
+        duration_ms = int((completed_at - run.started_at).total_seconds() * 1000)
+
+        # Update the run record
+        run.completed_at = completed_at
+        run.status = "success" if success else "failed"
+        run.duration_ms = duration_ms
+        run.rows_read = rows_read
+        run.rows_written = rows_written
+        run.errors = errors or []
+
+        # Write back to file
+        run_path = self._run_paths.get(run_id)
+        if run_path is None:
+            # Fallback: search for the file
+            run_path = self._find_run_path(run_id)
+
+        if run_path and run_path.exists():
+            with open(run_path, "w") as f:
+                json.dump(run.to_dict(), f, indent=2)
+
+        return run
+
+    def _find_run_path(self, run_id: str) -> Optional[Path]:
+        """Find the path to a run file by searching namespace/date/job directories.
+
+        Handles multiple file naming formats:
+        - New format: {hhmmss}_{run_id}.json (with timestamp prefix)
+        - Old format: {run_id}.json (without timestamp prefix)
+        """
+        runs_dir = self._store_dir / "runs"
+        if not runs_dir.exists():
+            return None
+
+        # Search all directories (namespace/date/job_id structure)
+        for path in runs_dir.rglob("*.json"):
+            # Match either hhmmss_{run_id}.json or {run_id}.json
+            filename = path.name
+            if filename == f"{run_id}.json" or filename.endswith(f"_{run_id}.json"):
+                return path
+
+        return None
+
+    def get_run(self, run_id: str) -> Optional[RunRecord]:
+        # Check cached path first
+        run_path = self._run_paths.get(run_id)
+        if run_path is None:
+            run_path = self._find_run_path(run_id)
+
+        if run_path is None or not run_path.exists():
+            return None
+
         with open(run_path) as f:
             data = json.load(f)
         return RunRecord.from_dict(data)

@@ -250,11 +250,15 @@ class ExecutionResult:
         attempt: AttemptRecord,
         success: bool,
         error: Optional[ExecutionError] = None,
+        rows_read: int = 0,
+        rows_written: int = 0,
     ):
         self.run_record = run_record
         self.attempt = attempt
         self.success = success
         self.error = error
+        self.rows_read = rows_read
+        self.rows_written = rows_written
 
     @property
     def run_id(self) -> str:
@@ -362,25 +366,51 @@ class Executor:
 
         # Execute with retries
         last_error: Optional[ExecutionError] = None
+        total_rows_read = 0
+        total_rows_written = 0
+
         for attempt_n in range(1, self._max_attempts + 1):
             try:
-                attempt = self._execute_attempt(instance, run_record, envelope, attempt_n)
+                attempt, rows_read, rows_written = self._execute_attempt(
+                    instance, run_record, envelope, attempt_n
+                )
                 self._store.store_attempt(attempt)
+                total_rows_read += rows_read
+                total_rows_written += rows_written
 
                 if attempt.status == StepStatus.COMPLETED:
-                    return ExecutionResult(run_record, attempt, success=True)
+                    # Finalize run with success
+                    self._store.finalize_run(
+                        run_record.run_id,
+                        success=True,
+                        rows_read=total_rows_read,
+                        rows_written=total_rows_written,
+                    )
+                    return ExecutionResult(
+                        run_record, attempt, success=True,
+                        rows_read=total_rows_read, rows_written=total_rows_written
+                    )
                 elif attempt.status == StepStatus.FAILED:
                     # Check if we should retry
                     failed_steps = attempt.get_failed_steps()
                     if attempt_n < self._max_attempts:
                         continue
                     # Final attempt failed
+                    errors = [f"{s.step_id}: {s.error}" for s in failed_steps if s.error]
+                    self._store.finalize_run(
+                        run_record.run_id,
+                        success=False,
+                        rows_read=total_rows_read,
+                        rows_written=total_rows_written,
+                        errors=errors,
+                    )
                     return ExecutionResult(
                         run_record, attempt, success=False,
                         error=ExecutionError(
                             failed_steps[0].step_id if failed_steps else "unknown",
                             "Step execution failed",
                         ),
+                        rows_read=total_rows_read, rows_written=total_rows_written
                     )
             except ExecutionError as e:
                 last_error = e
@@ -396,7 +426,17 @@ class Executor:
                     step_outcomes=(),
                 )
                 self._store.store_attempt(attempt)
-                return ExecutionResult(run_record, attempt, success=False, error=e)
+                self._store.finalize_run(
+                    run_record.run_id,
+                    success=False,
+                    rows_read=total_rows_read,
+                    rows_written=total_rows_written,
+                    errors=[str(e)],
+                )
+                return ExecutionResult(
+                    run_record, attempt, success=False, error=e,
+                    rows_read=total_rows_read, rows_written=total_rows_written
+                )
 
         # Should not reach here, but handle gracefully
         attempt = AttemptRecord(
@@ -407,7 +447,15 @@ class Executor:
             status=StepStatus.FAILED,
             step_outcomes=(),
         )
-        return ExecutionResult(run_record, attempt, success=False, error=last_error)
+        self._store.finalize_run(
+            run_record.run_id,
+            success=False,
+            errors=[str(last_error)] if last_error else [],
+        )
+        return ExecutionResult(
+            run_record, attempt, success=False, error=last_error,
+            rows_read=total_rows_read, rows_written=total_rows_written
+        )
 
     def _execute_attempt(
         self,
@@ -415,7 +463,7 @@ class Executor:
         run_record: RunRecord,
         envelope: dict[str, Any],
         attempt_n: int,
-    ) -> AttemptRecord:
+    ) -> tuple[AttemptRecord, int, int]:
         """
         Execute a single attempt of a job.
 
@@ -426,13 +474,15 @@ class Executor:
             attempt_n: The attempt number (1-indexed)
 
         Returns:
-            AttemptRecord with step outcomes
+            Tuple of (AttemptRecord, rows_read, rows_written)
         """
         started_at = _utcnow()
         step_outputs: dict[str, Any] = {}
         step_outcomes: list[StepOutcome] = []
         overall_status = StepStatus.COMPLETED
         had_failure = False
+        rows_read = 0
+        rows_written = 0
 
         # Make envelope available for @run.envelope.* resolution
         step_outputs["envelope"] = envelope
@@ -466,6 +516,25 @@ class Executor:
                 # Store output for subsequent @run.* resolution
                 step_outputs[step.step_id] = output
 
+                # Track row counts from output
+                if isinstance(output, dict):
+                    # call/query steps return items list
+                    items = output.get("items", [])
+                    if isinstance(items, list):
+                        rows_read += len(items)
+                    # storacle.submit returns rows_affected (actual BQ rows)
+                    if "rows_affected" in output:
+                        rows_written += output["rows_affected"]
+                # storacle.submit returns list of JSON-RPC responses
+                elif isinstance(output, list):
+                    for resp in output:
+                        if isinstance(resp, dict) and "result" in resp:
+                            result = resp["result"]
+                            if isinstance(result, dict):
+                                # bq.upsert returns rows_written
+                                if "rows_written" in result:
+                                    rows_written += result["rows_written"]
+
             except Exception as e:
                 step_completed = _utcnow()
                 error_info = {
@@ -495,7 +564,7 @@ class Executor:
             pass
 
         completed_at = _utcnow()
-        return AttemptRecord(
+        attempt = AttemptRecord(
             run_id=run_record.run_id,
             attempt_n=attempt_n,
             started_at=started_at,
@@ -503,6 +572,7 @@ class Executor:
             status=overall_status,
             step_outcomes=tuple(step_outcomes),
         )
+        return attempt, rows_read, rows_written
 
     def _execute_step(
         self,

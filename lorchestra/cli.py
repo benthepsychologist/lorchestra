@@ -777,7 +777,7 @@ def exec_run(ctx, job_id: str, ctx_json: str, payload_json: str, envelope_json: 
     """
     import json
     from lorchestra.executor import execute
-    from lorchestra.run_store import InMemoryRunStore, FileRunStore
+    from lorchestra.run_store import FileRunStore
 
     # Validate flag combinations
     if clean_up and not smoke_namespace:
@@ -804,11 +804,11 @@ def exec_run(ctx, job_id: str, ctx_json: str, payload_json: str, envelope_json: 
         click.echo(f"Invalid --envelope JSON: {e}", err=True)
         raise SystemExit(1)
 
-    # Create store
-    if store_dir:
-        store = FileRunStore(Path(store_dir))
-    else:
-        store = InMemoryRunStore()
+    # Create store - always use FileRunStore for persistence
+    # FileRunStore reads STORACLE_NAMESPACE_SALT from env to organize by namespace
+    from lorchestra.run_store import DEFAULT_RUN_PATH
+    store_path = Path(store_dir) if store_dir else DEFAULT_RUN_PATH
+    store = FileRunStore(store_path)
 
     # Print mode banner
     if smoke_namespace:
@@ -835,6 +835,8 @@ def exec_run(ctx, job_id: str, ctx_json: str, payload_json: str, envelope_json: 
     # Add smoke namespace if provided
     if smoke_namespace:
         envelope["smoke_namespace"] = smoke_namespace
+        # Default limit for smoke tests to avoid full data loads
+        envelope["limit"] = 10
 
     # Merge runtime envelope fields (user-provided --envelope JSON)
     if runtime_envelope:
@@ -946,8 +948,25 @@ def exec_pipeline(ctx, pipeline_id: str, smoke_namespace: str = None, clean_up: 
     click.echo(f"  stop_on_failure: {spec.get('stop_on_failure', False)}")
     click.echo()
 
+    def progress(event, **kwargs):
+        """Print pipeline progress to terminal."""
+        if event == "stage_start":
+            click.echo(f"Stage: {kwargs['stage_name']} ({kwargs['job_count']} jobs)")
+        elif event == "job_start":
+            click.echo(f"  Running: {kwargs['job_id']}...", nl=False)
+        elif event == "job_ok":
+            click.echo(click.style(f" ok", fg="green") + f" ({kwargs['duration_ms']}ms)")
+        elif event == "job_fail":
+            click.echo(click.style(f" FAIL", fg="red") + f" ({kwargs['duration_ms']}ms)")
+            click.echo(f"    Error: {kwargs.get('error', 'unknown')}")
+
     try:
-        result = run_pipeline(spec, smoke_namespace=smoke_namespace, definitions_dir=DEFINITIONS_DIR)
+        result = run_pipeline(
+            spec,
+            smoke_namespace=smoke_namespace,
+            definitions_dir=DEFINITIONS_DIR,
+            progress_callback=progress,
+        )
 
         # Display results
         click.echo()
