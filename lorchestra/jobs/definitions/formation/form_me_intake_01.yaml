@@ -1,0 +1,66 @@
+job_id: form_me_intake_01
+version: '2.0'
+steps:
+# 1. READ: canonical form_responses not yet formed
+- step_id: read
+  op: storacle.query
+  params:
+    dataset: canonical
+    table: canonical_objects
+    columns:
+    - idem_key
+    - source_system
+    - connection_name
+    - object_type
+    - canonical_schema
+    - transform_ref
+    - payload
+    - correlation_id
+    filters:
+      canonical_schema: 'iglu:org.canonical/form_response/jsonschema/1-0-0'
+      connection_name: google-forms-intake-01
+    parse_json_columns:
+    - payload
+    incremental:
+      target_dataset: derived
+      target_table: measurement_events
+      source_key: idem_key
+      target_key: canonical_object_id
+      mode: left_anti
+      source_ts: canonicalized_at
+      target_ts: processed_at
+
+# 2. TRANSFORM: canonical form_response -> measurement_event row
+- step_id: project
+  op: call
+  params:
+    callable: canonizer
+    source_type: formation
+    items: '@run.read.items'
+    config:
+      transform_id: formation/form_response_to_measurement_event@1.0.0
+      binding_id: intake_01
+      source_system: google_forms
+      source_entity: form_response
+
+# 3. PLAN: batch upsert measurement_events
+- step_id: persist
+  op: plan.build
+  params:
+    items: '@run.project.items'
+    method: bq.upsert
+    dataset: derived
+    table: measurement_events
+    key_columns:
+    - idem_key
+    auto_timestamp_columns:
+    - processed_at
+    - created_at
+    skip_update_columns:
+    - created_at
+
+# 4. WRITE
+- step_id: write
+  op: storacle.submit
+  params:
+    plan: '@run.persist.plan'

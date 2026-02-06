@@ -3,12 +3,12 @@ description: Run measurement events and observations jobs
 stages:
   - name: measurement_events
     jobs:
-      - proj_me_intake_01
-      - proj_me_intake_02
-      - proj_me_followup
+      - form_me_intake_01
+      - form_me_intake_02
+      - form_me_followup
   - name: observations
     jobs:
-      - proj_obs_intake_01
-      - proj_obs_intake_02
-      - proj_obs_followup
+      - form_obs_intake_01
+      - form_obs_intake_02
+      - form_obs_followup
 stop_on_failure: false

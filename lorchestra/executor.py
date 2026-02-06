@@ -745,6 +745,14 @@ class Executor:
             # noop client returns a flat dict
             rows = result.get("rows", [])
 
+        # Convert datetime objects to ISO strings for JSON serialization
+        from datetime import datetime as _datetime
+        if rows:
+            for row in rows:
+                for key, val in row.items():
+                    if isinstance(val, _datetime):
+                        row[key] = val.isoformat()
+
         # Parse JSON string columns if requested
         if parse_json_columns and rows:
             for row in rows:

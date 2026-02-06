@@ -16,7 +16,6 @@ steps:
     filters:
       source_system: exchange
       object_type: email
-      validation_status: pass
     parse_json_columns:
     - payload
     limit: 1000

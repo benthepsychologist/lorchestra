@@ -1,0 +1,87 @@
+job_id: form_obs_intake_02
+version: '2.0'
+steps:
+# 1. READ: unscored measurement_events
+- step_id: read_me
+  op: storacle.query
+  params:
+    dataset: derived
+    table: measurement_events
+    columns:
+    - measurement_event_id
+    - idem_key
+    - subject_id
+    - occurred_at
+    - binding_id
+    - binding_version
+    - correlation_id
+    - metadata
+    parse_json_columns:
+    - metadata
+    filters:
+      binding_id: intake_02
+    incremental:
+      target_dataset: derived
+      target_table: observations
+      source_key: measurement_event_id
+      target_key: measurement_event_id
+      mode: left_anti
+      source_ts: processed_at
+      target_ts: processed_at
+
+# 2. TRANSFORM: measurement_event row -> finalform input
+- step_id: prepare
+  op: call
+  params:
+    callable: canonizer
+    source_type: formation
+    items: '@run.read_me.items'
+    config:
+      transform_id: formation/measurement_event_to_finalform_input@1.0.0
+      instrument: intake_02
+      validate_input: false
+
+# 3. SCORE: finalform (REAL COMPUTE)
+- step_id: score
+  op: call
+  params:
+    callable: finalform
+    instrument: intake_02
+    items: '@run.prepare.items'
+    config:
+      binding_id: intake_02
+      binding_version: '1.0.0'
+
+# 4. TRANSFORM: finalform output -> observation rows
+- step_id: shape
+  op: call
+  params:
+    callable: canonizer
+    source_type: formation
+    items: '@run.score.items'
+    config:
+      transform_id: formation/finalform_event_to_observation_row@1.0.0
+      validate_input: false
+      validate_output: false
+
+# 5. PLAN: batch upsert observations
+- step_id: persist
+  op: plan.build
+  params:
+    items: '@run.shape.items'
+    method: bq.upsert
+    dataset: derived
+    table: observations
+    key_columns:
+    - idem_key
+    auto_timestamp_columns:
+    - processed_at
+    - created_at
+    skip_update_columns:
+    - created_at
+
+# 6. WRITE
+- step_id: write
+  op: storacle.submit
+  params:
+    plan: '@run.persist.plan'

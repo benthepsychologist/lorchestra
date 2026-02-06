@@ -16,7 +16,6 @@ steps:
     filters:
       source_system: dataverse
       object_type: contact
-      validation_status: pass
     parse_json_columns:
     - payload
     limit: 100

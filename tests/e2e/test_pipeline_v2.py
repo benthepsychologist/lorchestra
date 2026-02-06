@@ -114,7 +114,7 @@ class TestIsPipeline:
         assert _is_pipeline("pipeline.daily_all") is True
 
     def test_regular_job_is_not_pipeline(self):
-        assert _is_pipeline("proj_me_intake_01") is False
+        assert _is_pipeline("form_me_intake_01") is False
 
     def test_nonexistent_is_not_pipeline(self):
         assert _is_pipeline("nonexistent_thing") is False
@@ -210,12 +210,12 @@ class TestRunPipeline:
         # Verify execute() called with correct job_ids
         called_job_ids = [c.args[0]["job_id"] for c in mock_execute.call_args_list]
         assert called_job_ids == [
-            "proj_me_intake_01", "proj_me_intake_02", "proj_me_followup",
-            "proj_obs_intake_01", "proj_obs_intake_02", "proj_obs_followup",
+            "form_me_intake_01", "form_me_intake_02", "form_me_followup",
+            "form_obs_intake_01", "form_obs_intake_02", "form_obs_followup",
         ]
 
     @patch("lorchestra.pipeline.load_pipeline")
-    @patch("lorchestra.executor.execute", side_effect=_mock_execute_fail_on({"proj_me_intake_02"}))
+    @patch("lorchestra.executor.execute", side_effect=_mock_execute_fail_on({"form_me_intake_02"}))
     def test_continue_on_failure(self, mock_execute, mock_load):
         """stop_on_failure=false: remaining jobs still execute after failure."""
         spec = load_pipeline("pipeline.formation")
@@ -226,7 +226,7 @@ class TestRunPipeline:
         assert result.failed == 1
         assert result.stopped_early is False
         assert len(result.failures) == 1
-        assert result.failures[0]["job_id"] == "proj_me_intake_02"
+        assert result.failures[0]["job_id"] == "form_me_intake_02"
 
         # All 6 jobs should have been attempted
         assert mock_execute.call_count == 6

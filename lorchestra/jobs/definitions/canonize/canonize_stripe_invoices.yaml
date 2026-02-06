@@ -16,7 +16,6 @@ steps:
     filters:
       source_system: stripe
       object_type: invoice
-      validation_status: pass
     parse_json_columns:
     - payload
     limit: 200

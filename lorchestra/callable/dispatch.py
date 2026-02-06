@@ -55,7 +55,7 @@ def _get_callables() -> dict[str, CallableFn]:
     # External packages (top-level imports)
     external = ["injest", "canonizer", "finalform", "projectionist", "workman"]
     # Internal callables (lorchestra.callable.*)
-    internal = ["view_creator", "molt_projector", "bq_reader", "file_renderer", "measurement_projector", "observation_projector"]
+    internal = ["view_creator", "molt_projector", "bq_reader", "file_renderer"]
 
     callables: dict[str, CallableFn] = {}
 
