@@ -2,17 +2,30 @@ job_id: sync_proj_clinical_documents
 version: '2.0'
 steps:
 - step_id: read
+  op: storacle.query
+  params:
+    dataset: canonical
+    table: proj_clinical_documents
+    columns: ['*']
+
+- step_id: package
   op: call
   params:
-    callable: bq_reader
-    projection: proj_clinical_documents
-    sqlite_path: ~/clinical-vault/local.db
-    table: clinical_documents
+    callable: canonizer
+    source_type: projection
+    items: '@run.read.items'
+    config:
+      transform_id: projection/bq_rows_to_sqlite_sync@1.0.0
+      sqlite_path: ~/clinical-vault/local.db
+      table: clinical_documents
+      auto_timestamp_columns: [projected_at]
+
 - step_id: persist
   op: plan.build
   params:
-    items: '@run.read.items'
+    items: '@run.package.items'
     method: sqlite.sync
+
 - step_id: write
   op: storacle.submit
   params:

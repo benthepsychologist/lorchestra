@@ -1,22 +1,32 @@
 job_id: proj_sheets_clients
 version: '2.0'
 steps:
-- step_id: project
+- step_id: read
+  op: storacle.query
+  params:
+    dataset: canonical
+    table: proj_clients
+    columns: ['*']
+
+- step_id: package
   op: call
   params:
-    callable: projectionist
-    projection_id: sheets
+    callable: canonizer
+    source_type: projection
+    items: '@run.read.items'
     config:
-      query: SELECT * FROM `${PROJECT}.${DATASET_CANONICAL}.proj_clients`
+      transform_id: projection/bq_rows_to_sheets_write_table@1.0.0
       spreadsheet_id: 1Wf8EyuNR-I-ko5bx0M4L7BXousAqkj3vxN8xP1-aAzo
       sheet_name: clients
       strategy: replace
       account: acct1
+
 - step_id: persist
   op: plan.build
   params:
-    items: '@run.project.items'
-    method: wal.append
+    items: '@run.package.items'
+    method: sheets.write_table
+
 - step_id: write
   op: storacle.submit
   params:
