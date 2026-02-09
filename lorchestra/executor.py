@@ -59,7 +59,8 @@ if TYPE_CHECKING:
 
 
 # Reference pattern for @run.* references
-RUN_REF_PATTERN = re.compile(r"@run\.([a-zA-Z_][a-zA-Z0-9_.]*)")
+# Supports: @run.step.key.subkey and @run.step.items[0].field
+RUN_REF_PATTERN = re.compile(r"@run\.([a-zA-Z_][a-zA-Z0-9_.\[\]]*)")
 
 
 def _utcnow() -> datetime:
@@ -75,6 +76,9 @@ def _resolve_run_refs(
     Resolve @run.* references in a value using previous step outputs.
 
     @run.step_id.path.to.value resolves to step_outputs["step_id"]["path"]["to"]["value"]
+    @run.step_id.items[0].field resolves to step_outputs["step_id"]["items"][0]["field"]
+
+    Supports array indexing: items[0], rows[1], etc.
 
     Args:
         value: The value containing potential @run.* references
@@ -100,7 +104,23 @@ def _resolve_run_refs(
 
                 result = step_outputs[step_id]
                 for part in parts[1:]:
-                    if isinstance(result, dict) and part in result:
+                    # Handle array indexing: items[0] -> result["items"][0]
+                    array_match = re.match(r"(\w+)\[(\d+)\]", part)
+                    if array_match:
+                        key, idx = array_match.groups()
+                        if isinstance(result, dict) and key in result:
+                            result = result[key]
+                        else:
+                            raise ValueError(
+                                f"@run reference path not found: {value} (missing '{key}')"
+                            )
+                        if isinstance(result, list) and int(idx) < len(result):
+                            result = result[int(idx)]
+                        else:
+                            raise ValueError(
+                                f"@run reference index out of bounds: {value} (index {idx})"
+                            )
+                    elif isinstance(result, dict) and part in result:
                         result = result[part]
                     else:
                         raise ValueError(
@@ -655,6 +675,8 @@ class Executor:
             return self._handle_plan_build(manifest)
         elif manifest.op == Op.STORACLE_SUBMIT:
             return self._handle_storacle_submit(manifest)
+        elif manifest.op == Op.LOG_DUMP:
+            return self._handle_log_dump(manifest)
 
         # Handler-dispatched ops (compute.*, job.*)
         if self._handlers is not None:
@@ -697,7 +719,7 @@ class Executor:
             Dict with items (list of row dicts)
         """
         import json as _json
-        from lorchestra.query_builder import build_query, QueryParam
+        from lorchestra.query_builder import build_query
         from lorchestra.plan_builder import StoraclePlan, StoracleOp, _resolve_dataset
         from lorchestra.storacle.client import submit_plan, RpcMeta
 
@@ -944,6 +966,33 @@ class Executor:
             correlation_id=correlation_id,
         )
         return submit_plan(plan, meta)
+
+    def _handle_log_dump(self, manifest: StepManifest) -> dict[str, Any]:
+        """
+        Handle the `log.dump` native op: print items to stdout as JSON.
+
+        Used for debugging - dumps the items to stdout so you can inspect them.
+
+        Args:
+            manifest: StepManifest with op=log.dump
+
+        Returns:
+            Dict with count of items dumped
+        """
+        import json
+        import sys
+
+        items = manifest.resolved_params.get("items", [])
+        output_file = manifest.resolved_params.get("file")
+
+        if output_file:
+            with open(output_file, "w") as f:
+                json.dump(items, f, indent=2, default=str)
+            print(f"Dumped {len(items)} items to {output_file}", file=sys.stderr)
+        else:
+            print(json.dumps(items, indent=2, default=str))
+
+        return {"items_count": len(items)}
 
 
 def execute_job(

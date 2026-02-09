@@ -33,6 +33,7 @@ class Op(str, Enum):
     STORACLE_QUERY = "storacle.query"
     PLAN_BUILD = "plan.build"
     STORACLE_SUBMIT = "storacle.submit"
+    LOG_DUMP = "log.dump"
 
     # LLM (via inferometer)
     COMPUTE_LLM = "compute.llm"
@@ -53,7 +54,7 @@ class Op(str, Enum):
         """
         if self.value == "call":
             return "callable"
-        elif self.value in ("storacle.query", "plan.build", "storacle.submit"):
+        elif self.value in ("storacle.query", "plan.build", "storacle.submit", "log.dump"):
             return "native"
         elif self.value.startswith("compute."):
             return "inferometer"

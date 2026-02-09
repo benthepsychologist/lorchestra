@@ -522,6 +522,42 @@ class TestRunRefResolution:
         with pytest.raises(ValueError, match="unknown step"):
             _resolve_run_refs("@run.missing.value", {})
 
+    def test_resolve_array_index(self):
+        """Resolve @run.step_id.items[0].field reference with array indexing."""
+        outputs = {"cursor": {"items": [{"since": "2024-01-15T10:00:00Z"}]}}
+        result = _resolve_run_refs("@run.cursor.items[0].since", outputs)
+        assert result == "2024-01-15T10:00:00Z"
+
+    def test_resolve_array_index_nested(self):
+        """Resolve array index in nested path."""
+        outputs = {"query": {"data": {"rows": [{"id": 1, "name": "first"}, {"id": 2, "name": "second"}]}}}
+        result = _resolve_run_refs("@run.query.data.rows[1].name", outputs)
+        assert result == "second"
+
+    def test_resolve_array_index_only(self):
+        """Resolve array index without further nesting."""
+        outputs = {"fetch": {"items": ["a", "b", "c"]}}
+        result = _resolve_run_refs("@run.fetch.items[2]", outputs)
+        assert result == "c"
+
+    def test_array_index_out_of_bounds_raises(self):
+        """Array index out of bounds raises ValueError."""
+        outputs = {"cursor": {"items": [{"since": "2024-01-15"}]}}
+        with pytest.raises(ValueError, match="index out of bounds"):
+            _resolve_run_refs("@run.cursor.items[5].since", outputs)
+
+    def test_array_index_on_empty_list(self):
+        """Array index on empty list raises ValueError."""
+        outputs = {"cursor": {"items": []}}
+        with pytest.raises(ValueError, match="index out of bounds"):
+            _resolve_run_refs("@run.cursor.items[0].since", outputs)
+
+    def test_array_index_missing_key_raises(self):
+        """Array index with missing key raises ValueError."""
+        outputs = {"cursor": {"data": []}}
+        with pytest.raises(ValueError, match="missing 'items'"):
+            _resolve_run_refs("@run.cursor.items[0].since", outputs)
+
 
 class TestIdempotencyKey:
     """Tests for idempotency key computation."""

@@ -1,456 +1,357 @@
 ---
-tier: B
-title: "e005b-09b: Projection — Storacle-Only IO + Deprecate Projectionist"
+tier: C
+title: "e005b-09d: Ingest IO Purity — Replace auto_since Executor Magic"
 owner: benthepsychologist
-goal: "Eliminate fat projection callables by routing all BQ reads through storacle.query and packaging via canonizer transforms"
+goal: "Replace auto_since executor magic with explicit storacle.query cursor step in ingest jobs"
 epic: e005b-command-plane-and-performance
 repo:
   name: lorchestra
-  working_branch: feat/projection-io-purity
-created: 2026-02-04T00:00:00Z
+  working_branch: feat/ingest-io-purity
+created: 2026-02-06T00:00:00Z
 ---
 
-# e005b-09b — Projection: Storacle-Only IO + Deprecate Projectionist
+# e005b-09d: Ingest IO Purity — Replace auto_since Executor Magic
 
-## Status: done
-
-**NOTE:** Legacy callables preserved for backwards compatibility. New architecture implemented alongside.
-
-### Completed Work (2026-02-06)
-
-1. **Canonizer Aggregation Mode**: Added support for `projection/*` transforms in canonizer/api.py
-   - Projection transforms receive all items as a single input `{rows, config}`
-   - Returns single packaged output ready for plan.build
-   - Empty rows return null (skip the sync op)
-
-2. **Projection Transforms Created**:
-   - `projection/bq_rows_to_sqlite_sync@1.0.0` - packages rows for sqlite.sync
-   - `projection/bq_rows_to_sheets_write_table@1.0.0` - packages rows for sheets.write_table (with column_order support)
-
-3. **YAML Jobs Rewritten (13 jobs)**:
-   - 8 SQLite sync jobs → storacle.query + canonizer + plan.build(sqlite.sync)
-   - 5 Sheets jobs → storacle.query + canonizer + plan.build(sheets.write_table)
-
-4. **Tests Updated**: All 49+ tests pass including new architecture tests
-
-5. **Legacy Preserved**: bq_reader.py and processors/projectionist.py remain for backwards compatibility
-
----
+## Status: planned
 
 ## Problem
 
-Two projection callables do their own BQ reads via `storacle.clients.bigquery.BigQueryClient`:
-
-1. **`bq_reader`** — reads BQ view, packages for sqlite.sync
-2. **`projectionist` (sheets path)** — broken in V2 (`projection_id: sheets` not registered)
-
-Like the formation callables, these are "fat" — they combine IO with trivial
-transformations. **All BQ reads should go through storacle.query.**
-
-### The Projectionist Problem
-
-**Projectionist is dead weight.** It was designed as the "plan builder" before storacle
-became the universal IO boundary. Now:
-
-- The callable interface (`projectionist.execute()`) has **zero registered projections**
-  - `_PROJECTION_REGISTRY` is empty
-  - V2 sheets jobs fail with "Unknown projection_id: sheets"
-
-- The only functionality (`sheets.build_plan()`) does:
-  1. BQ read (via passed-in `bq` service)
-  2. Build 2D array (header + rows)
-  3. Emit `sheets.write_table` plan
-
-  This is **exactly what storacle.query + canonizer + plan.build does now**.
-
-- The deprecated `ProjectionistProcessor` was the only working path, and it's V1-only
-
-**Projectionist should be deprecated and removed from lorchestra.**
-
----
-
-## What bq_reader Does
-
-```python
-def execute(params):
-    # 1. BQ read (SELECT * FROM view)
-    sql = f"SELECT * FROM `{project}.{dataset}.{projection}`"
-    bq_client = BigQueryClient(project=project)
-    rows = bq_client.query(sql).rows
-
-    # 2. Add projected_at timestamp
-    projected_at = datetime.now(timezone.utc).isoformat()
-
-    # 3. Package for sqlite.sync
-    return CallableResult(items=[{
-        "sqlite_path": resolved_sqlite_path,
-        "table": table,
-        "columns": columns + ["projected_at"],
-        "rows": [{**row, "projected_at": projected_at} for row in rows],
-    }])
-```
-
-This is **not a callable** — it's a BQ read plus trivial metadata. The sqlite.sync
-packaging should be a canonizer transform, with plan.build remaining a thin plan emitter.
-
----
-
-## What projectionist Sheets Does
-
-The V2 YAML jobs use:
-```yaml
-callable: projectionist
-projection_id: sheets
-config:
-  query: SELECT * FROM ...
-```
-
-But `projectionist.execute()` looks up `projection_id` in `_PROJECTION_REGISTRY`,
-which is **empty for "sheets"**. The sheets projection uses `build_plan()` with
-a `bq: BqQueryService` parameter — this is the old processor path.
-
-**The sheets jobs are broken in V2** unless using the deprecated processor.
-
-The sheets logic itself is trivial:
-1. Read rows from BQ
-2. Build 2D array (header + data)
-3. Emit `sheets.write_table` plan for storacle
-
----
-
-## Target Architecture
-
-### Pattern: storacle.query → canonizer (shape/package) → plan.build (emit) → storacle.submit
-
-- `storacle.query` does all BigQuery reads.
-- `canonizer` does all schema/shape transforms and packaging (JSON in/out, semver).
-- `plan.build` remains a thin **plan emitter**: it wraps already-shaped op params into a StoraclePlan.
-
-### SQLite Sync Jobs (bq_reader → storacle.query + canonizer)
-
-**Delete bq_reader.** Use storacle.query + canonizer to package a sqlite.sync payload, then
-plan.build to emit a plan.
+Ingest jobs use `auto_since` executor magic for incremental sync:
 
 ```yaml
-job_id: sync_proj_clients
-version: '2.0'
-steps:
-
-# 1. READ: via storacle.query
-- step_id: read
-  op: storacle.query
-  params:
-    dataset: canonical
-    table: proj_clients  # BQ view name
-    columns: ['*']
-
-# 2. PACKAGE: rows → sqlite.sync op params
-- step_id: package
+- step_id: ingest
   op: call
   params:
-    callable: canonizer
-    source_type: projection
-    items: '@run.read.items'
-    config:
-      transform_id: projection/bq_rows_to_sqlite_sync@1.0.0
-      sqlite_path: ~/clinical-vault/local.db
-      table: clients
-      auto_timestamp_columns: [projected_at]
+    callable: injest
+    source: gmail_acct1
+    auto_since:
+      source_system: gmail
+      connection_name: gmail-acct1
+      object_type: email
+```
 
-# 3. PLAN: emit sqlite.sync op
-- step_id: plan
+The executor intercepts `auto_since`, runs a hidden BQ query (`SELECT MAX(last_seen) FROM raw_objects WHERE ...`), and injects the result into `config.since`.
+
+This violates the principle established in e005b-08: **all BQ reads should be explicit `storacle.query` steps**. The canonize jobs were migrated to explicit reads; ingest jobs were left behind because "ingest doesn't read from BQ" — but the cursor lookup IS a BQ read.
+
+### Why This Matters
+
+1. **Consistency**: Canonize jobs use explicit `storacle.query`. Ingest should too.
+2. **Visibility**: Hidden executor magic obscures what the job actually does.
+3. **Backfill**: Can't do backward-from-now ingestion without explicit cursor control. (`last_seen` is ingestion time, not email date — need event_log cursor.)
+4. **Testability**: Explicit steps are easier to mock and test.
+
+---
+
+## Solution
+
+Replace `auto_since` with an explicit `storacle.query` cursor step.
+
+### Before (executor magic)
+
+```yaml
+job_id: ingest_gmail_acct1
+version: '2.0'
+steps:
+- step_id: ingest
+  op: call
+  params:
+    callable: injest
+    source: gmail_acct1
+    auto_since:
+      source_system: gmail
+      connection_name: gmail-acct1
+      object_type: email
+- step_id: persist
+  op: plan.build
+  # ...
+- step_id: write
+  op: storacle.submit
+  # ...
+```
+
+### After (explicit cursor)
+
+```yaml
+job_id: ingest_gmail_acct1
+version: '2.0'
+steps:
+- step_id: cursor
+  op: storacle.query
+  params:
+    dataset: raw
+    table: raw_objects
+    columns: ['MAX(last_seen) as since']
+    filters:
+      source_system: gmail
+      connection_name: gmail-acct1
+      object_type: email
+
+- step_id: ingest
+  op: call
+  params:
+    callable: injest
+    source: gmail_acct1
+    config:
+      since: '@run.cursor.items[0].since'
+
+- step_id: persist
+  op: plan.build
+  # ... unchanged
+
+- step_id: write
+  op: storacle.submit
+  # ... unchanged
+```
+
+### Array Index Support Required
+
+The executor's `_resolve_run_refs` currently only handles dict key access (`@run.step.key.subkey`). To reference the first item from a query result, we need `@run.cursor.items[0].since` — which requires **array index support**.
+
+**Add to `_resolve_run_refs` in `executor.py`:**
+```python
+# Handle array indexing: items[0] -> result[0]
+import re
+array_match = re.match(r"(\w+)\[(\d+)\]", part)
+if array_match:
+    key, idx = array_match.groups()
+    if isinstance(result, dict) and key in result:
+        result = result[key]
+    if isinstance(result, list) and int(idx) < len(result):
+        result = result[int(idx)]
+    continue
+```
+
+### Null Handling
+
+When the cursor query returns `NULL` (empty table), `@run.cursor.items[0].since` resolves to `null`. The injest adapter must handle `since: null` as "fetch all" (no date filter). This is already the case — Gmail adapter's `_build_query` only adds `after:{date}` when `since` is truthy.
+
+---
+
+## Jobs to Migrate (20 total)
+
+### Gmail (3)
+- `ingest_gmail_acct1`
+- `ingest_gmail_acct2`
+- `ingest_gmail_acct3`
+
+### Exchange (4)
+- `ingest_exchange_ben_mensio`
+- `ingest_exchange_ben_efs`
+- `ingest_exchange_booking_mensio`
+- `ingest_exchange_info_mensio`
+
+### Dataverse (3)
+- `ingest_dataverse_contacts`
+- `ingest_dataverse_sessions`
+- `ingest_dataverse_reports`
+
+### Google Forms (4)
+- `ingest_google_forms_intake_01`
+- `ingest_google_forms_intake_02`
+- `ingest_google_forms_followup`
+- `ingest_google_forms_ipip120`
+
+### Stripe (4)
+- `ingest_stripe_customers`
+- `ingest_stripe_invoices`
+- `ingest_stripe_payment_intents`
+- `ingest_stripe_refunds`
+
+---
+
+## Executor Cleanup
+
+After all jobs migrated, remove the `auto_since` executor magic:
+
+**File:** `lorchestra/executor.py`
+
+Delete:
+- `_resolve_auto_since()` method (~30 lines)
+- `auto_since` handling in `_handle_call()` (~5 lines)
+
+The executor's `_handle_call()` should become a pure dispatcher with no hidden IO.
+
+---
+
+## Backfill Pattern (Enabled by This Migration)
+
+Once ingest jobs use explicit cursor steps, backfill becomes a second cursor
+in the same job — working **backward from now**, one month per run.
+
+### Why backward from now?
+
+- Recent emails are highest value — get them first
+- Forward cursor already handles "now and future"
+- Each backfill chunk gets progressively less urgent
+- Stops naturally when Gmail returns 0 records for a window predating the account
+
+### Backfill cursor: event_log (no new tables)
+
+`last_seen` in `raw_objects` is the **ingestion timestamp** (`datetime.now()`),
+not the email's sent date — so `MIN(last_seen)` can't track how far back we've
+gone. Instead, the backfill cursor is derived from the event_log, which already
+records `window_since` for every completed ingestion run:
+
+```sql
+SELECT MIN(CAST(JSON_VALUE(payload, '$.window_since') AS TIMESTAMP)) as backfill_position
+FROM event_log
+WHERE event_type = 'ingestion.completed'
+  AND connection_name = @connection_name
+  AND status = 'success'
+  AND JSON_VALUE(payload, '$.job_id') LIKE '%backfill%'
+```
+
+- **No prior runs** → `backfill_position` is NULL → `until = NOW()`, `since = NOW() - 1 month`
+- **Has prior runs** → `until = backfill_position`, `since = backfill_position - 1 month`
+
+Writes go to the same `raw_objects` table — `idem_key` (Gmail message ID) handles
+dedup, no separate backfill table or merge step needed.
+
+### Example: backfill job
+
+```yaml
+job_id: ingest_gmail_bfarmstrong_backfill
+version: '2.0'
+steps:
+# Cursor: find how far back we've gone from event_log
+- step_id: cursor
+  op: storacle.query
+  params:
+    dataset: events
+    table: event_log
+    query: |
+      SELECT MIN(CAST(JSON_VALUE(payload, '$.window_since') AS TIMESTAMP)) as backfill_position
+      FROM event_log
+      WHERE event_type = 'ingestion.completed'
+        AND connection_name = 'gmail-bfarmstrong'
+        AND status = 'success'
+        AND JSON_VALUE(payload, '$.job_id') LIKE '%backfill%'
+
+# Ingest: one month chunk working backward
+- step_id: ingest
+  op: call
+  params:
+    callable: injest
+    source: gmail_bfarmstrong
+    config:
+      until: '@run.cursor.items[0].backfill_position'  # null → now
+      since: '@run.cursor.items[0].backfill_since'      # position - 1 month
+
+- step_id: persist
   op: plan.build
   params:
-    items: '@run.package.items'
-    method: sqlite.sync
+    items: '@run.ingest.items'
+    method: bq.upsert
+    dataset: raw
+    table: raw_objects
+    # ... same key_columns, field_defaults as forward job
 
-# 4. WRITE: storacle handles sqlite.sync
 - step_id: write
   op: storacle.submit
   params:
-    plan: '@run.plan.plan'
+    plan: '@run.persist.plan'
 ```
 
-**Changes:**
-- `bq_reader` callable deleted
-- Packaging (`projected_at`, columns, rows) moves into `projection/bq_rows_to_sqlite_sync@1.0.0`
-- `plan.build` supports `method: sqlite.sync` as a thin plan emitter
-
-### Sheets Sync Jobs (Fix Broken Path)
-
-**Delete projectionist.** Use storacle.query + canonizer to package a sheets.write_table payload,
-then plan.build to emit the plan.
-
-```yaml
-job_id: proj_sheets_clients
-version: '2.0'
-steps:
-
-# 1. READ: via storacle.query
-- step_id: read
-  op: storacle.query
-  params:
-    dataset: canonical
-    table: proj_clients
-    columns: ['*']
-
-# 2. PACKAGE: rows → sheets.write_table op params
-- step_id: package
-  op: call
-  params:
-    callable: canonizer
-    source_type: projection
-    items: '@run.read.items'
-    config:
-      transform_id: projection/bq_rows_to_sheets_write_table@1.0.0
-      spreadsheet_id: 1Wf8EyuNR-I-ko5bx0M4L7BXousAqkj3vxN8xP1-aAzo
-      sheet_name: clients
-      strategy: replace
-      account: acct1
-
-# 3. PLAN: emit sheets.write_table op
-- step_id: plan
-  op: plan.build
-  params:
-    items: '@run.package.items'
-    method: sheets.write_table
-
-# 4. WRITE: storacle executes sheets.write_table
-- step_id: write
-  op: storacle.submit
-  params:
-    plan: '@run.plan.plan'
-```
-
-  **Recommendation:** Use canonizer for packaging, keep plan.build as thin emitter.
-
----
-
-## What Gets Deleted
-
-### Callables to Remove
-
-| Callable | Reason |
-|----------|--------|
-| `bq_reader` | Pure BQ read + trivial packaging — use storacle.query + canonizer + plan.build |
-| `projectionist` | Dead code — empty registry, sheets jobs broken, replaced by storacle.query + canonizer + plan.build |
-
-### Files to Delete
+### Backfill progression (bfarmstrong@gmail.com, ~150k emails / 20 years)
 
 ```
-lorchestra/callable/bq_reader.py           # DELETE
-lorchestra/processors/projectionist.py     # DELETE (deprecated V1 processor)
+Run 1:   since = now - 1mo,    until = now          (~625 emails)
+Run 2:   since = now - 2mo,    until = now - 1mo
+Run 3:   since = now - 3mo,    until = now - 2mo
+...
+Run 240: since = now - 240mo,  until = now - 239mo  (≈ 20 years back)
+Run 241: Gmail returns 0 records → backfill complete
 ```
 
-### Dispatch Registry Update
+At ~625 emails/month average, each chunk is small. Run daily alongside the
+forward job — fully caught up in ~8 months. Run twice daily for ~4 months.
 
-```python
-# lorchestra/callable/dispatch.py
-# Remove from external list:
-external = ["injest", "canonizer", "finalform", "workman"]
-# projectionist GONE
+---
 
-# Remove from internal list:
-internal = ["view_creator", "molt_projector", "file_renderer"]
-# bq_reader GONE (also measurement_projector, observation_projector from 09a)
+## Implementation Steps
+
+### Step 0: Add array index support to `_resolve_run_refs`
+- Update `lorchestra/executor.py` to handle `items[0]` syntax
+- Add unit test for array index resolution
+
+### Step 1: Migrate Gmail jobs (3)
+- Rewrite YAML with explicit cursor step
+- Test with `lorchestra exec run ingest_gmail_acct1`
+- Verify emails still ingest correctly
+
+### Step 2: Migrate remaining jobs (17)
+- Exchange (4)
+- Dataverse (3)
+- Google Forms (4)
+- Stripe (4)
+
+### Step 3: Delete executor magic
+- Remove `_resolve_auto_since()` from executor.py
+- Remove `auto_since` handling from `_handle_call()`
+
+### Step 4: Update tests
+- Remove tests for `auto_since` executor behavior
+- Add tests for cursor step pattern (if not already covered by e005b-08 tests)
+
+---
+
+## Files to Modify
+
+| File | Change |
+|------|--------|
+| `lorchestra/executor.py` | Add array index support to `_resolve_run_refs` |
+| `lorchestra/jobs/definitions/ingest/*.yaml` (20 files) | Add cursor step, remove auto_since |
+| `lorchestra/executor.py` | Delete `_resolve_auto_since()` and auto_since handling |
+| `tests/` | Update/remove auto_since tests |
+
+---
+
+## Complexity Assessment
+
+- **Array index support**: ~10 lines added to `_resolve_run_refs`
+- **YAML rewrites**: Mechanical, ~20 files
+- **Executor cleanup**: ~35 lines deleted
+- **Risk**: Low. Pattern already proven by canonize jobs. Small code addition.
+- **Estimate**: 1-2 hours
+
+---
+
+## Acceptance Criteria
+
+- [ ] Array index support added to `_resolve_run_refs` (`@run.step.items[0].field` works)
+- [ ] All 20 ingest jobs use explicit `storacle.query` cursor step
+- [ ] No `auto_since` blocks in any job definition
+- [ ] `_resolve_auto_since()` deleted from executor.py
+- [ ] All ingest jobs pass smoke test
+- [ ] `pytest tests/ -v` passes
+- [ ] `ruff check lorchestra/` passes
+
+---
+
+## Known Issues
+
+### ✅ SOLVED: gmail_to_jmap_lite transform fails on emails with duplicate headers
+
+**Symptom:** `canonize_gmail_jmap` job fails intermittently with:
+```
+Error: Failed to execute transform: email/gmail_to_jmap_lite@1.1.0 [T0410]: Argument 1 of function "split" does not match function signature
 ```
 
-### Projectionist Library Deprecation
+**Root cause:** Some Gmail emails have duplicate headers (e.g., multiple `Bcc` headers). The `$getHeader` helper used `$lookup($headers[name=$name], "value")`, which returns a JSONata sequence (array) when multiple headers match. This array was then passed to `$split` or `$parseEmailList`, which expect strings.
 
-The `projectionist` library (`/workspace/projectionist/`) should be marked deprecated:
+**Affected record:** `gmail:gmail-acct2:email:17524bcb06f2d38d` (email with duplicate `Bcc` headers)
 
-1. **No new features** — library is frozen
-2. **README update** — mark as deprecated, point to storacle.query + canonizer + plan.build
-3. **Future removal** — archive after all lorchestra references removed
+**Why it seemed random:** Small batches often missed the one problematic record; larger batches consistently included it.
 
-The library provided:
-- `Projection` protocol — unused
-- `ProjectionPlan` dataclass — unused
-- `execute()` callable — empty registry, broken
-- `sheets.build_plan()` — replaced by canonizer packaging + plan.build `method: sheets.write_table`
-- `canonical_json()`, `sha256_hex()` — utility functions, can be inlined if needed elsewhere
-
----
-
-## Jobs to Rewrite
-
-### SQLite Sync Jobs (8)
-
-| Job ID | Current | After |
-|--------|---------|-------|
-| `sync_proj_clients` | bq_reader callable | storacle.query + canonizer + plan.build(sqlite.sync) |
-| `sync_proj_clinical_documents` | bq_reader callable | storacle.query + canonizer + plan.build(sqlite.sync) |
-| `sync_proj_contact_events` | bq_reader callable | storacle.query + canonizer + plan.build(sqlite.sync) |
-| `sync_proj_form_responses` | bq_reader callable | storacle.query + canonizer + plan.build(sqlite.sync) |
-| `sync_proj_sessions` | bq_reader callable | storacle.query + canonizer + plan.build(sqlite.sync) |
-| `sync_proj_transcripts` | bq_reader callable | storacle.query + canonizer + plan.build(sqlite.sync) |
-| `sync_measurement_events` | bq_reader callable | storacle.query + canonizer + plan.build(sqlite.sync) |
-| `sync_observations` | bq_reader callable | storacle.query + canonizer + plan.build(sqlite.sync) |
-
-### Sheets Sync Jobs (5)
-
-| Job ID | Current | After |
-|--------|---------|-------|
-| `proj_sheets_clients` | broken (projection_id: sheets not registered) | storacle.query + canonizer + plan.build(sheets.write_table) |
-| `proj_sheets_clinical_documents` | broken | storacle.query + canonizer + plan.build(sheets.write_table) |
-| `proj_sheets_contact_events` | broken | storacle.query + canonizer + plan.build(sheets.write_table) |
-| `proj_sheets_proj_clients` | broken | storacle.query + canonizer + plan.build(sheets.write_table) |
-| `proj_sheets_sessions` | broken | storacle.query + canonizer + plan.build(sheets.write_table) |
-
----
-
-## Other Projection Callables (NOT Affected)
-
-These are already pure (no BQ reads):
-
-| Callable | Why Pure |
-|----------|----------|
-| `view_creator` | Pure SQL generation — emits CREATE VIEW DDL |
-| `molt_projector` | Pure SQL generation — emits molt sync SQL |
-| `file_renderer` | Reads local SQLite (not BQ) — legitimate local IO |
-
-`file_renderer` reads from the local SQLite database that sqlite.sync writes to.
-This is NOT a storacle boundary concern — it's local file IO on the client machine.
-It stays as a callable.
-
----
-
-## plan.build Expectations (Thin Emitter Only)
-
-Add two minimal plan emitter methods:
-
-- `method: sqlite.sync`
-- `method: sheets.write_table`
-
-For both methods:
-- `params.items` MUST be a list containing exactly one dict (already-shaped op params).
-- plan.build MUST NOT build headers/2D arrays, add timestamps, or infer columns — that logic lives in canonizer transforms.
-
----
-
-## Constraints
-
-- All BQ reads go through `storacle.query` — no BigQueryClient in callables
-- `canonizer` handles schema/shape transforms and packaging
-- `plan.build` is the universal plan emitter (bq.upsert, sqlite.sync, sheets.write_table)
-- Callables do REAL COMPUTE only (view_creator DDL, file_renderer local IO)
-- No changes to storacle (it already handles sqlite.sync and sheets.write_table)
-
----
-
-## Expectations
-
-### Canonizer Transforms to Add
-- [x] `projection/bq_rows_to_sqlite_sync@1.0.0`
-- [x] `projection/bq_rows_to_sheets_write_table@1.0.0`
-
-### plan.build Thin Methods
-- [x] `method: sqlite.sync` wraps a pre-shaped payload into a StoraclePlan (already supported - no changes needed)
-- [x] `method: sheets.write_table` wraps a pre-shaped payload into a StoraclePlan (already supported - no changes needed)
-
-### Projection Cleanup
-- [ ] `bq_reader.py` deleted — **DEFERRED: kept for backwards compatibility**
-- [x] 8 sync YAMLs rewritten (storacle.query + canonizer + plan.build sqlite.sync)
-- [x] 5 sheets YAMLs rewritten (storacle.query + canonizer + plan.build sheets.write_table)
-- [x] All projection tests still pass (rewritten for new architecture)
-- [x] Sheets jobs actually work (now using new architecture)
-
-### Projectionist Deprecation
-- [ ] `projectionist` removed from dispatch.py external list — **DEFERRED: kept for backwards compatibility**
-- [ ] `lorchestra/processors/projectionist.py` deleted — **DEFERRED: kept for backwards compatibility**
-- [ ] `lorchestra/job_runner.py` import removed — **DEFERRED**
-- [ ] projectionist library README marked deprecated — **DEFERRED**
-- [x] All lorchestra tests still pass (legacy path preserved)
-
----
-
-## Open Questions (Resolved)
-
-1. **Column ordering for sheets**: ✅ YES - sheets transform accepts `column_order` config array
-
-2. **Error handling for sheets auth**: Unchanged - `account` param passed through to storacle
-
-3. **sqlite.sync idempotency**: No idempotency_key needed - full table replacement (unchanged)
-
-4. **Empty results handling**: ✅ Transform returns `null`, canonizer skips the item, no sync op emitted
-
----
-
-## Relationship to 09a
-
-Both 09a and 09b eliminate "fat callables" that combine IO + trivial transforms:
-
-| Spec | Callables Deleted | Pattern |
-|------|-------------------|---------|
-| 09a | measurement_projector, observation_projector | storacle.query + canonizer + finalform + plan.build |
-| 09b | bq_reader, projectionist | storacle.query + canonizer + plan.build |
-
-After both specs, lorchestra/callable/ contains only:
-- `dispatch.py` — registry
-- `result.py` — CallableResult
-- `view_creator.py` — pure DDL generation
-- `molt_projector.py` — pure SQL generation
-- `file_renderer.py` — local SQLite IO (not storacle concern)
-
-External callables after cleanup:
-- `injest` — real compute (source system ingestion)
-- `canonizer` — real compute (schema transformation)
-- `finalform` — real compute (psychometric scoring)
-- `workman` — real compute (task execution)
-- ~~`projectionist`~~ — **REMOVED** (replaced by storacle.query + canonizer + plan.build)
-
----
-
-## Transform IDs + I/O Shapes
-
-Transform contracts (authoritative IDs, config, I/O shapes, invariants, and golden fixtures)
-are defined in:
-
-- ./e005b-09c-canonizer-derived-transforms.md
-
----
-
-## Historical Context
-
-Projectionist was created when the architecture was:
-
-```
-BQ data → projectionist (read + format + plan) → storacle (execute plan)
+**Fix:** Updated `$getHeader` in `email/gmail_to_jmap_lite@1.1.0` to join array values:
+```jsonata
+$getHeader := function($headers, $name) {
+  (
+    $values := $lookup($headers[name=$name], "value");
+    $type($values) = "array" ? $join($values, ", ") : $values
+  )
+};
 ```
 
-With storacle.query, the architecture became:
-
-```
-storacle.query (read) → canonizer (format/package) → plan.build (emit) → storacle.submit (execute)
-```
-
-Projectionist's role was absorbed by:
-- `storacle.query` — BQ reads
-- `canonizer` — shape/package rows into op params
-- `plan.build` — emit storacle plans (bq.upsert, sqlite.sync, sheets.write_table)
-
-The projectionist library is now redundant. Its only unique code (sheets 2D array
-formatting, plan hashing) can be inlined into plan.build if needed.
-
----
-
-## In Memoriam: Projectionist (2025-2026)
-
-The "projectionist" name was a good one — like a film projectionist taking reels
-of data (BQ rows) and projecting them onto different screens (Sheets, SQLite, etc.).
-
-The library served its purpose as a stepping stone:
-- Proved out the "emit plans, let storacle execute" pattern
-- Established the separation between plan building and plan execution
-- Demonstrated that projection logic could be pure (no direct IO)
-
-But architecture evolved:
-- storacle.query absorbed the read side
-- plan.build absorbed the format side
-- storacle.submit was always the execute side
-
-The projectionist library is now architectural debt. Its concepts live on in the
-job definitions (`proj_sheets_*`, `sync_proj_*`) and in plan.build's multi-method
-dispatch. The name retires, but the pattern endures.
-
-🎬 *That's a wrap.*
+**Also improved:** CLI error reporting now shows JSONata error codes and messages (JSONata throws plain objects, not Error instances).

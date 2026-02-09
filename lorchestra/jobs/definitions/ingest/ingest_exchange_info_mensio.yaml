@@ -1,15 +1,23 @@
 job_id: ingest_exchange_info_mensio
 version: '2.0'
 steps:
+- step_id: cursor
+  op: storacle.query
+  params:
+    dataset: raw
+    table: raw_objects
+    columns: ['MAX(last_seen) as since']
+    filters:
+      source_system: exchange
+      connection_name: exchange-info-mensio
+      object_type: email
 - step_id: ingest
   op: call
   params:
     callable: injest
     source: exchange_info_mensio
-    auto_since:
-      source_system: exchange
-      connection_name: exchange-info-mensio
-      object_type: email
+    config:
+      since: '@run.cursor.items[0].since'
 - step_id: persist
   op: plan.build
   params:

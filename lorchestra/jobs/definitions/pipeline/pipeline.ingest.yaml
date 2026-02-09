@@ -5,7 +5,9 @@ stages:
     jobs:
       - ingest_gmail_acct1
       - ingest_gmail_acct2
+      - ingest_gmail_acct2_backfill
       - ingest_gmail_acct3
+      - ingest_gmail_acct3_backfill
       - ingest_exchange_ben_mensio
       - ingest_exchange_booking_mensio
       - ingest_exchange_info_mensio

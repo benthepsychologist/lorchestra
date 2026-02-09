@@ -1,0 +1,48 @@
+job_id: ingest_gmail_acct2_backfill
+version: '2.0'
+steps:
+- step_id: cursor
+  op: storacle.query
+  params:
+    dataset: raw
+    table: raw_objects
+    columns:
+    - 'MIN(last_seen) as until'
+    - 'TIMESTAMP_SUB(MIN(last_seen), INTERVAL 30 DAY) as since'
+    filters:
+      source_system: gmail
+      connection_name: gmail-acct2
+      object_type: email
+- step_id: ingest
+  op: call
+  params:
+    callable: injest
+    source: gmail_acct2
+    config:
+      since: '@run.cursor.items[0].since'
+      until: '@run.cursor.items[0].until'
+- step_id: persist
+  op: plan.build
+  params:
+    items: '@run.ingest.items'
+    method: bq.upsert
+    dataset: raw
+    table: raw_objects
+    key_columns:
+    - idem_key
+    payload_wrap: true
+    id_field: id
+    field_defaults:
+      source_system: gmail
+      connection_name: gmail-acct2
+      object_type: email
+    auto_external_id: true
+    auto_timestamp_columns:
+    - first_seen
+    - last_seen
+    skip_update_columns:
+    - first_seen
+- step_id: write
+  op: storacle.submit
+  params:
+    plan: '@run.persist.plan'

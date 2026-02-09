@@ -1,15 +1,23 @@
 job_id: ingest_google_forms_intake_01
 version: '2.0'
 steps:
+- step_id: cursor
+  op: storacle.query
+  params:
+    dataset: raw
+    table: raw_objects
+    columns: ['MAX(last_seen) as since']
+    filters:
+      source_system: google_forms
+      connection_name: google-forms-intake-01
+      object_type: form_response
 - step_id: ingest
   op: call
   params:
     callable: injest
     source: google_forms_intake_01
-    auto_since:
-      source_system: google_forms
-      connection_name: google-forms-intake-01
-      object_type: form_response
+    config:
+      since: '@run.cursor.items[0].since'
 - step_id: persist
   op: plan.build
   params:

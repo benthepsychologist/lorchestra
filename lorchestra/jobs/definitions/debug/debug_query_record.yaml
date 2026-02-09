@@ -1,0 +1,21 @@
+job_id: debug_query_record
+version: '2.0'
+steps:
+- step_id: query
+  op: storacle.query
+  params:
+    dataset: raw
+    table: raw_objects
+    columns:
+    - idem_key
+    - 'LENGTH(TO_JSON_STRING(payload)) as payload_size'
+    - payload
+    filters:
+      idem_key: 'gmail:gmail-acct2:email:17524bcb06f2d38d'
+    parse_json_columns:
+    - payload
+- step_id: dump
+  op: log.dump
+  params:
+    items: '@run.query.items'
+    file: '/tmp/bad_record.json'

@@ -1,15 +1,23 @@
 job_id: ingest_stripe_customers
 version: '2.0'
 steps:
+- step_id: cursor
+  op: storacle.query
+  params:
+    dataset: raw
+    table: raw_objects
+    columns: ['MAX(last_seen) as since']
+    filters:
+      source_system: stripe
+      connection_name: stripe-prod
+      object_type: customer
 - step_id: ingest
   op: call
   params:
     callable: injest
     source: stripe_customers
-    auto_since:
-      source_system: stripe
-      connection_name: stripe-prod
-      object_type: customer
+    config:
+      since: '@run.cursor.items[0].since'
 - step_id: persist
   op: plan.build
   params:
