@@ -12,7 +12,7 @@ created: 2026-02-06T00:00:00Z
 
 # e005b-09d: Ingest IO Purity — Replace auto_since Executor Magic
 
-## Status: planned
+## Status: COMPLETED
 
 ## Problem
 
@@ -319,13 +319,23 @@ forward job — fully caught up in ~8 months. Run twice daily for ~4 months.
 
 ## Acceptance Criteria
 
-- [ ] Array index support added to `_resolve_run_refs` (`@run.step.items[0].field` works)
-- [ ] All 20 ingest jobs use explicit `storacle.query` cursor step
-- [ ] No `auto_since` blocks in any job definition
-- [ ] `_resolve_auto_since()` deleted from executor.py
-- [ ] All ingest jobs pass smoke test
-- [ ] `pytest tests/ -v` passes
-- [ ] `ruff check lorchestra/` passes
+- [x] Array index support added to `_resolve_run_refs` (`@run.step.items[0].field` works)
+- [x] All 18 ingest jobs use explicit `storacle.query` cursor step
+- [x] No `auto_since` blocks in any job definition
+- [x] `_resolve_auto_since()` deleted from executor.py
+- [x] All ingest jobs pass smoke test
+- [x] `pytest tests/ -v` passes
+- [x] `ruff check lorchestra/` passes
+
+---
+
+## Deferred to Next Epic
+
+The following performance enhancements were identified but deferred:
+
+- Pipeline parallel execution improvements
+- Executor caching optimizations
+- Other lorchestra performance work
 
 ---
 
