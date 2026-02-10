@@ -63,7 +63,7 @@ def main(ctx):
     """
     lorchestra - Lightweight job orchestrator.
 
-    Run jobs defined as JSON specs via typed processors.
+    Run jobs defined as YAML specs via execute(envelope).
     """
     from lorchestra.config import load_config
 
@@ -482,33 +482,23 @@ def _exec_cleanup_smoke(smoke_namespace: str, ctx) -> None:
         click.echo(f"Cleanup failed: {cleanup_err}", err=True)
 
 
-@main.group("exec")
-def exec_group():
-    """V2 executor commands for JobDef orchestration.
-
-    These commands use the new orchestration layer:
-    JobDef -> JobInstance -> RunRecord -> StepManifest
-    """
-    pass
-
-
-@exec_group.command("compile")
+@main.command("compile")
 @click.argument("job_id")
 @click.option("--ctx", "ctx_json", default="{}", help="Context JSON for @ctx.* resolution")
 @click.option("--payload", "payload_json", default="{}", help="Payload JSON for @payload.* resolution")
 @click.option("--output", "-o", type=click.Path(), help="Output path for JobInstance JSON")
-def exec_compile(job_id: str, ctx_json: str, payload_json: str, output: str = None):
+def compile_cmd(job_id: str, ctx_json: str, payload_json: str, output: str = None):
     """Compile a JobDef into a JobInstance.
 
     Resolves @ctx.* and @payload.* references and evaluates if conditions.
 
     Examples:
 
-        lorchestra exec compile my_job
+        lorchestra compile my_job
 
-        lorchestra exec compile my_job --ctx '{"env": "prod"}'
+        lorchestra compile my_job --ctx '{"env": "prod"}'
 
-        lorchestra exec compile my_job -o instance.json
+        lorchestra compile my_job -o instance.json
     """
     import json
     from lorchestra.executor import compile as compile_envelope
@@ -549,7 +539,7 @@ def exec_compile(job_id: str, ctx_json: str, payload_json: str, output: str = No
         click.echo(json.dumps(instance_dict, indent=2))
 
 
-@exec_group.command("run")
+@main.command("run")
 @click.argument("job_id")
 @click.option("--ctx", "ctx_json", default="{}", help="Context JSON for @ctx.* resolution")
 @click.option("--payload", "payload_json", default="{}", help="Payload JSON for @payload.* resolution")
@@ -568,9 +558,9 @@ def exec_compile(job_id: str, ctx_json: str, payload_json: str, output: str = No
     help="Delete smoke dataset after run (requires --smoke-namespace)",
 )
 @click.pass_context
-def exec_run(ctx, job_id: str, ctx_json: str, payload_json: str, envelope_json: str,
-             dry_run: bool, store_dir: str = None, smoke_namespace: str = None,
-             clean_up: bool = False):
+def run_cmd(ctx, job_id: str, ctx_json: str, payload_json: str, envelope_json: str,
+            dry_run: bool, store_dir: str = None, smoke_namespace: str = None,
+            clean_up: bool = False):
     """Compile and execute a JobDef via execute(envelope).
 
     Builds an envelope from CLI args and calls lorchestra.execute(envelope) --
@@ -578,17 +568,17 @@ def exec_run(ctx, job_id: str, ctx_json: str, payload_json: str, envelope_json: 
 
     Examples:
 
-        lorchestra exec run my_job
+        lorchestra run my_job
 
-        lorchestra exec run my_job --ctx '{"env": "prod"}' --envelope '{"id": 123}'
+        lorchestra run my_job --ctx '{"env": "prod"}' --envelope '{"id": 123}'
 
-        lorchestra exec run my_job --dry-run
+        lorchestra run my_job --dry-run
 
-        lorchestra exec run my_job --store-dir ./runs
+        lorchestra run my_job --store-dir ./runs
 
-        lorchestra exec run my_job --smoke-namespace run_20260129
+        lorchestra run my_job --smoke-namespace run_20260129
 
-        lorchestra exec run my_job --smoke-namespace run_20260129 --clean-up
+        lorchestra run my_job --smoke-namespace run_20260129 --clean-up
     """
     import json
     from lorchestra.executor import execute
@@ -705,7 +695,7 @@ def exec_run(ctx, job_id: str, ctx_json: str, payload_json: str, envelope_json: 
             _exec_cleanup_smoke(smoke_namespace, ctx)
 
 
-@exec_group.command("pipeline")
+@main.command("pipeline")
 @click.argument("pipeline_id")
 @click.option(
     "--smoke-namespace",
@@ -719,19 +709,19 @@ def exec_run(ctx, job_id: str, ctx_json: str, payload_json: str, envelope_json: 
     help="Delete smoke dataset after run (requires --smoke-namespace)",
 )
 @click.pass_context
-def exec_pipeline(ctx, pipeline_id: str, smoke_namespace: str = None, clean_up: bool = False):
+def pipeline_cmd(ctx, pipeline_id: str, smoke_namespace: str = None, clean_up: bool = False):
     """Run a pipeline (sequential execution of jobs).
 
     Loads a pipeline YAML definition and executes each child job
-    via execute(). This is the v2 replacement for composite jobs.
+    via execute().
 
     Examples:
 
-        lorchestra exec pipeline pipeline.formation
+        lorchestra pipeline pipeline.formation
 
-        lorchestra exec pipeline pipeline.daily_all
+        lorchestra pipeline pipeline.daily_all
 
-        lorchestra exec pipeline pipeline.ingest --smoke-namespace test_ns
+        lorchestra pipeline pipeline.ingest --smoke-namespace test_ns
     """
     from lorchestra.pipeline import load_pipeline, run_pipeline
 
@@ -814,17 +804,17 @@ def exec_pipeline(ctx, pipeline_id: str, smoke_namespace: str = None, clean_up: 
             _exec_cleanup_smoke(smoke_namespace, ctx)
 
 
-@exec_group.command("status")
+@main.command("status")
 @click.argument("run_id")
 @click.option("--store-dir", type=click.Path(exists=True), required=True, help="Run artifacts directory")
-def exec_status(run_id: str, store_dir: str):
+def status_cmd(run_id: str, store_dir: str):
     """Show status of a run.
 
     Displays the run record and latest attempt status.
 
     Example:
 
-        lorchestra exec status 01HXYZ123ABC --store-dir ./runs
+        lorchestra status 01HXYZ123ABC --store-dir ./runs
     """
     import json
 
