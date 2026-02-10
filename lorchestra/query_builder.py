@@ -5,7 +5,8 @@ Used by the storacle.query native op in the executor. SQL construction
 lives in lorchestra (here); storacle just executes it (bq.query RPC).
 
 Supports:
-- Simple queries with equality filters
+- Simple queries with equality filters (dict format: {column: value})
+- Extended filters with operators (list format: [{column, op, value}])
 - Incremental queries (left_anti, not_exists) with optional join_key_suffix
 - Parameterized queries (no string interpolation of filter values)
 """
@@ -14,12 +15,61 @@ from dataclasses import dataclass
 from typing import Callable
 
 
+# Allowed comparison operators (SQL-safe)
+ALLOWED_OPS = {"=", "!=", "<", ">", "<=", ">="}
+
+
 @dataclass
 class QueryParam:
     """A single parameterized query parameter for BQ."""
     name: str
     type: str
     value: str
+
+
+def _build_where_clauses(
+    filters,
+    query_params: list[QueryParam],
+    prefix: str = "",
+) -> list[str]:
+    """Build WHERE clauses from filters.
+
+    Supports two filter formats:
+    1. Dict format (legacy): {column: value} - equality only
+    2. List format (extended): [{column, op, value}] - with operators
+
+    Args:
+        filters: Either a dict or list of filter specs.
+        query_params: List to append QueryParam objects to.
+        prefix: Column prefix (e.g., "s." for incremental queries).
+
+    Returns:
+        List of WHERE clause strings.
+    """
+    where_clauses: list[str] = []
+
+    if isinstance(filters, dict):
+        # Legacy dict format: {column: value}
+        for col, val in filters.items():
+            where_clauses.append(f"{prefix}{col} = @{col}")
+            query_params.append(QueryParam(name=col, type="STRING", value=str(val)))
+    elif isinstance(filters, list):
+        # Extended list format: [{column, op, value}]
+        for i, f in enumerate(filters):
+            col = f["column"]
+            op = f.get("op", "=")
+            val = f["value"]
+
+            # Validate operator
+            if op not in ALLOWED_OPS:
+                raise ValueError(f"Invalid operator '{op}'. Allowed: {ALLOWED_OPS}")
+
+            # Use indexed param name to avoid collisions
+            param_name = f"{col}_{i}"
+            where_clauses.append(f"{prefix}{col} {op} @{param_name}")
+            query_params.append(QueryParam(name=param_name, type="STRING", value=str(val)))
+
+    return where_clauses
 
 
 def build_query(
@@ -45,15 +95,13 @@ def build_query(
     filters = params.get("filters", {})
     limit = params.get("limit")
     incremental = params.get("incremental")
+    order_by = params.get("order_by")
 
     query_params: list[QueryParam] = []
 
     # Build WHERE from filters (parameterized)
-    where_clauses: list[str] = []
-    for col, val in filters.items():
-        prefix = "s." if incremental else ""
-        where_clauses.append(f"{prefix}{col} = @{col}")
-        query_params.append(QueryParam(name=col, type="STRING", value=str(val)))
+    prefix = "s." if incremental else ""
+    where_clauses = _build_where_clauses(filters, query_params, prefix)
 
     source = f"`{dataset}.{table}`"
 
@@ -62,8 +110,13 @@ def build_query(
     if not incremental:
         col_list = ", ".join(columns)
         where_sql = " AND ".join(where_clauses) if where_clauses else "TRUE"
-        # Add ORDER BY for deterministic results with LIMIT
-        order_clause = " ORDER BY idem_key" if limit else ""
+        # Use custom order_by if provided, else fallback to idem_key when limit is set
+        if order_by:
+            order_clause = f" ORDER BY {order_by}"
+        elif limit:
+            order_clause = " ORDER BY idem_key"
+        else:
+            order_clause = ""
         return f"SELECT {col_list} FROM {source} WHERE {where_sql}{order_clause}{limit_clause}", query_params
 
     # Incremental: LEFT JOIN or NOT EXISTS against target

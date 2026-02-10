@@ -181,6 +181,86 @@ class TestIncrementalNotExists:
         assert "CONCAT(s.idem_key, '#', @_join_suffix)" in sql
 
 
+class TestExtendedFilters:
+    """Tests for list-based filters with operators (peek support)."""
+
+    def test_list_filter_equality(self):
+        sql, params = build_query(
+            {
+                "dataset": "raw",
+                "table": "raw_objects",
+                "filters": [{"column": "source_system", "op": "=", "value": "stripe"}],
+            },
+            resolve_dataset=_identity_resolve,
+        )
+        assert "source_system = @source_system_0" in sql
+        assert len(params) == 1
+        assert params[0].name == "source_system_0"
+        assert params[0].value == "stripe"
+
+    def test_list_filter_comparison_operators(self):
+        sql, params = build_query(
+            {
+                "dataset": "derived",
+                "table": "observations",
+                "filters": [
+                    {"column": "observed_at", "op": ">=", "value": "2026-01-01"},
+                    {"column": "observed_at", "op": "<=", "value": "2026-02-01"},
+                ],
+            },
+            resolve_dataset=_identity_resolve,
+        )
+        assert "observed_at >= @observed_at_0" in sql
+        assert "observed_at <= @observed_at_1" in sql
+        assert len(params) == 2
+        assert params[0].value == "2026-01-01"
+        assert params[1].value == "2026-02-01"
+
+    def test_list_filter_default_operator(self):
+        """If op is omitted, defaults to equality."""
+        sql, params = build_query(
+            {
+                "dataset": "raw",
+                "table": "raw_objects",
+                "filters": [{"column": "id", "value": "abc123"}],
+            },
+            resolve_dataset=_identity_resolve,
+        )
+        assert "id = @id_0" in sql
+
+    def test_list_filter_invalid_operator(self):
+        with pytest.raises(ValueError, match="Invalid operator"):
+            build_query(
+                {
+                    "dataset": "raw",
+                    "table": "raw_objects",
+                    "filters": [{"column": "id", "op": "LIKE", "value": "%test%"}],
+                },
+                resolve_dataset=_identity_resolve,
+            )
+
+    def test_empty_list_filter(self):
+        sql, params = build_query(
+            {"dataset": "raw", "table": "raw_objects", "filters": []},
+            resolve_dataset=_identity_resolve,
+        )
+        assert "WHERE TRUE" in sql
+        assert params == []
+
+    def test_custom_order_by(self):
+        sql, params = build_query(
+            {
+                "dataset": "derived",
+                "table": "observations",
+                "order_by": "observed_at DESC",
+                "limit": 20,
+            },
+            resolve_dataset=_identity_resolve,
+        )
+        assert "ORDER BY observed_at DESC" in sql
+        assert "LIMIT 20" in sql
+
+
 class TestInvalidMode:
     def test_unknown_mode_raises(self):
         with pytest.raises(ValueError, match="Unknown incremental mode"):

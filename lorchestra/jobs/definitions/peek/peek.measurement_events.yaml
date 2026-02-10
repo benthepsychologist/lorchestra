@@ -1,0 +1,12 @@
+job_id: peek.measurement_events
+version: '2.0'
+steps:
+- step_id: read
+  op: storacle.query
+  params:
+    dataset: derived
+    table: measurement_events
+    columns: ['*']
+    filters: '@payload.filters'
+    limit: '@payload.limit'
+    order_by: '@payload.order_by'

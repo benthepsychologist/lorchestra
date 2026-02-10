@@ -1,367 +1,230 @@
 ---
-tier: C
-title: "e005b-09d: Ingest IO Purity — Replace auto_since Executor Magic"
+id: e006-04-peek
+title: "Peek — Cockpit Read/Explore Commands via Lorchestra Read Jobs"
+tier: B
 owner: benthepsychologist
-goal: "Replace auto_since executor magic with explicit storacle.query cursor step in ingest jobs"
-epic: e005b-command-plane-and-performance
-repo:
-  name: lorchestra
-  working_branch: feat/ingest-io-purity
-created: 2026-02-06T00:00:00Z
+goal: "Add cockpit-level data exploration commands via lorchestra read jobs"
+branch: feat/life-peek
+status: draft
+created: 2026-02-10T13:43:36Z
 ---
 
-# e005b-09d: Ingest IO Purity — Replace auto_since Executor Magic
+# e006-04-peek: Peek — Cockpit Read/Explore Commands via Lorchestra Read Jobs
 
-## Status: COMPLETED
+**Epic:** e006-life-thinning
+**Branch:** `feat/life-peek`
+**Tier:** B
+
+## Objective
+
+Add a `life peek` command that provides read access to BigQuery domain tables
+via lorchestra read jobs. This fills the critical gap exposed during e005b: no
+cockpit-level way to inspect data without the BQ console or ad-hoc Python.
+
+Peek uses the same pattern as everything else in life: `lorchestra.execute()`.
+The read jobs use lorchestra's `storacle.query` native op (built in e005b-08)
+to query BQ and return rows. Life has exactly ONE integration point — no direct
+storacle imports, no special read path.
 
 ## Problem
 
-Ingest jobs use `auto_since` executor magic for incremental sync:
+1. **No cockpit query interface**: When a pipeline fails or produces unexpected results, there's no built-in way to inspect the actual data — requires switching to BQ console
+2. **Common lookups require raw SQL**: "Show me this client," "what came in today," "how many observations for form X" — these are routine questions that need convenient CLI flags, not custom SQL
+3. **No standardized output**: Need consistent formats (table, JSON, CSV) that work for both human inspection and downstream tooling (jq, csvkit)
+
+## Current Capabilities
+
+### kernel.surfaces
 
 ```yaml
-- step_id: ingest
-  op: call
-  params:
-    callable: injest
-    source: gmail_acct1
-    auto_since:
-      source_system: gmail
-      connection_name: gmail-acct1
-      object_type: email
+# No existing peek/query commands — this is a new capability
 ```
 
-The executor intercepts `auto_since`, runs a hidden BQ query (`SELECT MAX(last_seen) FROM raw_objects WHERE ...`), and injects the result into `config.since`.
-
-This violates the principle established in e005b-08: **all BQ reads should be explicit `storacle.query` steps**. The canonize jobs were migrated to explicit reads; ingest jobs were left behind because "ingest doesn't read from BQ" — but the cursor lookup IS a BQ read.
-
-### Why This Matters
-
-1. **Consistency**: Canonize jobs use explicit `storacle.query`. Ingest should too.
-2. **Visibility**: Hidden executor magic obscures what the job actually does.
-3. **Backfill**: Can't do backward-from-now ingestion without explicit cursor control. (`last_seen` is ingestion time, not email date — need event_log cursor.)
-4. **Testability**: Explicit steps are easier to mock and test.
-
----
-
-## Solution
-
-Replace `auto_since` with an explicit `storacle.query` cursor step.
-
-### Before (executor magic)
+### modules
 
 ```yaml
-job_id: ingest_gmail_acct1
-version: '2.0'
-steps:
-- step_id: ingest
-  op: call
-  params:
-    callable: injest
-    source: gmail_acct1
-    auto_since:
-      source_system: gmail
-      connection_name: gmail-acct1
-      object_type: email
-- step_id: persist
-  op: plan.build
-  # ...
-- step_id: write
-  op: storacle.submit
-  # ...
+# No existing read/explore modules
+# lorchestra storacle.query native op exists (e005b-08) — peek jobs will use it
 ```
 
-### After (explicit cursor)
+### layout
 
 ```yaml
-job_id: ingest_gmail_acct1
-version: '2.0'
-steps:
-- step_id: cursor
-  op: storacle.query
-  params:
-    dataset: raw
-    table: raw_objects
-    columns: ['MAX(last_seen) as since']
-    filters:
-      source_system: gmail
-      connection_name: gmail-acct1
-      object_type: email
-
-- step_id: ingest
-  op: call
-  params:
-    callable: injest
-    source: gmail_acct1
-    config:
-      since: '@run.cursor.items[0].since'
-
-- step_id: persist
-  op: plan.build
-  # ... unchanged
-
-- step_id: write
-  op: storacle.submit
-  # ... unchanged
+- path: src/life/cli.py
+  role: "Main Typer app, subcommand registration (will add peek)"
+- path: src/life/commands/
+  role: "Command implementations (will add peek.py)"
 ```
 
-### Array Index Support Required
-
-The executor's `_resolve_run_refs` currently only handles dict key access (`@run.step.key.subkey`). To reference the first item from a query result, we need `@run.cursor.items[0].since` — which requires **array index support**.
-
-**Add to `_resolve_run_refs` in `executor.py`:**
-```python
-# Handle array indexing: items[0] -> result[0]
-import re
-array_match = re.match(r"(\w+)\[(\d+)\]", part)
-if array_match:
-    key, idx = array_match.groups()
-    if isinstance(result, dict) and key in result:
-        result = result[key]
-    if isinstance(result, list) and int(idx) < len(result):
-        result = result[int(idx)]
-    continue
-```
-
-### Null Handling
-
-When the cursor query returns `NULL` (empty table), `@run.cursor.items[0].since` resolves to `null`. The injest adapter must handle `since: null` as "fetch all" (no date filter). This is already the case — Gmail adapter's `_build_query` only adds `after:{date}` when `since` is truthy.
-
----
-
-## Jobs to Migrate (20 total)
-
-### Gmail (3)
-- `ingest_gmail_acct1`
-- `ingest_gmail_acct2`
-- `ingest_gmail_acct3`
-
-### Exchange (4)
-- `ingest_exchange_ben_mensio`
-- `ingest_exchange_ben_efs`
-- `ingest_exchange_booking_mensio`
-- `ingest_exchange_info_mensio`
-
-### Dataverse (3)
-- `ingest_dataverse_contacts`
-- `ingest_dataverse_sessions`
-- `ingest_dataverse_reports`
-
-### Google Forms (4)
-- `ingest_google_forms_intake_01`
-- `ingest_google_forms_intake_02`
-- `ingest_google_forms_followup`
-- `ingest_google_forms_ipip120`
-
-### Stripe (4)
-- `ingest_stripe_customers`
-- `ingest_stripe_invoices`
-- `ingest_stripe_payment_intents`
-- `ingest_stripe_refunds`
-
----
-
-## Executor Cleanup
-
-After all jobs migrated, remove the `auto_since` executor magic:
-
-**File:** `lorchestra/executor.py`
-
-Delete:
-- `_resolve_auto_since()` method (~30 lines)
-- `auto_since` handling in `_handle_call()` (~5 lines)
-
-The executor's `_handle_call()` should become a pure dispatcher with no hidden IO.
-
----
-
-## Backfill Pattern (Enabled by This Migration)
-
-Once ingest jobs use explicit cursor steps, backfill becomes a second cursor
-in the same job — working **backward from now**, one month per run.
-
-### Why backward from now?
-
-- Recent emails are highest value — get them first
-- Forward cursor already handles "now and future"
-- Each backfill chunk gets progressively less urgent
-- Stops naturally when Gmail returns 0 records for a window predating the account
-
-### Backfill cursor: event_log (no new tables)
-
-`last_seen` in `raw_objects` is the **ingestion timestamp** (`datetime.now()`),
-not the email's sent date — so `MIN(last_seen)` can't track how far back we've
-gone. Instead, the backfill cursor is derived from the event_log, which already
-records `window_since` for every completed ingestion run:
-
-```sql
-SELECT MIN(CAST(JSON_VALUE(payload, '$.window_since') AS TIMESTAMP)) as backfill_position
-FROM event_log
-WHERE event_type = 'ingestion.completed'
-  AND connection_name = @connection_name
-  AND status = 'success'
-  AND JSON_VALUE(payload, '$.job_id') LIKE '%backfill%'
-```
-
-- **No prior runs** → `backfill_position` is NULL → `until = NOW()`, `since = NOW() - 1 month`
-- **Has prior runs** → `until = backfill_position`, `since = backfill_position - 1 month`
-
-Writes go to the same `raw_objects` table — `idem_key` (Gmail message ID) handles
-dedup, no separate backfill table or merge step needed.
-
-### Example: backfill job
+## Proposed build_delta
 
 ```yaml
-job_id: ingest_gmail_bfarmstrong_backfill
-version: '2.0'
-steps:
-# Cursor: find how far back we've gone from event_log
-- step_id: cursor
-  op: storacle.query
-  params:
-    dataset: events
-    table: event_log
-    query: |
-      SELECT MIN(CAST(JSON_VALUE(payload, '$.window_since') AS TIMESTAMP)) as backfill_position
-      FROM event_log
-      WHERE event_type = 'ingestion.completed'
-        AND connection_name = 'gmail-bfarmstrong'
-        AND status = 'success'
-        AND JSON_VALUE(payload, '$.job_id') LIKE '%backfill%'
+target: "projects/life/life.build.yaml"
+summary: "Add life peek command backed by lorchestra read jobs"
 
-# Ingest: one month chunk working backward
-- step_id: ingest
-  op: call
-  params:
-    callable: injest
-    source: gmail_bfarmstrong
-    config:
-      until: '@run.cursor.items[0].backfill_position'  # null → now
-      since: '@run.cursor.items[0].backfill_since'      # position - 1 month
-
-- step_id: persist
-  op: plan.build
-  params:
-    items: '@run.ingest.items'
-    method: bq.upsert
-    dataset: raw
-    table: raw_objects
-    # ... same key_columns, field_defaults as forward job
-
-- step_id: write
-  op: storacle.submit
-  params:
-    plan: '@run.persist.plan'
+adds:
+  layout:
+    - "src/life/commands/peek.py"
+  modules:
+    - name: peek_commands
+      provides: ["life peek clients", "life peek sessions", "life peek form_responses", "life peek raw_objects", "life peek canonical_objects", "life peek measurement_events", "life peek observations"]
+  kernel_surfaces:
+    - command: "life peek clients"
+      usage: "life peek clients --limit 10 --format table"
+    - command: "life peek sessions"
+      usage: "life peek sessions --since 2026-02-09 --format json"
+    - command: "life peek form_responses"
+      usage: "life peek form_responses --form PHQ9 --format csv"
+    - command: "life peek raw_objects"
+      usage: "life peek raw_objects --id contact_123 --format json"
+    - command: "life peek canonical_objects"
+      usage: "life peek canonical_objects --until 2026-02-01 --limit 5"
+    - command: "life peek measurement_events"
+      usage: "life peek measurement_events --since 2026-02-01 --format table"
+    - command: "life peek observations"
+      usage: "life peek observations --limit 20 --format csv"
+modifies:
+  layout:
+    - "src/life/cli.py": "Add peek subcommand registration"
+removes: {}
 ```
 
-### Backfill progression (bfarmstrong@gmail.com, ~150k emails / 20 years)
+### Lorchestra-side build_delta
 
+```yaml
+target: "projects/lorchestra/lorchestra.build.yaml"
+summary: "Add peek read job definitions using storacle.query native op"
+
+adds:
+  layout:
+    - "lorchestra/jobs/definitions/peek/"
+  modules:
+    - name: peek_jobs
+      provides: ["peek.clients", "peek.sessions", "peek.form_responses", "peek.raw_objects", "peek.canonical_objects", "peek.measurement_events", "peek.observations"]
+modifies: {}
+removes: {}
 ```
-Run 1:   since = now - 1mo,    until = now          (~625 emails)
-Run 2:   since = now - 2mo,    until = now - 1mo
-Run 3:   since = now - 3mo,    until = now - 2mo
-...
-Run 240: since = now - 240mo,  until = now - 239mo  (≈ 20 years back)
-Run 241: Gmail returns 0 records → backfill complete
-```
-
-At ~625 emails/month average, each chunk is small. Run daily alongside the
-forward job — fully caught up in ~8 months. Run twice daily for ~4 months.
-
----
-
-## Implementation Steps
-
-### Step 0: Add array index support to `_resolve_run_refs`
-- Update `lorchestra/executor.py` to handle `items[0]` syntax
-- Add unit test for array index resolution
-
-### Step 1: Migrate Gmail jobs (3)
-- Rewrite YAML with explicit cursor step
-- Test with `lorchestra exec run ingest_gmail_acct1`
-- Verify emails still ingest correctly
-
-### Step 2: Migrate remaining jobs (17)
-- Exchange (4)
-- Dataverse (3)
-- Google Forms (4)
-- Stripe (4)
-
-### Step 3: Delete executor magic
-- Remove `_resolve_auto_since()` from executor.py
-- Remove `auto_since` handling from `_handle_call()`
-
-### Step 4: Update tests
-- Remove tests for `auto_since` executor behavior
-- Add tests for cursor step pattern (if not already covered by e005b-08 tests)
-
----
-
-## Files to Modify
-
-| File | Change |
-|------|--------|
-| `lorchestra/executor.py` | Add array index support to `_resolve_run_refs` |
-| `lorchestra/jobs/definitions/ingest/*.yaml` (20 files) | Add cursor step, remove auto_since |
-| `lorchestra/executor.py` | Delete `_resolve_auto_since()` and auto_since handling |
-| `tests/` | Update/remove auto_since tests |
-
----
-
-## Complexity Assessment
-
-- **Array index support**: ~10 lines added to `_resolve_run_refs`
-- **YAML rewrites**: Mechanical, ~20 files
-- **Executor cleanup**: ~35 lines deleted
-- **Risk**: Low. Pattern already proven by canonize jobs. Small code addition.
-- **Estimate**: 1-2 hours
-
----
 
 ## Acceptance Criteria
 
-- [x] Array index support added to `_resolve_run_refs` (`@run.step.items[0].field` works)
-- [x] All 18 ingest jobs use explicit `storacle.query` cursor step
-- [x] No `auto_since` blocks in any job definition
-- [x] `_resolve_auto_since()` deleted from executor.py
-- [x] All ingest jobs pass smoke test
-- [x] `pytest tests/ -v` passes
-- [x] `ruff check lorchestra/` passes
+- [ ] life peek <table> command with subcommands for known domain tables
+- [ ] Tables: clients, sessions, form_responses, raw_objects, canonical_objects, measurement_events, observations
+- [ ] Common filters: --id, --since, --until, --limit (default 20), --form
+- [ ] Peek job defs in lorchestra using storacle.query native op
+- [ ] life calls execute({'job_id': 'peek.<table>', 'payload': {filters...}})
+- [ ] Output formats: --format table (default), --format json, --format csv
+- [ ] Table format: human-readable columnar output to stdout
+- [ ] JSON format: one JSON object per line (jq-friendly)
+- [ ] Helpful error messages: table not found, no rows matched, connection issues
+- [ ] Zero direct storacle imports in life — peek goes through lorchestra
+
+## Constraints
+
+- Read-only — peek jobs use storacle.query, no writes
+- Same integration pattern as all other life commands: lorchestra.execute()
+- No direct storacle or BigQueryClient imports in life
+- Default row limit of 20 to prevent accidental large queries
+- Output formatting handles null values gracefully
 
 ---
 
-## Deferred to Next Epic
+## Phase 1: Lorchestra Peek Job Definitions
 
-The following performance enhancements were identified but deferred:
+### Objective
+Create read-only job definitions in lorchestra that use storacle.query native op
+to query domain tables with configurable filters.
 
-- Pipeline parallel execution improvements
-- Executor caching optimizations
-- Other lorchestra performance work
+### Files to Touch
+- `lorchestra/jobs/definitions/peek/peek.clients.yaml` (create)
+- `lorchestra/jobs/definitions/peek/peek.sessions.yaml` (create)
+- `lorchestra/jobs/definitions/peek/peek.form_responses.yaml` (create)
+- `lorchestra/jobs/definitions/peek/peek.raw_objects.yaml` (create)
+- `lorchestra/jobs/definitions/peek/peek.canonical_objects.yaml` (create)
+- `lorchestra/jobs/definitions/peek/peek.measurement_events.yaml` (create)
+- `lorchestra/jobs/definitions/peek/peek.observations.yaml` (create)
 
----
+### Implementation Notes
+Each job def is a single-step storacle.query with parameterized SQL from @payload.*:
 
-## Known Issues
-
-### ✅ SOLVED: gmail_to_jmap_lite transform fails on emails with duplicate headers
-
-**Symptom:** `canonize_gmail_jmap` job fails intermittently with:
-```
-Error: Failed to execute transform: email/gmail_to_jmap_lite@1.1.0 [T0410]: Argument 1 of function "split" does not match function signature
-```
-
-**Root cause:** Some Gmail emails have duplicate headers (e.g., multiple `Bcc` headers). The `$getHeader` helper used `$lookup($headers[name=$name], "value")`, which returns a JSONata sequence (array) when multiple headers match. This array was then passed to `$split` or `$parseEmailList`, which expect strings.
-
-**Affected record:** `gmail:gmail-acct2:email:17524bcb06f2d38d` (email with duplicate `Bcc` headers)
-
-**Why it seemed random:** Small batches often missed the one problematic record; larger batches consistently included it.
-
-**Fix:** Updated `$getHeader` in `email/gmail_to_jmap_lite@1.1.0` to join array values:
-```jsonata
-$getHeader := function($headers, $name) {
-  (
-    $values := $lookup($headers[name=$name], "value");
-    $type($values) = "array" ? $join($values, ", ") : $values
-  )
-};
+```yaml
+job_id: peek.clients
+version: "0.1.0"
+steps:
+  - step_id: read
+    op: storacle.query
+    params:
+      dataset: canonical
+      table: clients
+      columns: "*"
+      filters: "@payload.filters"
+      limit: "@payload.limit"
+      order_by: "created_at DESC"
 ```
 
-**Also improved:** CLI error reporting now shows JSONata error codes and messages (JSONata throws plain objects, not Error instances).
+Filters passed via payload: `{"filters": [{"column": "id", "op": "=", "value": "abc123"}], "limit": 20}`
+
+lorchestra's query_builder.py (from e005b-08) already handles parameterized SQL
+construction from these declarative params. storacle.query already surfaces rows
+as step output.
+
+### Verification
+- `lorchestra exec run peek.clients --payload '{"limit": 1}' --dry-run` → compiles
+- `pytest tests/test_peek_jobs.py` → passes
+- All 7 job defs load successfully from registry
+
+## Phase 2: Life Peek Command
+
+### Objective
+Add `life peek` command that builds envelopes for peek jobs and renders results
+in multiple output formats.
+
+### Files to Touch
+- `src/life/commands/peek.py` (create) — Peek command with subcommands per table
+- `src/life/cli.py` (modify) — Register peek subcommand
+- `tests/test_peek.py` (create) — Test coverage
+
+### Implementation Notes
+Each subcommand translates CLI flags to a lorchestra envelope:
+
+```python
+from lorchestra import execute
+
+def peek_clients(id: str = None, since: str = None, limit: int = 20, format: str = "table"):
+    filters = []
+    if id:
+        filters.append({"column": "id", "op": "=", "value": id})
+    if since:
+        filters.append({"column": "created_at", "op": ">=", "value": since})
+
+    result = execute({
+        "job_id": "peek.clients",
+        "payload": {"filters": filters, "limit": limit},
+    })
+
+    if result.success:
+        rows = extract_rows(result)  # from step output
+        render(rows, format=format)
+    else:
+        print_error(result)
+```
+
+Output formatters:
+- `table`: Simple columnar layout, column widths from data
+- `json`: One JSON object per line (JSONL) for jq compatibility
+- `csv`: Standard CSV with headers, null values as empty strings
+
+### Verification
+- `life peek --help` → shows available tables
+- `life peek clients --help` → shows table-specific options
+- `life peek clients --limit 1 --format json` → valid JSONL output
+- `life peek sessions --since 2026-02-09 --format table` → columnar output
+- `life peek form_responses --form PHQ9 --format csv` → proper CSV with headers
+- `ruff check src/life/commands/peek.py` → clean
+- `grep -r "from storacle" src/life/` → no matches
+
+## Critical Constraint: build_delta First
+
+The build_delta is the REAL constraint. Everything else derives from it:
+- **adds.layout** → drives Files to Touch (peek.py in life, peek/ job defs in lorchestra)
+- **adds.kernel_surfaces** → drives Acceptance Criteria (7 peek subcommands)
+- **adds.modules** → drives what functionality is added (peek_commands in life, peek_jobs in lorchestra)

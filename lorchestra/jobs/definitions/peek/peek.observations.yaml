@@ -1,0 +1,12 @@
+job_id: peek.observations
+version: '2.0'
+steps:
+- step_id: read
+  op: storacle.query
+  params:
+    dataset: derived
+    table: observations
+    columns: ['*']
+    filters: '@payload.filters'
+    limit: '@payload.limit'
+    order_by: '@payload.order_by'

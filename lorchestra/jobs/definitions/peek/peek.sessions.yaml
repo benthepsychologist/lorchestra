@@ -1,0 +1,12 @@
+job_id: peek.sessions
+version: '2.0'
+steps:
+- step_id: read
+  op: storacle.query
+  params:
+    dataset: derived
+    table: proj_sessions
+    columns: ['*']
+    filters: '@payload.filters'
+    limit: '@payload.limit'
+    order_by: '@payload.order_by'
