@@ -1,0 +1,24 @@
+job_id: email.batch_send
+version: '2.0'
+steps:
+  - step_id: render
+    op: call
+    params:
+      callable: render
+      template_path: '@payload.template_path'
+      items: '@payload.items'  # [{to, template_vars, idempotency_key}]
+
+  - step_id: build
+    op: call
+    params:
+      callable: egret
+      method: msg.send
+      items: '@run.render.items'  # [{to, subject, body, is_html, idempotency_key}]
+      channel: email
+      provider: '@payload.provider'
+      account: '@payload.account'
+
+  - step_id: send
+    op: egret.submit
+    params:
+      plan: '@run.build.items[0].plan'

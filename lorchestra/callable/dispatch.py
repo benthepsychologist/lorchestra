@@ -55,7 +55,7 @@ def _get_callables() -> dict[str, CallableFn]:
     # External packages (top-level imports)
     external = ["injest", "canonizer", "finalform", "projectionist", "workman"]
     # Internal callables (lorchestra.callable.*)
-    internal = ["view_creator", "molt_projector", "bq_reader", "file_renderer"]
+    internal = ["view_creator", "molt_projector", "bq_reader", "file_renderer", "egret_builder", "render"]
 
     callables: dict[str, CallableFn] = {}
 
@@ -72,6 +72,11 @@ def _get_callables() -> dict[str, CallableFn]:
             callables[name] = fn
         else:
             callables[name] = _stub_callable(name)
+
+    # Aliases: map friendly names to internal callable modules
+    # "egret" -> egret_builder (for use in job definitions as callable: egret)
+    if "egret_builder" in callables:
+        callables["egret"] = callables["egret_builder"]
 
     return callables
 

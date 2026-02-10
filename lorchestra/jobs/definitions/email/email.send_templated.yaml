@@ -1,0 +1,28 @@
+job_id: email.send_templated
+version: '2.0'
+steps:
+  - step_id: render
+    op: call
+    params:
+      callable: render
+      template_path: '@payload.template_path'
+      template_vars: '@payload.template_vars'
+
+  - step_id: build
+    op: call
+    params:
+      callable: egret
+      method: msg.send
+      to: '@payload.to'
+      subject: '@run.render.items[0].subject'
+      body: '@run.render.items[0].body'
+      is_html: '@run.render.items[0].is_html'
+      channel: email
+      provider: '@payload.provider'
+      account: '@payload.account'
+      idempotency_key: '@payload.idempotency_key'
+
+  - step_id: send
+    op: egret.submit
+    params:
+      plan: '@run.build.items[0].plan'

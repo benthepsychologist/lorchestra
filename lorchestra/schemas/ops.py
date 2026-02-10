@@ -6,6 +6,7 @@ Operations are categorized by their backend:
 - storacle.query  -> native: lorchestra-native BQ read via storacle
 - plan.build      -> native: lorchestra-native plan construction
 - storacle.submit -> native: lorchestra-native storacle submission
+- egret.submit    -> native: lorchestra-native egret plan submission
 - compute.*       -> inferometer: LLM and external compute
 - job.*           -> orchestration: sub-job execution
 """
@@ -23,6 +24,7 @@ class Op(str, Enum):
     - storacle.query    => native (lorchestra BQ read via storacle)
     - plan.build        => native (lorchestra plan construction)
     - storacle.submit   => native (lorchestra storacle submission)
+    - egret.submit      => native (lorchestra egret plan submission)
     - compute.*         => inferometer (LLM service)
     - job.*             => orchestration (lorchestra)
     """
@@ -33,6 +35,7 @@ class Op(str, Enum):
     STORACLE_QUERY = "storacle.query"
     PLAN_BUILD = "plan.build"
     STORACLE_SUBMIT = "storacle.submit"
+    EGRET_SUBMIT = "egret.submit"
     LOG_DUMP = "log.dump"
 
     # LLM (via inferometer)
@@ -54,7 +57,7 @@ class Op(str, Enum):
         """
         if self.value == "call":
             return "callable"
-        elif self.value in ("storacle.query", "plan.build", "storacle.submit", "log.dump"):
+        elif self.value in ("storacle.query", "plan.build", "storacle.submit", "egret.submit", "log.dump"):
             return "native"
         elif self.value.startswith("compute."):
             return "inferometer"

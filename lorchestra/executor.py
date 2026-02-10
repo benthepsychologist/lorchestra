@@ -675,6 +675,8 @@ class Executor:
             return self._handle_plan_build(manifest)
         elif manifest.op == Op.STORACLE_SUBMIT:
             return self._handle_storacle_submit(manifest)
+        elif manifest.op == Op.EGRET_SUBMIT:
+            return self._handle_egret_submit(manifest)
         elif manifest.op == Op.LOG_DUMP:
             return self._handle_log_dump(manifest)
 
@@ -967,6 +969,29 @@ class Executor:
         )
         return submit_plan(plan, meta)
 
+    def _handle_egret_submit(self, manifest: StepManifest) -> dict[str, Any]:
+        """
+        Handle the `egret.submit` native op: submit plan to egret.
+
+        Reads the plan dict from params (typically @run.build.plan resolved)
+        and submits it to egret via the client boundary.
+
+        Args:
+            manifest: StepManifest with op=egret.submit
+
+        Returns:
+            Dict with egret response (contains responses list)
+        """
+        from lorchestra.egret.client import submit_plan, RpcMeta
+
+        plan_dict = manifest.resolved_params["plan"]
+        meta = RpcMeta(
+            run_id=manifest.run_id,
+            step_id=manifest.step_id,
+            correlation_id=f"{manifest.run_id}:{manifest.step_id}",
+        )
+        return submit_plan(plan_dict, meta)
+
     def _handle_log_dump(self, manifest: StepManifest) -> dict[str, Any]:
         """
         Handle the `log.dump` native op: print items to stdout as JSON.
@@ -1121,9 +1146,24 @@ def execute(envelope: dict[str, Any]) -> ExecutionResult:
         JobNotFoundError: If job_id is not found in registry
     """
     import os
+    from pathlib import Path
 
     # Load job def via shared path
     job_def, ctx, payload = _load_job_def(envelope)
+
+    # Configure canonizer registry root based on definitions_dir
+    # The .canonizer/ directory is expected at the same level as the lorchestra package
+    definitions_dir = envelope.get("definitions_dir")
+    if definitions_dir:
+        # definitions_dir is typically .../lorchestra/jobs/definitions
+        # .canonizer is at .../lorchestra/.canonizer (3 levels up from definitions)
+        lorchestra_root = Path(definitions_dir).parent.parent.parent
+        # Check for .canonizer/registry (standard layout) or .canonizer/transforms (flat layout)
+        canonizer_registry = lorchestra_root / ".canonizer" / "registry"
+        if not canonizer_registry.is_dir():
+            canonizer_registry = lorchestra_root / ".canonizer"
+        if canonizer_registry.is_dir() and (canonizer_registry / "transforms").is_dir():
+            os.environ["CANONIZER_REGISTRY_ROOT"] = str(canonizer_registry)
 
     # Configure smoke namespace if provided
     smoke_namespace = envelope.get("smoke_namespace")

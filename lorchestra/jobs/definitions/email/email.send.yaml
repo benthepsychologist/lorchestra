@@ -1,0 +1,21 @@
+job_id: email.send
+version: '2.0'
+steps:
+  - step_id: build
+    op: call
+    params:
+      callable: egret
+      method: msg.send
+      to: '@payload.to'
+      subject: '@payload.subject'
+      body: '@payload.body'
+      is_html: '@payload.is_html'
+      channel: email
+      provider: '@payload.provider'
+      account: '@payload.account'
+      idempotency_key: '@payload.idempotency_key'
+
+  - step_id: send
+    op: egret.submit
+    params:
+      plan: '@run.build.items[0].plan'

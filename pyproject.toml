@@ -11,19 +11,24 @@ dependencies = [
     "rich>=13.0",
     "python-dotenv>=1.0",
     "google-cloud-bigquery>=3.0",
+    "jinja2>=3.0",
     "injest>=0.1.0",
     "authctl>=0.1.0",
+    "canonizer>=0.1.0",
     "finalform>=0.1.0",
     "projectionist>=0.1.0",
     "storacle>=0.1.0",
+    "egret>=0.1.0",
 ]
 
 [tool.uv.sources]
 injest = { path = "/workspace/injest", editable = true }
 authctl = { path = "/workspace/authctl", editable = true }
+canonizer = { path = "/workspace/canonizer", editable = true }
 finalform = { path = "/workspace/finalform", editable = true }
 projectionist = { path = "/workspace/projectionist", editable = true }
 storacle = { path = "/workspace/storacle", editable = true }
+egret = { path = "/workspace/egret", editable = true }
 
 [project.optional-dependencies]
 dev = [
