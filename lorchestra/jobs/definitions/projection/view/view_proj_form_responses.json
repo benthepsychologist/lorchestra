@@ -1,7 +1,0 @@
-{
-  "job_id": "view_proj_form_responses",
-  "job_type": "create_projection",
-  "projection": {
-    "name": "proj_form_responses"
-  }
-}

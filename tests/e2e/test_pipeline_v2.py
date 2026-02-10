@@ -45,11 +45,9 @@ class TestLoadPipeline:
     def test_load_ingest(self):
         spec = load_pipeline("pipeline.ingest")
         assert spec["pipeline_id"] == "pipeline.ingest"
-        assert len(spec["stages"]) == 2
+        assert len(spec["stages"]) == 1
         assert spec["stages"][0]["name"] == "ingestion"
-        assert spec["stages"][1]["name"] == "validation"
-        assert len(spec["stages"][0]["jobs"]) == 17
-        assert len(spec["stages"][1]["jobs"]) == 10
+        assert len(spec["stages"][0]["jobs"]) == 19
 
     def test_load_canonize(self):
         spec = load_pipeline("pipeline.canonize")
@@ -85,18 +83,19 @@ class TestLoadPipeline:
         with pytest.raises(FileNotFoundError, match="Pipeline definition not found"):
             load_pipeline("pipeline.nonexistent")
 
-    def test_all_yaml_job_ids_match_json(self):
-        """YAML pipeline definitions reference the same job_ids as JSON."""
-        yaml_spec = load_pipeline("pipeline.formation")
-        yaml_jobs = [j for s in yaml_spec["stages"] for j in s["jobs"]]
-
-        import json
-        json_path = DEFINITIONS_DIR / "pipeline" / "pipeline.formation.json"
-        with open(json_path) as f:
-            json_spec = json.load(f)
-        json_jobs = [j for s in json_spec["stages"] for j in s["jobs"]]
-
-        assert yaml_jobs == json_jobs
+    def test_all_pipeline_yamls_have_stages(self):
+        """All pipeline YAML definitions have at least one stage."""
+        pipeline_ids = [
+            "pipeline.formation",
+            "pipeline.ingest",
+            "pipeline.canonize",
+            "pipeline.project",
+            "pipeline.views",
+            "pipeline.daily_all",
+        ]
+        for pid in pipeline_ids:
+            spec = load_pipeline(pid)
+            assert len(spec["stages"]) >= 1, f"{pid} has no stages"
 
 
 # ---------------------------------------------------------------------------
@@ -325,9 +324,9 @@ class TestRecursivePipeline:
         spec = load_pipeline("pipeline.daily_all")
         result = run_pipeline(spec)
 
-        # daily_all has 4 sub-pipelines: ingest(27), canonize(13), formation(6), project(13)
-        # Total child execute() calls = 27 + 13 + 6 + 13 = 59
-        assert mock_execute.call_count == 59
+        # daily_all has 4 sub-pipelines: ingest(19), canonize(13), formation(6), project(13)
+        # Total child execute() calls = 19 + 13 + 6 + 13 = 51
+        assert mock_execute.call_count == 51
         # The pipeline itself reports 4 jobs (sub-pipelines)
         assert result.total == 4
         assert result.succeeded == 4

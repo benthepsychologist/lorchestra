@@ -1,7 +1,0 @@
-{
-  "job_id": "view_proj_clinical_documents",
-  "job_type": "create_projection",
-  "projection": {
-    "name": "proj_clinical_documents"
-  }
-}
