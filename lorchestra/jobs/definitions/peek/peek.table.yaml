@@ -1,0 +1,13 @@
+job_id: peek.table
+version: '2.0'
+description: "Generic table peek - dataset and table passed via payload"
+steps:
+- step_id: read
+  op: storacle.query
+  params:
+    dataset: '@payload.dataset'
+    table: '@payload.table'
+    columns: '@payload.columns'
+    filters: '@payload.filters'
+    limit: '@payload.limit'
+    order_by: '@payload.order_by'
