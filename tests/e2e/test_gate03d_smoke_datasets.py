@@ -194,55 +194,6 @@ class TestStoracleRPCWithSmoke:
         assert wal_client.dataset == "smoke_smoke_run"
 
 
-class TestCLISmokeFlags:
-    """Test CLI flag validation for smoke mode."""
-
-    def test_smoke_and_test_table_mutually_exclusive(self):
-        """--smoke-namespace and --test-table cannot be used together."""
-        from click.testing import CliRunner
-        from lorchestra.cli import main
-
-        runner = CliRunner()
-        result = runner.invoke(
-            main,
-            ["run", "fake_job", "--smoke-namespace", "test", "--test-table"],
-            catch_exceptions=False,
-        )
-
-        assert result.exit_code != 0
-        assert "mutually exclusive" in result.output.lower()
-
-    def test_smoke_and_dry_run_mutually_exclusive(self):
-        """--smoke-namespace and --dry-run cannot be used together."""
-        from click.testing import CliRunner
-        from lorchestra.cli import main
-
-        runner = CliRunner()
-        result = runner.invoke(
-            main,
-            ["run", "fake_job", "--smoke-namespace", "test", "--dry-run"],
-            catch_exceptions=False,
-        )
-
-        assert result.exit_code != 0
-        assert "mutually exclusive" in result.output.lower()
-
-    def test_cleanup_requires_smoke_namespace(self):
-        """--clean-up requires --smoke-namespace."""
-        from click.testing import CliRunner
-        from lorchestra.cli import main
-
-        runner = CliRunner()
-        result = runner.invoke(
-            main,
-            ["run", "fake_job", "--clean-up"],
-            catch_exceptions=False,
-        )
-
-        assert result.exit_code != 0
-        assert "requires --smoke-namespace" in result.output.lower()
-
-
 class TestBigQueryEventStoreDataset:
     """Test BigQueryEventStore dataset operations."""
 

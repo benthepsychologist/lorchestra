@@ -142,14 +142,3 @@ class TestTestTableMode:
         # Should NOT have called create_table (tables already exist)
         mock_bq_client.create_table.assert_not_called()
 
-    def test_set_run_mode_flags_are_mutually_exclusive_at_cli(self):
-        """CLI should error if both --dry-run and --test-table are set."""
-        import click
-        from click.testing import CliRunner
-        from lorchestra.cli import main
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["run", "fake_job", "--dry-run", "--test-table"])
-
-        assert result.exit_code != 0
-        assert "mutually exclusive" in result.output

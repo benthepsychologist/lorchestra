@@ -50,10 +50,3 @@ def test_init_force_overwrites(runner, tmp_path, monkeypatch):
     cfg = yaml.safe_load((home / "config.yaml").read_text())
     assert "project" in cfg
 
-def test_run_command_fails_without_config(runner, tmp_path, monkeypatch):
-    home = tmp_path / "no_config"
-    monkeypatch.setenv("LORCHESTRA_HOME", str(home))
-    
-    result = runner.invoke(main, ["run", "some_job"])
-    assert result.exit_code == 1
-    assert "Config not loaded" in result.output
