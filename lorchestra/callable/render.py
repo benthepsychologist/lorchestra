@@ -8,7 +8,7 @@ In job definitions, this is invoked as:
   op: call
   params:
     callable: render
-    template_path: "@payload.template_path"
+    template: "@payload.template"
     template_vars: "@payload.template_vars"
 
 Template format:
@@ -25,7 +25,6 @@ For batch mode, pass items=[{to, template_vars, idempotency_key}] and
 receive items=[{to, subject, body, is_html, idempotency_key}].
 """
 
-import os
 from typing import Any
 
 
@@ -34,28 +33,23 @@ def execute(params: dict[str, Any]) -> dict[str, Any]:
     Render email template(s) via Jinja2.
 
     Single mode params:
-        template_path: str — absolute path to template file
+        template: str — Jinja2 template content
         template_vars: dict — variables available to the template
 
     Batch mode params:
-        template_path: str — absolute path to template file
+        template: str — Jinja2 template content
         items: list[{to, template_vars, idempotency_key}]
 
     Returns:
-        Single mode: {schema_version, items, stats, subject, body, is_html}
+        Single mode: {schema_version, items, stats}
         Batch mode: {schema_version, items: [{to, subject, body, is_html, idempotency_key}], stats}
     """
-    from jinja2 import Environment, FileSystemLoader, select_autoescape
+    from jinja2 import Environment, select_autoescape
 
-    template_path = params["template_path"]
-    template_dir = os.path.dirname(template_path)
-    template_name = os.path.basename(template_path)
+    template_content = params["template"]
 
-    env = Environment(
-        loader=FileSystemLoader(template_dir),
-        autoescape=select_autoescape(["html", "htm"]),
-    )
-    template = env.get_template(template_name)
+    env = Environment(autoescape=select_autoescape(["html", "htm"]))
+    template = env.from_string(template_content)
 
     items = params.get("items")
     if items:

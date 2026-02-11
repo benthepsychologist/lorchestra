@@ -5,7 +5,7 @@ steps:
     op: call
     params:
       callable: render
-      template_path: '@payload.template_path'
+      template: '@payload.template'
       items: '@payload.items'  # [{to, template_vars, idempotency_key}]
 
   - step_id: build

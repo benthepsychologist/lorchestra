@@ -5,7 +5,7 @@ steps:
     op: call
     params:
       callable: render
-      template_path: '@payload.template_path'
+      template: '@payload.template'
       template_vars: '@payload.template_vars'
 
   - step_id: build
