@@ -1,0 +1,9 @@
+job_id: pm.plan
+version: '2.0'
+steps:
+- step_id: plan_compile
+  op: call
+  params:
+    callable: workman
+    op: pm.compile_intent
+    intent: '@payload.intent'

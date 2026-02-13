@@ -1,0 +1,7 @@
+job_id: pm.apply
+version: '2.0'
+steps:
+- step_id: plans_submit
+  op: storacle.submit
+  params:
+    plan: '@payload.plan'

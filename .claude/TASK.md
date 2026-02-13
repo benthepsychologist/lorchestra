@@ -1,321 +1,445 @@
 ---
-id: e010-02-lorchestra-egret
-title: "Lorchestra Egret Integration — Native Op, Client, Email Jobs"
+id: e011-02-lorchestra-pm-jobs
+title: "Lorchestra PM Orchestration — Plan, Apply, Exec Jobs"
 tier: B
 owner: benthepsychologist
-goal: "Add egret as a native op in lorchestra: client boundary, egret callable (plan builder), egret.submit native op, and email job definitions"
-branch: feat/egret-integration
-status: complete
-created: 2026-02-09T00:00:00Z
-completed: 2026-02-10T00:00:00Z
+goal: "lorchestra/jobs/definitions/pm/pm.plan.yaml with single step: op=call, callable=compile_intent, intent='@payload.intent'"
+branch: feat/pm-orchestration
+repo:
+  name: lorchestra
+  url: /workspace/lorchestra
+status: refined
+created: 2026-02-11T21:24:25Z
+updated: 2026-02-11T22:15:00Z
 ---
 
-# e010-02-lorchestra-egret: Lorchestra Egret Integration — Native Op, Client, Email Jobs
+# e011-02-lorchestra-pm-jobs: Lorchestra PM Orchestration — Plan, Apply, Exec Jobs
 
-**Epic:** e010-egret
-**Repo:** lorchestra
-**Branch:** `feat/egret-integration`
+**Epic:** e011-pm-system
+**Branch:** `feat/pm-orchestration`
 **Tier:** B
+
+## Schema Reference
+
+**Depends on**: e011-01-workman-pm-domain (all PM ops and field registry)
+
+**Schema reference**: See [../resources.md](../resources.md) §3 (PMIntent envelope schema) for the intent structure passed to these jobs. The CallableResult output from `compile_intent()` is defined in resources.md §7.6 (Workman API Reference).
 
 ## Objective
 
-Wire egret into lorchestra as a native op (mirroring the storacle integration pattern — `plan.build` → `storacle.submit`, here `call` callable:egret → `egret.submit`):
-- Add `egret.submit` to the Op enum as a native op
-- Add a client boundary (`lorchestra/egret/client.py`) that submits plans to egret (in-proc first, noop fallback when not installed)
-- Add `_handle_egret_submit(manifest)` branch in `_dispatch_manifest()`
-- Register a thin `egret` callable that builds an EgretPlan from step params
-- Add email job definitions (send, send_templated as render+send, batch_send)
+Implement PM orchestration jobs in lorchestra to enable plan-diff-apply workflow for PM operations. Creates three job definitions (`pm.plan`, `pm.apply`, `pm.exec`) that invoke workman's `compile_intent` function via the call operation (using dispatch_callable) to provide preview-before-write discipline for all PM mutations.
+
+This establishes the orchestration layer between the life CLI (ergonomic commands) and workman (domain logic), ensuring all PM writes go through lorchestra's job execution pipeline with proper audit trails, result capture, and integration with storacle's WAL.
+
+## Problem
+
+1. **No orchestration layer for PM operations**: PM writes currently bypass lorchestra, going directly from CLI to storacle, missing audit trails and execution context
+2. **No plan-diff-apply discipline**: Users cannot preview PM changes before applying them, leading to accidental mutations
+3. **Missing integration with workman's compile_intent**: The new PMIntent compilation capability needs orchestration jobs to be consumable
+4. **No separation of planning from execution**: Interactive and non-interactive workflows both need the same planning step, but different apply strategies
+
+## Current Capabilities
+
+### kernel.surfaces
+
+```yaml
+- command: "lorchestra run"
+  usage: "lorchestra run gmail_ingest_acct1 --dry-run"
+- command: "lorchestra list" 
+  usage: "lorchestra list --type ingest"
+- command: "lorchestra query"
+  usage: "lorchestra query recent-jobs --limit 20"
+- command: "run_job()"
+  usage: "run_job('gmail_ingest_acct1', dry_run=True)"
+```
+
+### modules
+
+```yaml
+- name: public_surface
+  provides: ['LorchestraConfig', 'load_config()', 'get_lorchestra_home()']
+- name: cli
+  provides: ['lorchestra run', 'lorchestra init', 'lorchestra jobs list', 'lorchestra jobs show', 'lorchestra stats canonical', 'lorchestra stats raw', 'lorchestra stats jobs', 'lorchestra query', 'lorchestra sql']
+- name: config
+  provides: ['LorchestraConfig dataclass', 'load_config()', 'get_lorchestra_home()', 'get_config_path()']
+- name: job_runner
+  provides: ['run_job(job_id, **options)', 'BigQueryStorageClient', 'load_job_spec(job_id)']
+- name: compiler
+  provides: ['Job spec compilation']
+- name: executor
+  provides: ['Job execution engine']
+- name: plan_builder
+  provides: ['Plan building for job steps']
+- name: registry
+  provides: ['Service registry']
+- name: run_store
+  provides: ['Run storage and history']
+- name: errors
+  provides: ['LorchestraError hierarchy']
+- name: callable
+  provides: ['CallableDispatch', 'CallableResult']
+- name: handlers
+  provides: ['BaseHandler', 'ComputeHandler', 'OrchestrationHandler', 'StoracleClientHandler', 'HandlerRegistry']
+```
+
+### layout
+
+```yaml
+- path: lorchestra/__init__.py
+  role: "Public re-exports: LorchestraConfig, load_config, get_lorchestra_home"
+- path: lorchestra/cli.py
+  role: "Click CLI: run, list, stats, query, sql subcommands"
+- path: lorchestra/config.py
+  role: "LorchestraConfig dataclass, load_config(), LORCHESTRA_HOME"
+- path: lorchestra/job_runner.py
+  role: "run_job() dispatcher, BigQueryStorageClient"
+- path: lorchestra/compiler.py
+  role: "Job spec compilation logic"
+- path: lorchestra/executor.py
+  role: "Job execution engine"
+- path: lorchestra/plan_builder.py
+  role: "Plan building logic for job steps"
+- path: lorchestra/registry.py
+  role: "Service registry"
+- path: lorchestra/run_store.py
+  role: "Run storage and history"
+- path: lorchestra/errors.py
+  role: "Error definitions"
+- path: lorchestra/callable/
+  role: "Callable dispatch and result types for external function invocation"
+- path: lorchestra/handlers/
+  role: "Job step handlers: callable_handler, compute, orchestration, storacle_client"
+- path: lorchestra/jobs/definitions/
+  role: "JSON/YAML job specs organized by processor type"
+```
+
+## Proposed build_delta
+
+```yaml
+target: "projects/lorchestra/lorchestra.build.yaml"
+summary: "Add PM job definitions (plan, apply, exec). No new code — uses existing call op with dispatch_callable."
+
+adds:
+  layout:
+    - path: "lorchestra/jobs/definitions/pm/pm.plan.yaml"
+      role: "PM plan job: calls compile_intent, returns preview without applying"
+    - path: "lorchestra/jobs/definitions/pm/pm.apply.yaml"  
+      role: "PM apply job: submits pre-compiled plans via storacle"
+    - path: "lorchestra/jobs/definitions/pm/pm.exec.yaml"
+      role: "PM exec job: combines plan + apply for non-interactive flow"
+  kernel_surfaces: []
+  modules: []
+modifies:
+  modules:
+    - name: job_definitions
+      change: "Add pm/pm.plan.yaml, pm/pm.apply.yaml, pm/pm.exec.yaml to provides list"
+removes: {}
+```
 
 ## Acceptance Criteria
 
-- `Op.EGRET_SUBMIT == "egret.submit"` with backend `"native"`
-- `_dispatch_manifest()` handles `Op.EGRET_SUBMIT` via `_handle_egret_submit(manifest)`
-- `lorchestra/egret/` exports `submit_plan` and `RpcMeta`
-- `egret` callable registered in callable dispatch (builds EgretPlan from params)
-- Job definitions exist in `lorchestra/jobs/definitions/email/`:
-  - `email.send.yaml` — two steps: `call` callable:egret (builds plan) + `egret.submit` (executes)
-  - `email.send_templated.yaml` — three steps: `call` callable:render (render) + `call` callable:egret (builds plan) + `egret.submit` (executes)
-  - `email.batch_send.yaml` — three steps: `call` callable:render (render) + `call` callable:egret (builds plan) + `egret.submit` (executes) — takes items directly in payload
-- End-to-end: `lorchestra.execute(envelope)` routes an email job through egret
+- [ ] lorchestra/jobs/definitions/pm/pm.plan.yaml with single step: op=call, callable=compile_intent, intent='@payload.intent'
+- [ ] pm.plan returns CallableResult with plans, diff, plan_hash as step outcome items
+- [ ] lorchestra/jobs/definitions/pm/pm.apply.yaml with steps: extract plans from @payload.plans, submit via storacle.submit
+- [ ] lorchestra/jobs/definitions/pm/pm.exec.yaml with two steps: (1) plan using compile_intent, (2) apply using storacle.submit
+- [ ] All three jobs follow YAML v2.0 format matching existing workman_create_project.yaml pattern
+- [ ] End-to-end: lorchestra.execute({job_id: 'pm.plan', payload: {intent: ...}}) returns plans + diff without writing
+- [ ] End-to-end: lorchestra.execute({job_id: 'pm.exec', payload: {intent: ...}}) writes to WAL
 
-## Renderer Contract (`call.render`)
+## Constraints
 
-Lorchestra MUST provide a callable operation referred to as `call.render`.
+- Job definitions use YAML v2.0 format (job_id, version: '2.0', steps[] with step_id/op/params)
+- Follow existing pattern from workman_create_project.yaml: call → plan.build → storacle.submit
+- pm.plan calls workman.intent.compile_intent via call op, returns plans + diff without submitting
+- pm.apply takes compiled plans and submits them via storacle.submit
+- pm.exec combines plan + apply in a single two-step job for non-interactive flow
+- No new handler types needed — existing call op with dispatch_callable is sufficient
+- The plan step MUST be separate from the apply step to allow human review between them
+- No changes to existing job definitions or handlers
 
-In JobDefs this is represented as:
-- `op: call`
-- `params.callable: render`
+---
 
-### Single render
+## Architectural Notes
 
-**Input params:**
-- `template_path: str` — absolute template path
-- `template_vars: dict` — variables available to the template
+### Callable Dispatch Pattern
 
-**Output shape:**
-- `subject: str`
-- `body: str`
-- `is_html: bool`
+Lorchestra's `call` operation is a native op (like `plan.build` and `storacle.submit`) handled directly by the executor. It does NOT use the HandlerRegistry.
 
-### Batch render
+**How call op works:**
+1. Executor receives step with `op: call` and params including `callable: <name>`
+2. Executor strips `callable` from params, forwards everything else as a dict
+3. Executor calls `dispatch_callable(name, params)` from `lorchestra.callable.dispatch`
+4. `dispatch_callable` looks up callable in registry (workman, canonizer, finalform, etc.)
+5. Invokes `callable.execute(params)` with forwarded params dict
+6. Returns `CallableResult` with items/items_ref/stats (and any additional fields)
 
-**Input params:**
-- `template_path: str`
-- `items: list[{to: str, template_vars: dict, idempotency_key: str}]`
+**Params Forwarding Pattern:**
 
-**Output shape:**
-- `items: list[{to: str, subject: str, body: str, is_html: bool, idempotency_key: str}]`
-
-Batch mode exists to keep JobDefs simple (no manual zip/join steps). The renderer is allowed to pass through `to` and `idempotency_key` unchanged.
-
-## Workman Expand Contract (`call.workman` / `recipients.expand`)
-
-Batch email requires a deterministic expansion step that produces a list of per-recipient render inputs.
-
-In JobDefs this is represented as:
-- `op: call`
-- `params.callable: workman`
-- `params.method: recipients.expand`
-
-### Input params
-
-- `recipients_file: str` — path to a file containing recipients (implementation-defined format; CSV is typical)
-- `template_vars: dict` — base template variables applied to every recipient (may be merged with recipient-specific vars)
-- `batch_id: str` — caller-provided stable identifier used to derive per-recipient idempotency keys
-
-### Output shape
-
-`recipients.expand` returns a JSON object with:
-
-- `items: list[{to: str, template_vars: dict, idempotency_key: str}]`
-
-Notes:
-- `to` MUST be a single recipient email address.
-- `template_vars` MUST be a fully materialized dict for that recipient (already merged).
-- `idempotency_key` MUST be generated here for batch sends and MUST be stable across retries.
-
-Recommended derivation:
-- `idempotency_key = "email.batch_send:{batch_id}:{to}"`
-
-This keeps idempotency generation in the plan-making layer (life/workman), not in egret.
-
-## Egret Callable (Plan Builder)
-
-The `egret` callable builds an EgretPlan from step params. It is registered in the callable dispatch layer alongside `injest`, `canonizer`, `workman`, etc.
-
-In JobDefs this is represented as:
-- `op: call`
-- `params.callable: egret`
-
-The callable MAY receive either:
-- single send: params include `method`, `to`, `subject`, `body`, `is_html`, etc.
-- batch send: params include `method` and `items: [...]` where each item contains `to`, `subject`, `body`, optional `is_html`, `idempotency_key`
-
-When `items` is present, the callable builds a plan with one `msg.send` op per item.
-
-### Idempotency Key Rules (Messaging)
-
-Egret enforces idempotency for messaging writes. To support this, the lorchestra plan-building layer MUST ensure every `msg.send` op includes an `idempotency_key`.
-
-- For `email.batch_send`, `idempotency_key` MUST be provided per item by `recipients.expand` and MUST be stable across retries.
-- For `email.send` and `email.send_templated`, `idempotency_key` MAY be omitted from the envelope payload.
-  In that case the `callable:egret` MUST derive a deterministic, retry-stable key from the finalized send params.
-
-Recommended derivation for single sends:
-- Canonical input: `{method, channel, provider, account, to, subject, body, is_html}`
-- Derive: `idempotency_key = "email.send:" + sha256(canonical_json(input))`
-
-This makes re-running the same envelope safe by default. To intentionally re-send an identical message, callers must supply an explicit different `idempotency_key`.
-
-**Output shape:**
-- `plan: dict` — serialized EgretPlan ready for `egret.submit`
-
-## Concrete JobDef YAML Sketches
-
-These sketches show the exact `@payload.*` / `@run.*` references expected by the compiler.
-
-### `email.send.yaml`
+All step fields (except `callable` itself) are forwarded to the callable:
 
 ```yaml
-job_id: email.send
-version: "1.0"
-steps:
-  - step_id: build
-    op: call
-    params:
-      callable: egret
-      method: msg.send
-      to: "@payload.to"
-      subject: "@payload.subject"
-      body: "@payload.body"
-      is_html: "@payload.is_html"
-      channel: "email"
-      provider: "@payload.provider"
-      account: "@payload.account"
-      idempotency_key: "@payload.idempotency_key"
-
-  - step_id: send
-    op: egret.submit
-    params:
-      plan: "@run.build.items[0].plan"
+# Job step definition:
+- step_id: plan.compile
+  op: call
+  params:
+    callable: workman         # Stripped by executor, used for dispatch
+    op: pm.compile_intent     # Forwarded to workman
+    intent: "@payload.intent" # Forwarded to workman
+    ctx: {...}                # Forwarded to workman
 ```
 
-### `email.send_templated.yaml`
+**For workman callable:**
 
-```yaml
-job_id: email.send_templated
-version: "1.0"
-steps:
-  - step_id: render
-    op: call
-    params:
-      callable: render
-      template_path: "@payload.template_path"
-      template_vars: "@payload.template_vars"
+Workman expects params dict with:
+- `op`: Operation name (e.g., "pm.compile_intent")
+- `intent`: PMIntent structure (required for compile_intent op)
+- `ctx`: Context dict with correlation_id, producer (optional, constructed if missing)
 
-  - step_id: build
-    op: call
-    params:
-      callable: egret
-      method: msg.send
-      to: "@payload.to"
-      subject: "@run.render.items[0].subject"
-      body: "@run.render.items[0].body"
-      is_html: "@run.render.items[0].is_html"
-      channel: "email"
-      provider: "@payload.provider"
-      account: "@payload.account"
-      idempotency_key: "@payload.idempotency_key"
-
-  - step_id: send
-    op: egret.submit
-    params:
-      plan: "@run.build.items[0].plan"
+Example invocation:
+```python
+workman.execute({
+    "op": "pm.compile_intent",
+    "intent": {"intent_id": "pmi_...", "ops": [...]},
+    "ctx": {"correlation_id": "...", "producer": "..."}
+})
 ```
 
-### `email.batch_send.yaml`
+**CallableResult Return:**
 
-This version takes items directly in the payload (no workman expand step). The workman `recipients.expand` step is deferred to a later epic.
+compile_intent returns CallableResult with:
+- `items`: Array of plans (one per operation in intent)
+- `diff`: Human-readable change descriptions (array of strings)
+- `plan_hash`: SHA256 hash for integrity verification
+
+Downstream steps reference outputs via `@run.step_id.*`:
+- `@run.plan.compile.items` → plans array
+- `@run.plan.compile.diff` → diff strings
+- `@run.plan.compile.plan_hash` → hash value
+
+**Contrast with Handler Pattern:**
+
+This is different from handlers (compute.*, job.* ops) which are registered and invoked differently.
+Call ops use the native dispatch_callable mechanism, not the HandlerRegistry.
+
+---
+
+## Error Handling Strategy
+
+### Failure Modes
+
+**compile_intent failures**:
+- Invalid PMIntent structure → CompileError
+- Unknown operation in ops array → CompileError
+- Payload validation failure → ValidationError
+- Invalid @ref reference → CompileError
+
+**Plan building failures**:
+- FK assertion failure (referenced entity not found) → PlanBuildError
+- Idempotency key conflict → ConflictError (not implemented in e011)
+
+**Storacle write failures**:
+- WAL append failure → StoracleError
+- BigQuery transient error → RetryableError
+
+### Error Propagation
+
+```
+compile_intent error
+  └─> Step fails with status="failed", error=message
+      └─> RunRecord.outcomes includes failed step
+          └─> lorchestra.execute() returns success=False
+              └─> Caller receives error details in result
+```
+
+**No rollback**: WAL is append-only. Failed steps do not undo previous writes.
+
+**No conflict detection** (e011 scope): Same entity modified twice in intent → last-write-wins at WAL level. Conflict detection deferred to future spec.
+
+### Step-Level Error Control
+
+Lorchestra steps support `continue_on_error`:
 
 ```yaml
-job_id: email.batch_send
+steps:
+  - step_id: plan.compile
+    op: call
+    params: {...}
+    continue_on_error: false  # Default: abort on failure
+
+  - step_id: plans.submit
+    op: storacle.submit
+    params: {...}
+    continue_on_error: false
+```
+
+**e011 default**: All PM job steps use `continue_on_error: false` (fail-fast).
+
+### Retry Logic
+
+**Not in lorchestra scope** (e011):
+- Retries handled by backend services (storacle, egret, inferometer)
+- Lorchestra does not retry failed steps
+- Caller can retry entire job
+
+**Future consideration** (e011-05+): Retry policy at job level.
+
+### Error Messages
+
+**User-facing errors** (from life CLI):
+```
+CompileError: "Invalid operation 'pm.task.create' in intent - did you mean 'pm.work_item.create'?"
+ValidationError: "Field 'priority' in pm.work_item.create: expected enum value, got 'EXTREME'"
+PlanBuildError: "Referenced project 'proj_01XYZ' does not exist (assertion failed)"
+StoracleError: "Failed to write to WAL: BigQuery unavailable (transient)"
+```
+
+**Developer-facing errors** (from lorchestra.execute):
+```python
+{
+    "success": False,
+    "run_id": "run_01ABC",
+    "outcomes": [
+        {
+            "step_id": "plan.compile",
+            "status": "failed",
+            "error": "CompileError: Invalid @ref:5 in op 1 - only 3 ops available"
+        }
+    ]
+}
+```
+
+---
+
+## PM Plan Job Definition
+
+### Objective
+Create the core planning job that calls workman's compile_intent to generate plans and diffs without applying changes. This enables the preview-before-write workflow.
+
+### Files to Touch
+- `lorchestra/jobs/definitions/pm/pm.plan.yaml` (create) — Single-step job calling compile_intent
+
+### Implementation Notes
+Follow the YAML v2.0 job definition pattern from existing specs like aip-1.yaml:
+
+```yaml
+job_id: pm.plan
 version: "2.0"
+description: "Plan PM intent without applying changes"
+
 steps:
-  - step_id: render
-    op: call
-    params:
-      callable: render
-      template_path: "@payload.template_path"
-      items: "@payload.items"  # [{to, template_vars, idempotency_key}, ...]
-
-  - step_id: build
-    op: call
-    params:
-      callable: egret
-      method: msg.send
-      items: "@run.render.items"  # [{to, subject, body, is_html, idempotency_key}, ...]
-      channel: "email"
-      provider: "@payload.provider"
-      account: "@payload.account"
-
-  - step_id: send
-    op: egret.submit
-    params:
-      plan: "@run.build.items[0].plan"
-```
-
-## Renderer Contract (`call.render`)
-
-Lorchestra MUST provide a callable operation `call.render` used by the email templated flows.
-
-### Input params
-
-- `template_path: str` — absolute path to a template file
-- `template_vars: dict` — variables available to the template
-
-### Output shape
-
-`call.render` returns a JSON object with:
-
-- `subject: str`
-- `body: str`
-- `is_html: bool`
-
-This contract intentionally does not prescribe the template language. The implementation may be Jinja2 today and something else later.
-
-### Batch mode
-
-For batch sends, `call.render` MAY accept a list input and return a list output:
-
-- Input: `{items: [{template_path, template_vars}]}`
-- Output: `{items: [{subject, body, is_html}]}`
-
-If batch mode is not implemented initially, the job definition may call `call.render` once per recipient.
-
-## Notes
-
-- Egret responses may return `{status: "already_sent"}` for idempotent replays; lorchestra should not require a cached original result payload.
-
-- Egret is pure egress: it receives finalized `subject`/`body`/`is_html` and does not parse templates or know about Jinja.
-
-- The `call` callable:egret → `egret.submit` pattern parallels `plan.build` → `storacle.submit`. Plan construction is a callable; plan execution is a native op.
-
-- CallableResult contract: callable outputs are `{schema_version, items, stats}`. Extra fields (like `plan`) must be nested inside `items[0]`. Job definitions access them via `@run.step_id.items[0].field`.
-
-## Deferred to Later Epic
-
-The following items were deferred for future implementation:
-
-- **`workman.recipients.expand`** — recipient list expansion from file. When implemented, `email.batch_send.yaml` can add an expand step before render:
-  ```yaml
-  - step_id: expand
+  - step_id: plan.compile
     op: call
     params:
       callable: workman
-      method: recipients.expand
-      recipients_file: "@payload.recipients_file"
-      template_vars: "@payload.template_vars"
-      batch_id: "@payload.batch_id"
-  ```
-  Then render would use `items: "@run.expand.items"` instead of `"@payload.items"`.
+      op: pm.compile_intent
+      intent: "@payload.intent"
+```
 
-- **`email.batch_send_file.yaml`** — a separate job definition that uses file-based recipient expansion via workman.
+The call op will dispatch to workman.intent.compile_intent via dispatch_callable(), which returns a CallableResult containing:
+- `plans`: List of StoraclePlan objects for each operation
+- `diff`: Human-readable change descriptions
+- `plan_hash`: SHA256 hash for integrity verification
 
-## Completion Summary
+### Verification
+- `lorchestra jobs list` → shows pm.plan job
+- `lorchestra run pm.plan --payload '{"intent": {...}}'` → returns plans without writing to WAL
+- Job execution produces CallableResult with schema_version, items, stats, plus plans/diff/plan_hash fields
 
-**Completed: 2026-02-10**
+## PM Apply and Exec Jobs
 
-All acceptance criteria met:
+### Objective
+Complete the workflow with apply (submit pre-compiled plans) and exec (plan+apply combined) jobs. Apply handles the write phase, exec provides single-command convenience for non-interactive use.
 
-| Criterion | Status |
-|-----------|--------|
-| `Op.EGRET_SUBMIT == "egret.submit"` with backend `"native"` | ✅ |
-| `_dispatch_manifest()` handles `Op.EGRET_SUBMIT` | ✅ |
-| `lorchestra/egret/` exports `submit_plan` and `RpcMeta` | ✅ |
-| `egret` callable registered (builds EgretPlan) | ✅ |
-| `render` callable registered (Jinja2 templates) | ✅ |
-| `email.send.yaml` — 2 steps | ✅ |
-| `email.send_templated.yaml` — 3 steps | ✅ |
-| `email.batch_send.yaml` — 3 steps (items in payload) | ✅ |
-| End-to-end email sending via Gmail | ✅ |
-| End-to-end email sending via MSGraph | ✅ |
+### Files to Touch
+- `lorchestra/jobs/definitions/pm/pm.apply.yaml` (create) — Multi-step job extracting and submitting plans
+- `lorchestra/jobs/definitions/pm/pm.exec.yaml` (create) — Two-step job combining plan and apply
 
-**Files created:**
-- `lorchestra/schemas/ops.py` — added EGRET_SUBMIT
-- `lorchestra/egret/__init__.py` — module exports
-- `lorchestra/egret/client.py` — client boundary
-- `lorchestra/callable/egret_builder.py` — plan builder
-- `lorchestra/callable/render.py` — template renderer
-- `lorchestra/jobs/definitions/email/email.send.yaml`
-- `lorchestra/jobs/definitions/email/email.send_templated.yaml`
-- `lorchestra/jobs/definitions/email/email.batch_send.yaml`
+### Implementation Notes
 
-**Files modified:**
-- `lorchestra/executor.py` — dispatch + handler
-- `lorchestra/callable/dispatch.py` — register callables
-- `lorchestra/pyproject.toml` — added jinja2, egret dependencies
+**pm.apply.yaml structure:**
+```yaml
+job_id: pm.apply
+version: "2.0"
+description: "Apply pre-compiled PM plans to WAL"
 
-**Tested providers:**
-- Gmail: acct1, acct2, acct3 ✅
-- MSGraph: ben-mf, ben-mm, ben-getmensio ✅
-- MSGraph: ben-efs ❌ (on-premise mailbox, not REST-enabled)
+steps:
+  - step_id: plans.submit
+    op: storacle.submit
+    params:
+      plan: "@payload.plans"
+```
+
+**pm.exec.yaml structure:**
+```yaml
+job_id: pm.exec
+version: "2.0"
+description: "Plan and apply PM intent in single execution"
+
+steps:
+  - step_id: plan.compile
+    op: call
+    params:
+      callable: workman
+      op: pm.compile_intent
+      intent: "@payload.intent"
+
+  - step_id: plans.submit
+    op: storacle.submit
+    params:
+      plan: "@run.plan.compile.items"
+```
+
+### Verification
+- `lorchestra jobs list` → shows all three PM jobs (plan, apply, exec)
+- `lorchestra run pm.plan --payload '{"intent": {...}}'` → returns result.items (plans array), result.diff, result.plan_hash
+- `lorchestra run pm.apply --payload '{"plans": [...]}'` → writes to WAL without plan_hash validation
+- `lorchestra run pm.exec --payload '{"intent": {...}}'` → end-to-end plan+apply
+- WAL contains expected domain events after apply/exec operations
+- `ruff check lorchestra/` → clean (no new Python code)
+
+## lorchestra.build.yaml Diff (Post-e011)
+
+The lorchestra.build.yaml file will be updated to include the new PM job definitions:
+
+```yaml
+# UPDATES to layout (job_definitions module):
+layout:
+  # Existing job definition paths...
+  - path: "jobs/definitions/pm/"
+    module: job_definitions
+    role: "PM orchestration jobs (plan, apply, exec) wrapping workman compile_intent"
+
+# UPDATES to modules:
+modules:
+  - name: job_definitions
+    kind: module
+    provides:
+      # Existing jobs...
+      - "workman_create_project.yaml"
+      # ... other existing jobs ...
+      # NEW in e011
+      - "pm/pm.plan.yaml"
+      - "pm/pm.apply.yaml"
+      - "pm/pm.exec.yaml"
+
+# UPDATES to boundaries:
+boundaries:
+  - name: job_execution
+    type: inbound
+    contract: "execute(job_id, payload) -> result with items/diff/plan_hash/success"
+    consumers:
+      - "life (via lorchestra CLI)"
+      - "tests"
+      - "direct invocations"
+    # NEW in e011: PM jobs callable contract
+    # pm.plan: PMIntent → (plans, diff, plan_hash)
+    # pm.apply: plans array → (success/failure status)
+    # pm.exec: PMIntent → (plans, diff, plan_hash, success/failure)
+```
+
+**Job Files to Create**:
+- `lorchestra/jobs/definitions/pm/pm.plan.yaml`
+- `lorchestra/jobs/definitions/pm/pm.apply.yaml`
+- `lorchestra/jobs/definitions/pm/pm.exec.yaml`
+
+**No Python code changes** — all three jobs use YAML v2.0 with existing op handlers (call, storacle.submit).
