@@ -1,5 +1,6 @@
 job_id: pm.plan
 version: '2.0'
+description: "Plan PM intent without applying changes"
 steps:
 - step_id: plan_compile
   op: call

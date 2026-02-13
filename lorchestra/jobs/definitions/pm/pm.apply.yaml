@@ -1,5 +1,6 @@
 job_id: pm.apply
 version: '2.0'
+description: "Apply pre-compiled PM plans to WAL"
 steps:
 - step_id: plans_submit
   op: storacle.submit
