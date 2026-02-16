@@ -170,3 +170,63 @@ This means:
 - If a deliverable moves to a new project, its work items' effective project updates immediately at read time — no WAL events needed
 
 ---
+
+## ADR-004: PM Job Step ID Convention and Parameter Naming
+
+**Date:** 2026-02-13
+**Status:** Accepted
+**Context:** e011-02-lorchestra-pm-jobs (PM orchestration job definitions)
+
+### Decision
+
+PM job definitions use **underscore-delimited step IDs** (e.g., `plan_compile`, `plans_submit`) and **singular parameter names** (e.g., `@payload.plan` not `@payload.plans`), matching the established convention in existing lorchestra job definitions.
+
+### Scope
+
+This applies to:
+- `lorchestra/jobs/definitions/pm/pm.plan.yaml` — step_id: `plan_compile`
+- `lorchestra/jobs/definitions/pm/pm.apply.yaml` — step_id: `plans_submit`, param: `@payload.plan`
+- `lorchestra/jobs/definitions/pm/pm.exec.yaml` — step_ids: `plan_compile`, `plans_submit`, data refs: `@run.plan_compile.items[0].plan`
+
+### Why underscore over dot
+
+Existing lorchestra job definitions use underscores for multi-word step IDs (e.g., `create_project`, `persist`, `write`). Dots are not used in step_id values because:
+1. They conflict with YAML path notation (`@run.step_id.field`)
+2. Step references in subsequent steps use underscore-delimited IDs consistently
+3. Downstream specs must reference steps via `@run.<step_id>.*`, making underscores mandatory
+
+### Why `@payload.plan` (singular)
+
+The pm.apply job accepts a **single pre-compiled plan object**, not an array:
+
+```yaml
+# Correct: pass the plan dict extracted from compile_intent output
+run_pm_apply({"plan": compiled_plan_dict})
+
+# Wrong: pass an array of plans
+run_pm_apply({"plans": [compiled_plan_dict]})
+```
+
+This matches the pattern used elsewhere (storacle.submit expects a single plan, not plans array).
+
+### Spec vs. Implementation Divergence
+
+Initial spec draft (e011-02-lorchestra-pm-jobs.md) used:
+- Step IDs with dots: `plan.compile`, `plans.submit`
+- Param name: `@payload.plans` (plural)
+- Data ref: `@run.plan.compile.items`
+
+The **actual implementation corrected these to match system conventions**:
+- Step IDs with underscores: `plan_compile`, `plans_submit` ✅
+- Param name: `@payload.plan` (singular) ✅
+- Data ref: `@run.plan_compile.items[0].plan` ✅
+
+Tests (test_pm_acceptance.py) validate the correct convention works end-to-end for all 39 PM test cases.
+
+### Consequences
+
+- Life PM CLI (spec 3) must pass `{"plan": plan_dict}` to pm.apply, not `{"plans": [...]}`
+- Life PM CLI must use `pm.plan` and `pm.apply` step references with underscores: `@run.plan_compile.*`
+- Any future job defs referencing PM jobs must use the underscore step ID convention
+- Spec documentation should be updated to reflect actual implementation
+
