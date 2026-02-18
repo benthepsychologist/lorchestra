@@ -9,4 +9,9 @@ stages:
       - view_proj_clinical_documents
       - view_proj_form_responses
       - view_proj_contact_events
+      - view_pm_projects
+      - view_pm_deliverables
+      - view_pm_opsstreams
+      - view_pm_work_items
+      - view_pm_artifacts
 stop_on_failure: false

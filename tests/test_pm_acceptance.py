@@ -160,36 +160,46 @@ def smoke_env():
 # ---------------------------------------------------------------------------
 
 
-def _make_intent(ops_list):
-    """Build a single-or-multi-op PMIntent."""
+def _make_payload(ops_list):
+    """Build a job payload from a list of (op_name, payload) tuples."""
     return {
-        "intent_id": "intent_ACCEPT",
         "ops": [{"op": op, "payload": payload} for op, payload in ops_list],
         "source": "acceptance-tests",
-        "actor": {"actor_type": "user", "actor_id": "u_accept"},
-        "issued_at": "2026-02-13T00:00:00Z",
+        "actor": {"actor_type": "human", "actor_id": "u_accept"},
     }
 
 
-def _run_pm_plan(intent):
-    """Execute pm.plan job and return (result, store)."""
+def _run_pm_plan(ops_list):
+    """Execute pm.plan job and return (result, store).
+
+    Args:
+        ops_list: list of (op_name, payload) tuples, or a single (op_name, payload) tuple.
+    """
+    if isinstance(ops_list, tuple):
+        ops_list = [ops_list]
     store = InMemoryRunStore()
     result = execute({
         "job_id": "pm.plan",
         "definitions_dir": str(DEFINITIONS_DIR),
-        "payload": {"intent": intent},
+        "payload": _make_payload(ops_list),
         "store": store,
     })
     return result, store
 
 
-def _run_pm_exec(intent):
-    """Execute pm.exec job and return (result, store)."""
+def _run_pm_exec(ops_list):
+    """Execute pm.exec job and return (result, store).
+
+    Args:
+        ops_list: list of (op_name, payload) tuples, or a single (op_name, payload) tuple.
+    """
+    if isinstance(ops_list, tuple):
+        ops_list = [ops_list]
     store = InMemoryRunStore()
     result = execute({
         "job_id": "pm.exec",
         "definitions_dir": str(DEFINITIONS_DIR),
-        "payload": {"intent": intent},
+        "payload": _make_payload(ops_list),
         "store": store,
     })
     return result, store
@@ -289,8 +299,7 @@ CREATE_OPS = [
 @pytest.mark.parametrize("op_name,payload,expected_event", ALL_OPS, ids=[t[0] for t in ALL_OPS])
 def test_pm_plan(op_name, payload, expected_event):
     """pm.plan compiles a single-op intent and returns plan/diff/plan_hash."""
-    intent = _make_intent([(op_name, payload)])
-    result, store = _run_pm_plan(intent)
+    result, store = _run_pm_plan((op_name, payload))
 
     assert result.success, f"pm.plan failed for {op_name}: {result.error}"
 
@@ -333,8 +342,7 @@ def test_pm_exec(op_name, payload, expected_event, smoke_env):
 
     Writes to smoke dataset. Uses create ops only (no prior aggregates needed).
     """
-    intent = _make_intent([(op_name, payload)])
-    result, store = _run_pm_exec(intent)
+    result, store = _run_pm_exec((op_name, payload))
 
     assert result.success, f"pm.exec failed for {op_name}: {result.error}"
 
@@ -361,8 +369,7 @@ def test_pm_apply(op_name, payload, expected_event, smoke_env):
     Writes to smoke dataset.
     """
     # First compile via pm.plan
-    intent = _make_intent([(op_name, payload)])
-    plan_result, plan_store = _run_pm_plan(intent)
+    plan_result, plan_store = _run_pm_plan((op_name, payload))
     assert plan_result.success
 
     # Extract the compiled plan
@@ -397,10 +404,7 @@ def test_pm_lifecycle_create_then_update(smoke_env):
     import time
 
     # Step 1: create
-    create_intent = _make_intent([
-        ("pm.project.create", {"name": "Lifecycle Project"}),
-    ])
-    create_result, create_store = _run_pm_exec(create_intent)
+    create_result, create_store = _run_pm_exec(("pm.project.create", {"name": "Lifecycle Project"}))
     assert create_result.success, f"Create failed: {create_result.error}"
     create_submit = _get_step_output(create_store, create_result.run_id, "plans_submit")
     _assert_storacle_write_success(create_submit)
@@ -415,14 +419,9 @@ def test_pm_lifecycle_create_then_update(smoke_env):
     time.sleep(3)
 
     # Step 2: update (uses the real project_id from step 1)
-    update_intent = {
-        "intent_id": "intent_ACCEPT_UPDATE",
-        "ops": [{"op": "pm.project.update", "payload": {"project_id": project_id, "name": "Updated Lifecycle"}}],
-        "source": "acceptance-tests",
-        "actor": {"actor_type": "user", "actor_id": "u_accept"},
-        "issued_at": "2026-02-13T00:00:01Z",
-    }
-    update_result, update_store = _run_pm_exec(update_intent)
+    update_result, update_store = _run_pm_exec(
+        ("pm.project.update", {"project_id": project_id, "name": "Updated Lifecycle"}),
+    )
     assert update_result.success, f"Update failed: {update_result.error}"
     update_submit = _get_step_output(update_store, update_result.run_id, "plans_submit")
     _assert_storacle_write_success(update_submit)
@@ -437,38 +436,28 @@ def test_multi_op_intent_with_refs():
 
     Verifies @ref resolution in merged plan and 3-entry diff.
     """
-    intent = _make_intent([
+    result, store = _run_pm_plan([
         ("pm.project.create", {"name": "Multi-Ref Project"}),
         ("pm.work_item.create", {"title": "Ref Task", "project_id": "@ref:0"}),
         ("pm.artifact.create", {"name": "Ref Art", "kind": "doc", "work_item_id": "@ref:1"}),
     ])
-
-    # Use pm.plan (not pm.exec) to avoid needing BQ for this structural test
-    result, store = _run_pm_plan(intent)
     assert result.success, f"Multi-op pm.plan failed: {result.error}"
 
-    # Get plan_compile output
     output = _get_step_output(store, result.run_id, "plan_compile")
     envelope = output["items"][0]
 
-    # Diff should have 3 entries
     assert len(envelope["diff"]) == 3
 
-    # Merged plan: find all wal.append ops
     plan = envelope["plan"]
     wal_ops = [op for op in plan["ops"] if op["method"] == "wal.append"]
     assert len(wal_ops) == 3
 
-    # Verify @ref resolution
     project_id = wal_ops[0]["params"]["aggregate_id"]
     wi_id = wal_ops[1]["params"]["aggregate_id"]
 
-    # work_item.created should reference the project
     assert wal_ops[1]["params"]["payload"]["project_id"] == project_id
-    # artifact.created should reference the work_item
     assert wal_ops[2]["params"]["payload"]["work_item_id"] == wi_id
 
-    # Verify merged plan ID renumbering is sequential
     all_ids = [op["id"] for op in plan["ops"]]
     a_ids = sorted([i for i in all_ids if i.startswith("a")])
     w_ids = sorted([i for i in all_ids if i.startswith("w")])
@@ -481,23 +470,8 @@ def test_multi_op_intent_with_refs():
 # ---------------------------------------------------------------------------
 
 def test_mega_hierarchy_positive():
-    """27-op intent: full PM hierarchy with inheritance auto-fill and link FK assertions.
-
-    Hierarchy:
-      OpsStream: ClinicalOPS
-      ├── Project: Quarterly Reporting (linked via link.create)
-      │   ├── Deliverable: Q1 Report → 2 WorkItems
-      │   ├── Deliverable: Q2 Report → 2 WorkItems
-      │   └── Deliverable: Q3 Report → 2 WorkItems
-      ├── Project: Clinic Update (linked via link.create)
-      │   ├── Deliverable: Facility Assessment → 2 WorkItems
-      │   ├── Deliverable: Vendor Selection → 2 WorkItems
-      │   └── Deliverable: Implementation Plan → 2 WorkItems
-      └── Direct WorkItems (opsstream_id only, no project)
-          ├── WorkItem: Weekly Standup Notes
-          └── WorkItem: Monthly Metrics Review
-    """
-    intent = _make_intent([
+    """27-op intent: full PM hierarchy with inheritance auto-fill and link FK assertions."""
+    result, store = _run_pm_plan([
         # 0: OpsStream
         ("pm.opsstream.create", {"name": "ClinicalOPS"}),
         # 1: Project: Quarterly Reporting
@@ -513,90 +487,69 @@ def test_mega_hierarchy_positive():
                          "target_id": "@ref:3", "target_type": "project",
                          "predicate": "has_part"}),
         # 5-7: Deliverables under Quarterly Reporting
-        ("pm.deliverable.create", {"name": "Q1 Report", "project_id": "@ref:1"}),   # @ref:5
-        ("pm.deliverable.create", {"name": "Q2 Report", "project_id": "@ref:1"}),   # @ref:6
-        ("pm.deliverable.create", {"name": "Q3 Report", "project_id": "@ref:1"}),   # @ref:7
+        ("pm.deliverable.create", {"name": "Q1 Report", "project_id": "@ref:1"}),
+        ("pm.deliverable.create", {"name": "Q2 Report", "project_id": "@ref:1"}),
+        ("pm.deliverable.create", {"name": "Q3 Report", "project_id": "@ref:1"}),
         # 8-13: WorkItems under QR deliverables (inherit project_id)
-        ("pm.work_item.create", {"title": "Draft Q1 Financials", "deliverable_id": "@ref:5"}),   # @ref:8
-        ("pm.work_item.create", {"title": "Review Q1 Data", "deliverable_id": "@ref:5"}),         # @ref:9
-        ("pm.work_item.create", {"title": "Draft Q2 Financials", "deliverable_id": "@ref:6"}),   # @ref:10
-        ("pm.work_item.create", {"title": "Review Q2 Data", "deliverable_id": "@ref:6"}),         # @ref:11
-        ("pm.work_item.create", {"title": "Draft Q3 Financials", "deliverable_id": "@ref:7"}),   # @ref:12
-        ("pm.work_item.create", {"title": "Review Q3 Data", "deliverable_id": "@ref:7"}),         # @ref:13
+        ("pm.work_item.create", {"title": "Draft Q1 Financials", "deliverable_id": "@ref:5"}),
+        ("pm.work_item.create", {"title": "Review Q1 Data", "deliverable_id": "@ref:5"}),
+        ("pm.work_item.create", {"title": "Draft Q2 Financials", "deliverable_id": "@ref:6"}),
+        ("pm.work_item.create", {"title": "Review Q2 Data", "deliverable_id": "@ref:6"}),
+        ("pm.work_item.create", {"title": "Draft Q3 Financials", "deliverable_id": "@ref:7"}),
+        ("pm.work_item.create", {"title": "Review Q3 Data", "deliverable_id": "@ref:7"}),
         # 14-16: Deliverables under Clinic Update
-        ("pm.deliverable.create", {"name": "Facility Assessment", "project_id": "@ref:3"}),  # @ref:14
-        ("pm.deliverable.create", {"name": "Vendor Selection", "project_id": "@ref:3"}),     # @ref:15
-        ("pm.deliverable.create", {"name": "Implementation Plan", "project_id": "@ref:3"}),  # @ref:16
+        ("pm.deliverable.create", {"name": "Facility Assessment", "project_id": "@ref:3"}),
+        ("pm.deliverable.create", {"name": "Vendor Selection", "project_id": "@ref:3"}),
+        ("pm.deliverable.create", {"name": "Implementation Plan", "project_id": "@ref:3"}),
         # 17-22: WorkItems under CU deliverables (inherit project_id)
-        ("pm.work_item.create", {"title": "Survey Building", "deliverable_id": "@ref:14"}),   # @ref:17
-        ("pm.work_item.create", {"title": "Review Codes", "deliverable_id": "@ref:14"}),       # @ref:18
-        ("pm.work_item.create", {"title": "RFP Draft", "deliverable_id": "@ref:15"}),           # @ref:19
-        ("pm.work_item.create", {"title": "Vendor Interviews", "deliverable_id": "@ref:15"}),   # @ref:20
-        ("pm.work_item.create", {"title": "Timeline Draft", "deliverable_id": "@ref:16"}),      # @ref:21
-        ("pm.work_item.create", {"title": "Resource Planning", "deliverable_id": "@ref:16"}),    # @ref:22
+        ("pm.work_item.create", {"title": "Survey Building", "deliverable_id": "@ref:14"}),
+        ("pm.work_item.create", {"title": "Review Codes", "deliverable_id": "@ref:14"}),
+        ("pm.work_item.create", {"title": "RFP Draft", "deliverable_id": "@ref:15"}),
+        ("pm.work_item.create", {"title": "Vendor Interviews", "deliverable_id": "@ref:15"}),
+        ("pm.work_item.create", {"title": "Timeline Draft", "deliverable_id": "@ref:16"}),
+        ("pm.work_item.create", {"title": "Resource Planning", "deliverable_id": "@ref:16"}),
         # 23-24: Direct work items under opsstream (no project)
-        ("pm.work_item.create", {"title": "Weekly Standup Notes", "opsstream_id": "@ref:0"}),    # @ref:23
-        ("pm.work_item.create", {"title": "Monthly Metrics Review", "opsstream_id": "@ref:0"}),  # @ref:24
+        ("pm.work_item.create", {"title": "Weekly Standup Notes", "opsstream_id": "@ref:0"}),
+        ("pm.work_item.create", {"title": "Monthly Metrics Review", "opsstream_id": "@ref:0"}),
         # 25-26: Artifacts on two work items
-        ("pm.artifact.create", {"name": "Q1 Draft Doc", "kind": "document", "work_item_id": "@ref:8"}),   # @ref:25
-        ("pm.artifact.create", {"name": "RFP Document", "kind": "document", "work_item_id": "@ref:19"}),  # @ref:26
+        ("pm.artifact.create", {"name": "Q1 Draft Doc", "kind": "document", "work_item_id": "@ref:8"}),
+        ("pm.artifact.create", {"name": "RFP Document", "kind": "document", "work_item_id": "@ref:19"}),
     ])
-
-    result, store = _run_pm_plan(intent)
     assert result.success, f"Mega pm.plan failed: {result.error}"
 
     output = _get_step_output(store, result.run_id, "plan_compile")
     envelope = output["items"][0]
     plan = envelope["plan"]
 
-    # 1. 27 wal.append ops
     wal_ops = [op for op in plan["ops"] if op["method"] == "wal.append"]
     assert len(wal_ops) == 27
-
-    # 2. Diff has 27 entries
     assert len(envelope["diff"]) == 27
 
-    # 3. Work items under deliverables have inherited project_id
-    # Build a lookup: aggregate_id → wal payload
-    wal_by_id = {}
-    for w in wal_ops:
-        wal_by_id[w["params"]["aggregate_id"]] = w["params"]["payload"]
+    qr_project_id = wal_ops[1]["params"]["aggregate_id"]
+    cu_project_id = wal_ops[3]["params"]["aggregate_id"]
 
-    qr_project_id = wal_ops[1]["params"]["aggregate_id"]  # Quarterly Reporting
-    cu_project_id = wal_ops[3]["params"]["aggregate_id"]  # Clinic Update
-
-    # QR deliverables (ops 5,6,7 → wal indices 5,6,7)
     for idx in (5, 6, 7):
-        del_payload = wal_ops[idx]["params"]["payload"]
-        assert del_payload["project_id"] == qr_project_id
+        assert wal_ops[idx]["params"]["payload"]["project_id"] == qr_project_id
 
-    # QR work items (ops 8-13 → wal indices 8-13): should have inherited project_id
     for idx in range(8, 14):
-        wi_payload = wal_ops[idx]["params"]["payload"]
-        assert wi_payload["project_id"] == qr_project_id, (
+        assert wal_ops[idx]["params"]["payload"]["project_id"] == qr_project_id, (
             f"WI at index {idx} should inherit QR project_id"
         )
 
-    # CU deliverables
     for idx in (14, 15, 16):
-        del_payload = wal_ops[idx]["params"]["payload"]
-        assert del_payload["project_id"] == cu_project_id
+        assert wal_ops[idx]["params"]["payload"]["project_id"] == cu_project_id
 
-    # CU work items (ops 17-22): should have inherited project_id
     for idx in range(17, 23):
-        wi_payload = wal_ops[idx]["params"]["payload"]
-        assert wi_payload["project_id"] == cu_project_id, (
+        assert wal_ops[idx]["params"]["payload"]["project_id"] == cu_project_id, (
             f"WI at index {idx} should inherit CU project_id"
         )
 
-    # 4. Direct-to-opsstream work items have opsstream_id but no project_id
     opsstream_id = wal_ops[0]["params"]["aggregate_id"]
     for idx in (23, 24):
         wi_payload = wal_ops[idx]["params"]["payload"]
         assert wi_payload["opsstream_id"] == opsstream_id
         assert wi_payload.get("project_id") is None or "project_id" not in wi_payload or wi_payload["project_id"] == ""
 
-    # 5. link.create ops have assert.exists for both source and target
     link_wal_ids = set()
     for w in wal_ops:
         if w["params"]["event_type"] == "link.created":
@@ -604,9 +557,6 @@ def test_mega_hierarchy_positive():
     assert len(link_wal_ids) == 2
 
     assert_exists_ops = [op for op in plan["ops"] if op["method"] == "assert.exists"]
-    # Each link.create contributes 2 assert.exists (source + target)
-    # Other ops also contribute assert.exists for FKs
-    # Just verify we have at least 4 from links (2 links × 2)
     link_source_types = {"opsstream", "project"}
     link_asserts = [op for op in assert_exists_ops
                     if op["params"]["aggregate_type"] in link_source_types
@@ -615,57 +565,53 @@ def test_mega_hierarchy_positive():
 
 
 def test_mega_deliverable_overwrites_explicit_project():
-    """Anchor-based: deliverable is authority on project — explicit project_id is overwritten.
-
-    Calls compile_intent directly to inspect the resolved payload.
-    """
+    """Anchor-based: deliverable is authority on project — explicit project_id is overwritten."""
     from workman.intent import compile_intent
 
-    intent = _make_intent([
-        ("pm.project.create", {"name": "Quarterly Reporting"}),       # @ref:0
-        ("pm.project.create", {"name": "Clinic Update"}),             # @ref:1
-        ("pm.deliverable.create", {"name": "Vendor Selection", "project_id": "@ref:1"}),  # @ref:2
-        # deliverable belongs to Clinic Update; explicit QR is overwritten
-        ("pm.work_item.create", {"title": "Placed Correctly", "deliverable_id": "@ref:2", "project_id": "@ref:0"}),
-    ])
-    result = compile_intent(intent)
+    result = compile_intent(
+        ops=[
+            {"op": "pm.project.create", "payload": {"name": "Quarterly Reporting"}},
+            {"op": "pm.project.create", "payload": {"name": "Clinic Update"}},
+            {"op": "pm.deliverable.create", "payload": {"name": "Vendor Selection", "project_id": "@ref:1"}},
+            {"op": "pm.work_item.create", "payload": {"title": "Placed Correctly", "deliverable_id": "@ref:2", "project_id": "@ref:0"}},
+        ],
+        source="acceptance-tests",
+        actor={"actor_type": "human", "actor_id": "u_accept"},
+    )
     plan = result["items"][0]["plan"]
     wal_ops = [op for op in plan["ops"] if op["method"] == "wal.append"]
     cu_project_id = wal_ops[1]["params"]["aggregate_id"]
     wi_payload = wal_ops[3]["params"]["payload"]
-    # project_id was overwritten to Clinic Update (deliverable's project)
     assert wi_payload["project_id"] == cu_project_id
 
 
 def test_mega_negative_move_project_blocked_by_deliverable_anchor():
-    """Anchor-based: cannot reassign project when work item is anchored to a deliverable.
-
-    Calls compile_intent directly (not through lorchestra) because lorchestra
-    catches CompileError and wraps it in a failure result.
-    """
+    """Anchor-based: cannot reassign project when work item is anchored to a deliverable."""
     from workman.errors import CompileError
     from workman.intent import compile_intent
 
-    intent = _make_intent([
-        ("pm.project.create", {"name": "Quarterly Reporting"}),       # @ref:0
-        ("pm.project.create", {"name": "Clinic Update"}),             # @ref:1
-        ("pm.deliverable.create", {"name": "Assessment", "project_id": "@ref:1"}),  # @ref:2
-        ("pm.work_item.create", {"title": "Task", "deliverable_id": "@ref:2"}),     # @ref:3
-        # This should FAIL: work item anchored to deliverable, can't reassign project directly
-        ("pm.work_item.move", {"work_item_id": "@ref:3", "project_id": "@ref:0"}),
-    ])
     with pytest.raises(CompileError, match="Cannot reassign project"):
-        compile_intent(intent)
+        compile_intent(
+            ops=[
+                {"op": "pm.project.create", "payload": {"name": "Quarterly Reporting"}},
+                {"op": "pm.project.create", "payload": {"name": "Clinic Update"}},
+                {"op": "pm.deliverable.create", "payload": {"name": "Assessment", "project_id": "@ref:1"}},
+                {"op": "pm.work_item.create", "payload": {"title": "Task", "deliverable_id": "@ref:2"}},
+                {"op": "pm.work_item.move", "payload": {"work_item_id": "@ref:3", "project_id": "@ref:0"}},
+            ],
+            source="acceptance-tests",
+            actor={"actor_type": "human", "actor_id": "u_accept"},
+        )
 
 
 def test_mega_negative_link_nonexistent_target():
     """link.create with non-existent atoms — verifies dynamic FK assertions produce assert.exists."""
-    intent = _make_intent([
-        ("link.create", {"source_id": "proj_FAKE", "source_type": "project",
-                         "target_id": "wi_FAKE", "target_type": "work_item",
-                         "predicate": "contains"}),
-    ])
-    result, store = _run_pm_plan(intent)
+    result, store = _run_pm_plan((
+        "link.create",
+        {"source_id": "proj_FAKE", "source_type": "project",
+         "target_id": "wi_FAKE", "target_type": "work_item",
+         "predicate": "contains"},
+    ))
     assert result.success  # compiles fine — assertions are in the plan
     plan = _get_step_output(store, result.run_id, "plan_compile")["items"][0]["plan"]
     assert_ops = [op for op in plan["ops"] if op["method"] == "assert.exists"]

@@ -7,4 +7,6 @@ steps:
   params:
     callable: workman
     op: pm.compile_intent
-    intent: '@payload.intent'
+    ops: '@payload.ops'
+    source: '@payload.source'
+    actor: '@payload.actor'

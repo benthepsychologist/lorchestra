@@ -1,0 +1,31 @@
+job_id: pm_sheets_artifacts
+version: '2.0'
+config: config/pm_sheets.yaml
+steps:
+- step_id: read
+  op: storacle.query
+  params:
+    dataset: canonical
+    table: view_pm_artifacts
+    columns: ['*']
+- step_id: package
+  op: call
+  params:
+    callable: canonizer
+    source_type: projection
+    items: '@run.read.items'
+    config:
+      transform_id: projection/bq_rows_to_sheets_write_table@1.0.0
+      spreadsheet_id: '@self.config.spreadsheet_id'
+      sheet_name: artifacts
+      strategy: replace
+      account: '@self.config.account'
+- step_id: persist
+  op: plan.build
+  params:
+    items: '@run.package.items'
+    method: sheets.write_table
+- step_id: write
+  op: storacle.submit
+  params:
+    plan: '@run.persist.plan'

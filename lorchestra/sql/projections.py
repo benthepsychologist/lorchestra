@@ -477,13 +477,14 @@ PROJECTIONS: dict[str, str] = {
 }
 
 
-def get_projection_sql(name: str, project: str, dataset: str) -> str:
+def get_projection_sql(name: str, project: str, dataset: str, **kwargs) -> str:
     """Get projection SQL with project and dataset substituted.
 
     Args:
         name: Projection name (e.g., 'proj_client_sessions')
         project: GCP project ID
         dataset: BigQuery dataset name
+        **kwargs: Additional format parameters (e.g., wal_dataset for PM projections)
 
     Returns:
         SQL string with placeholders replaced
@@ -495,4 +496,4 @@ def get_projection_sql(name: str, project: str, dataset: str) -> str:
         raise KeyError(f"Unknown projection: {name}. Available: {list(PROJECTIONS.keys())}")
 
     sql_template = PROJECTIONS[name]
-    return sql_template.format(project=project, dataset=dataset)
+    return sql_template.format(project=project, dataset=dataset, **kwargs)

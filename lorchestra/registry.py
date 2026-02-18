@@ -103,6 +103,20 @@ class JobRegistry:
         except Exception as e:
             raise JobValidationError(f"Failed to load {def_path}: {e}")
 
+        # Resolve .yaml/.yml file paths in top-level extra fields
+        known_keys = {"job_id", "version", "steps"}
+        for key, value in data.items():
+            if key not in known_keys and isinstance(value, str) and (
+                value.endswith(".yaml") or value.endswith(".yml")
+            ):
+                yaml_path = self._definitions_dir / value
+                try:
+                    data[key] = self._load_file(yaml_path)
+                except Exception as e:
+                    raise JobValidationError(
+                        f"Failed to load config file '{value}' for key '{key}': {e}"
+                    )
+
         # Validate and create JobDef
         try:
             job_def = JobDef.from_dict(data)

@@ -68,7 +68,7 @@ class TestLoadPipeline:
         spec = load_pipeline("pipeline.views")
         assert spec["pipeline_id"] == "pipeline.views"
         assert len(spec["stages"]) == 1
-        assert len(spec["stages"][0]["jobs"]) == 6
+        assert len(spec["stages"][0]["jobs"]) == 11
 
     def test_load_daily_all(self):
         spec = load_pipeline("pipeline.daily_all")

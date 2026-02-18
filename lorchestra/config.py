@@ -19,6 +19,8 @@ class LorchestraConfig:
     sqlite_path: str
     local_views_root: str
 
+    dataset_wal: str = "wal"
+
     canonizer_registry_root: Optional[str] = None
     formation_registry_root: Optional[str] = None
     env_file: Optional[str] = None

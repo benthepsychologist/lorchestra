@@ -28,8 +28,8 @@ from .registry import JobRegistry
 
 
 # Reference pattern: @namespace.path.to.value
-# Namespace is one of: ctx, payload, run
-REF_PATTERN = re.compile(r"@(ctx|payload|run)\.([a-zA-Z_][a-zA-Z0-9_.]*)")
+# Namespace is one of: ctx, payload, run, self
+REF_PATTERN = re.compile(r"@(ctx|payload|run|self)\.([a-zA-Z_][a-zA-Z0-9_.]*)")
 
 
 def _utcnow() -> datetime:
@@ -37,7 +37,12 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _resolve_reference(ref: str, ctx: dict[str, Any], payload: dict[str, Any]) -> Any:
+def _resolve_reference(
+    ref: str,
+    ctx: dict[str, Any],
+    payload: dict[str, Any],
+    self_data: Optional[dict[str, Any]] = None,
+) -> Any:
     """
     Resolve a single reference string.
 
@@ -45,6 +50,7 @@ def _resolve_reference(ref: str, ctx: dict[str, Any], payload: dict[str, Any]) -
         ref: Reference string like "@ctx.project_id" or "@payload.entity_id"
         ctx: Context dictionary
         payload: Payload dictionary
+        self_data: Self dictionary (JobDef extras) for @self.* resolution
 
     Returns:
         The resolved value
@@ -64,6 +70,10 @@ def _resolve_reference(ref: str, ctx: dict[str, Any], payload: dict[str, Any]) -
         source = ctx
     elif namespace == "payload":
         source = payload
+    elif namespace == "self":
+        if self_data is None:
+            raise CompileError(f"@self.* references require extras in JobDef: {ref}")
+        source = self_data
     elif namespace == "run":
         # @run.* refs are resolved at runtime, not compile time
         raise CompileError(f"@run.* references cannot be resolved at compile time: {ref}")
@@ -99,6 +109,7 @@ def _resolve_value(
     ctx: dict[str, Any],
     payload: dict[str, Any],
     preserve_run_refs: bool = True,
+    self_data: Optional[dict[str, Any]] = None,
 ) -> Any:
     """
     Recursively resolve references in a value.
@@ -108,6 +119,7 @@ def _resolve_value(
         ctx: Context dictionary
         payload: Payload dictionary
         preserve_run_refs: If True, @run.* refs are left unresolved
+        self_data: Self dictionary (JobDef extras) for @self.* resolution
 
     Returns:
         The resolved value
@@ -124,14 +136,14 @@ def _resolve_value(
                 if namespace == "run" and preserve_run_refs:
                     # Leave @run.* refs for runtime resolution
                     return value
-                return _resolve_reference(value, ctx, payload)
+                return _resolve_reference(value, ctx, payload, self_data)
         # Handle embedded references in strings (e.g., "prefix_@ctx.id_suffix")
         # For now, only support full-string references
         return value
     elif isinstance(value, dict):
-        return {k: _resolve_value(v, ctx, payload, preserve_run_refs) for k, v in value.items()}
+        return {k: _resolve_value(v, ctx, payload, preserve_run_refs, self_data) for k, v in value.items()}
     elif isinstance(value, (list, tuple)):
-        return [_resolve_value(v, ctx, payload, preserve_run_refs) for v in value]
+        return [_resolve_value(v, ctx, payload, preserve_run_refs, self_data) for v in value]
     else:
         # Primitives pass through unchanged
         return value
@@ -324,10 +336,11 @@ class Compiler:
         Returns:
             Compiled JobInstance
         """
+        self_data = job_def.extras or None
         compiled_steps: list[JobStepInstance] = []
 
         for step_def in job_def.steps:
-            compiled_step = self._compile_step(step_def, ctx, payload)
+            compiled_step = self._compile_step(step_def, ctx, payload, self_data)
             compiled_steps.append(compiled_step)
 
         return JobInstance(
@@ -343,6 +356,7 @@ class Compiler:
         step_def: StepDef,
         ctx: dict[str, Any],
         payload: dict[str, Any],
+        self_data: Optional[dict[str, Any]] = None,
     ) -> JobStepInstance:
         """
         Compile a single step definition.
@@ -351,6 +365,7 @@ class Compiler:
             step_def: The step definition
             ctx: Context dictionary
             payload: Payload dictionary
+            self_data: Self dictionary (JobDef extras) for @self.* resolution
 
         Returns:
             Compiled JobStepInstance
@@ -370,7 +385,9 @@ class Compiler:
 
         # Resolve compile-time references in params
         # @run.* refs are preserved for runtime resolution
-        resolved_params = _resolve_value(step_def.params, ctx, payload, preserve_run_refs=True)
+        resolved_params = _resolve_value(
+            step_def.params, ctx, payload, preserve_run_refs=True, self_data=self_data,
+        )
 
         return JobStepInstance(
             step_id=step_def.step_id,
@@ -401,6 +418,7 @@ def compile_job(
     """
     ctx = ctx or {}
     payload = payload or {}
+    self_data = job_def.extras or None
 
     compiled_steps: list[JobStepInstance] = []
 
@@ -412,7 +430,9 @@ def compile_job(
             compiled_skip = not condition_result
 
         # Resolve params
-        resolved_params = _resolve_value(step_def.params, ctx, payload, preserve_run_refs=True)
+        resolved_params = _resolve_value(
+            step_def.params, ctx, payload, preserve_run_refs=True, self_data=self_data,
+        )
 
         compiled_steps.append(JobStepInstance(
             step_id=step_def.step_id,

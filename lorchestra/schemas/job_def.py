@@ -111,10 +111,12 @@ class JobDef:
         job_id: Unique identifier for the job
         version: Semantic version of the job definition
         steps: Ordered list of step definitions
+        extras: Additional top-level fields from the YAML (accessible via @self.*)
     """
     job_id: str
     version: str
     steps: tuple[StepDef, ...] = field(default_factory=tuple)
+    extras: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         # Validate unique step IDs
@@ -135,6 +137,7 @@ class JobDef:
         return {
             "job_id": self.job_id,
             "version": self.version,
+            **self.extras,
             "steps": [
                 {
                     "step_id": s.step_id,
@@ -181,8 +184,12 @@ class JobDef:
                 idempotency=idempotency,
             ))
 
+        known_keys = {"job_id", "version", "steps"}
+        extras = {k: v for k, v in data.items() if k not in known_keys}
+
         return cls(
             job_id=data["job_id"],
             version=data["version"],
             steps=tuple(steps),
+            extras=extras,
         )

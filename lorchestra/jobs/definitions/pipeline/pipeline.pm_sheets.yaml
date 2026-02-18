@@ -1,0 +1,11 @@
+pipeline_id: pipeline.pm_sheets
+description: Sync PM entity data to Google Sheets
+stages:
+  - name: pm_sheets
+    jobs:
+      - pm_sheets_projects
+      - pm_sheets_work_items
+      - pm_sheets_deliverables
+      - pm_sheets_opsstreams
+      - pm_sheets_artifacts
+stop_on_failure: false

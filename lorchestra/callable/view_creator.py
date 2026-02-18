@@ -44,6 +44,7 @@ def execute(params: dict[str, Any]) -> dict[str, Any]:
         name=projection_name,
         project=config.project,
         dataset=config.dataset_canonical,
+        wal_dataset=config.dataset_wal,
     )
 
     result = CallableResult(
