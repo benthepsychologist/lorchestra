@@ -466,6 +466,39 @@ LEFT JOIN (
 WHERE fr.canonical_schema = 'iglu:org.canonical/form_response/jsonschema/1-0-0'
 """
 
+# =============================================================================
+# domain_objects - Latest-state domain objects from WAL (LLM analysis results)
+# =============================================================================
+DOMAIN_OBJECTS = """
+CREATE OR REPLACE VIEW `{project}.{dataset}.objects` AS
+SELECT
+  event_id,
+  aggregate_id,
+  aggregate_type,
+  event_type,
+  subject_id,
+  occurred_at AS synthesized_at,
+  ingested_at AS created_at,
+  JSON_VALUE(payload, '$.idem_key') AS idem_key,
+  JSON_VALUE(payload, '$.entity_id') AS entity_id,
+  JSON_VALUE(payload, '$.object_type') AS object_type,
+  JSON_VALUE(payload, '$.object_variant') AS object_variant,
+  JSON_VALUE(payload, '$.content') AS content,
+  JSON_VALUE(payload, '$.model_used') AS model_used,
+  JSON_QUERY(payload, '$.inference_audit') AS inference_audit,
+  payload,
+  producer_service,
+  producer_component,
+  correlation_id
+FROM `{project}.{wal_dataset}.domain_events`
+WHERE aggregate_type = 'domain_object'
+  AND event_type NOT LIKE '%.deleted'
+QUALIFY ROW_NUMBER() OVER (
+  PARTITION BY aggregate_id
+  ORDER BY occurred_at DESC, event_id DESC
+) = 1
+"""
+
 # Registry of all projections
 PROJECTIONS: dict[str, str] = {
     "proj_clients": PROJ_CLIENTS,
@@ -474,6 +507,7 @@ PROJECTIONS: dict[str, str] = {
     "proj_clinical_documents": PROJ_CLINICAL_DOCUMENTS,
     "proj_form_responses": PROJ_FORM_RESPONSES,
     "proj_contact_events": PROJ_CONTACT_EVENTS,
+    "domain_objects": DOMAIN_OBJECTS,
 }
 
 

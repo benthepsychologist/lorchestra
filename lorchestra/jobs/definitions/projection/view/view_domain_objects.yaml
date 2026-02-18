@@ -1,0 +1,18 @@
+job_id: view_domain_objects
+version: '2.0'
+steps:
+- step_id: generate
+  op: call
+  params:
+    callable: view_creator
+    projection_name: domain_objects
+    dataset: domain
+- step_id: persist
+  op: plan.build
+  params:
+    items: '@run.generate.items'
+    method: bq.execute
+- step_id: write
+  op: storacle.submit
+  params:
+    plan: '@run.persist.plan'

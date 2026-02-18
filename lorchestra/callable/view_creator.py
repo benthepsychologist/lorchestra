@@ -25,6 +25,7 @@ def execute(params: dict[str, Any]) -> dict[str, Any]:
     Args:
         params: Dictionary containing:
             - projection_name: str — registered projection name
+            - dataset: str (optional) — target dataset override (default: config.dataset_canonical)
 
     Returns:
         CallableResult dict with items=[{"sql": ddl_string}]
@@ -40,10 +41,11 @@ def execute(params: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Missing required param: 'projection_name'")
 
     config = load_config()
+    dataset = params.get("dataset") or config.dataset_canonical
     sql = get_projection_sql(
         name=projection_name,
         project=config.project,
-        dataset=config.dataset_canonical,
+        dataset=dataset,
         wal_dataset=config.dataset_wal,
     )
 

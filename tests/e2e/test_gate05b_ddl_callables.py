@@ -47,6 +47,13 @@ class TestViewCreator:
         assert "test-project" in sql
         assert "test_canonical" in sql
 
+    def test_dataset_override(self):
+        from lorchestra.callable.view_creator import execute
+
+        result = execute({"projection_name": "proj_clients", "dataset": "override_ds"})
+        sql = result["items"][0]["sql"]
+        assert "`test-project.override_ds.proj_clients`" in sql
+
     @pytest.mark.parametrize("projection_name", list(PROJECTIONS.keys()))
     def test_all_projections_produce_sql(self, projection_name):
         from lorchestra.callable.view_creator import execute

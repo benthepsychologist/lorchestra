@@ -43,6 +43,7 @@ Expected output:
 - **sql/** - SQL DDL files for reference
   - `create_event_log.sql` - Event log table schema
   - `create_raw_objects.sql` - Raw objects table schema
+  - `domain_objects_view.sql` - domain.objects latest-state view over wal.domain_events
   - `add_search_index.sql` - Optional search index for full-text search
   - `create_materialized_view_emails.sql` - Optional materialized view for emails
 - **bigquery-setup.md** - Detailed setup guide
@@ -61,6 +62,13 @@ Expected output:
 - Clustered by `source_system`, `object_type`
 - One row per `idem_key` (deduplicated)
 - MERGE query provides idempotency
+
+### domain.objects (Latest-State Domain View)
+- View over `wal.domain_events` for analysis/domain object payloads
+- Created via the `view_domain_objects` job in `pipeline.views` (uses `view_creator` + `bq.execute`)
+- Returns only latest event per `aggregate_id`
+- Extracted columns: `idem_key`, `entity_id`, `object_type`, `object_variant`, `content`, `model_used`, `inference_audit`
+- Supported `object_variant`: `evidence`, `therapeutic_work`, `emotional_relational`, `client_model_delta`, `goal_progress`, `narrative`, `client_model`
 
 ## Next Steps
 

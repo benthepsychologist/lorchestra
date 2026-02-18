@@ -3,6 +3,7 @@ description: Run all view creation jobs (one-time setup, not daily)
 stages:
   - name: create_views
     jobs:
+      - view_domain_objects
       - view_proj_clients
       - view_proj_sessions
       - view_proj_transcripts
