@@ -53,9 +53,24 @@ def _get_callables() -> dict[str, CallableFn]:
     under their short name (e.g., "view_creator").
     """
     # External packages (top-level imports)
-    external = ["injest", "canonizer", "finalform", "projectionist", "workman"]
+    external = [
+        "injest",
+        "canonizer",
+        "finalform",
+        "projectionist",
+        "workman",
+        "inferometer",
+    ]
     # Internal callables (lorchestra.callable.*)
-    internal = ["view_creator", "molt_projector", "bq_reader", "file_renderer", "egret_builder", "render"]
+    internal = [
+        "view_creator",
+        "molt_projector",
+        "bq_reader",
+        "file_renderer",
+        "egret_builder",
+        "render",
+        "inferometer_adapter",
+    ]
 
     callables: dict[str, CallableFn] = {}
 
@@ -77,6 +92,11 @@ def _get_callables() -> dict[str, CallableFn]:
     # "egret" -> egret_builder (for use in job definitions as callable: egret)
     if "egret_builder" in callables:
         callables["egret"] = callables["egret_builder"]
+    
+    # "inferometer" can be used from either the external package or internal adapter
+    # Prefer internal adapter if available (more flexible for lorchestra integration)
+    if "inferometer_adapter" in callables and callables["inferometer_adapter"].__name__ != "stub":
+        callables["inferometer"] = callables["inferometer_adapter"]
 
     return callables
 

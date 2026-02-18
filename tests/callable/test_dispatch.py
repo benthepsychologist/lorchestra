@@ -101,6 +101,7 @@ class TestCallablesRegistry:
             "finalform",
             "projectionist",
             "workman",
+            "inferometer",
         ]
 
         for name in expected_names:
