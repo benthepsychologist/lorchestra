@@ -470,7 +470,7 @@ WHERE fr.canonical_schema = 'iglu:org.canonical/form_response/jsonschema/1-0-0'
 # domain_objects - Latest-state domain objects from WAL (LLM analysis results)
 # =============================================================================
 DOMAIN_OBJECTS = """
-CREATE OR REPLACE VIEW `{project}.{dataset}.objects` AS
+CREATE OR REPLACE VIEW `{project}.{dataset}.domain_objects` AS
 SELECT
   event_id,
   aggregate_id,

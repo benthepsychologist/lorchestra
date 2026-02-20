@@ -6,7 +6,7 @@ steps:
   params:
     callable: view_creator
     projection_name: domain_objects
-    dataset: domain
+    dataset: wal
 - step_id: persist
   op: plan.build
   params:

@@ -10,12 +10,18 @@ processors (ingest, canonize, formation, projection).
 
 from __future__ import annotations
 
+import os
 import sys
 
 import click
 from pathlib import Path
 
 from lorchestra import __version__
+
+# Set default storacle namespace if not already set (life sets this automatically;
+# without it, storacle.submit silently no-ops and jobs report false SUCCESS).
+if "STORACLE_NAMESPACE_SALT" not in os.environ:
+    os.environ["STORACLE_NAMESPACE_SALT"] = "storacle-dev"
 
 
 # Job definitions directory

@@ -14,7 +14,7 @@
 -- - narrative
 -- - client_model
 
-CREATE OR REPLACE VIEW `local-orchestration.domain.objects` AS
+CREATE OR REPLACE VIEW `local-orchestration.wal.domain_objects` AS
 SELECT
   event_id,
   aggregate_id,
