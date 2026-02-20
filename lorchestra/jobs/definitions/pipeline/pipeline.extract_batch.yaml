@@ -1,0 +1,26 @@
+pipeline_id: pipeline.extract_batch
+description: >
+  Batch extraction pipeline — queries for unprocessed transcripts,
+  then loops over results running extraction jobs for each.
+  Demonstrates @run output capture and loop directive.
+
+stages:
+  # Stage 1: Query for unprocessed items
+  - name: query_phase
+    jobs:
+      - peek
+
+  # Stage 2: Loop over query results, running extraction jobs per item
+  - name: extraction
+    loop:
+      over: '@run.peek.items'
+      payload:
+        session_id: '@item.session_id'
+        client_id: '@item.client_id'
+        model: '@payload.model'
+      jobs:
+        - llm_extract_evidence
+        - llm_extract_flash_actions
+        - llm_extract_session_summary
+
+stop_on_failure: false

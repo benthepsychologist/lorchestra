@@ -9,7 +9,7 @@ Lightweight job orchestrator for PHI data pipelines. Loads job specs (JSON/YAML)
 
 - Libraries (injest, canonizer, final-form) are pure transforms with no IO.
 - All IO happens in the processor layer via StorageClient and EventClient.
-- BigQuery is the primary storage using two-table pattern (event_log + raw_objects).
+- BigQuery WAL: wal.domain_events (append-only) → domain.objects (VIEW, latest state per aggregate_id). All writes via storacle.wal.append — never direct BQ.
 - Jobs are defined as JSON/YAML specs in jobs/definitions/, not code.
 - Processors receive clients, never raw credentials.
 
@@ -84,10 +84,6 @@ Lightweight job orchestrator for PHI data pipelines. Loads job specs (JSON/YAML)
 **Rationale:** Prevent accidental mutations when running ad-hoc queries.
 
 **Decision:** sql_runner.py validates queries are SELECT/WITH only before execution.
-
-## Running Jobs
-
-**STORACLE_NAMESPACE_SALT**: Every `lorchestra run` requires `STORACLE_NAMESPACE_SALT` to be set (default: `storacle-dev`). Without it, the `storacle.submit` step silently no-ops and the job reports false SUCCESS. The CLI now sets this automatically (matching life's behavior), but be aware of it when calling lorchestra programmatically or in tests.
 
 <!-- END SYNCED: lorchestra -->
 

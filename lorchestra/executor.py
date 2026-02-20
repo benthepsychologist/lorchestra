@@ -272,6 +272,7 @@ class ExecutionResult:
         error: Optional[ExecutionError] = None,
         rows_read: int = 0,
         rows_written: int = 0,
+        step_outputs: Optional[dict[str, Any]] = None,
     ):
         self.run_record = run_record
         self.attempt = attempt
@@ -279,6 +280,7 @@ class ExecutionResult:
         self.error = error
         self.rows_read = rows_read
         self.rows_written = rows_written
+        self.step_outputs = step_outputs or {}
 
     @property
     def run_id(self) -> str:
@@ -391,7 +393,7 @@ class Executor:
 
         for attempt_n in range(1, self._max_attempts + 1):
             try:
-                attempt, rows_read, rows_written = self._execute_attempt(
+                attempt, rows_read, rows_written, step_outputs = self._execute_attempt(
                     instance, run_record, envelope, attempt_n
                 )
                 self._store.store_attempt(attempt)
@@ -408,7 +410,8 @@ class Executor:
                     )
                     return ExecutionResult(
                         run_record, attempt, success=True,
-                        rows_read=total_rows_read, rows_written=total_rows_written
+                        rows_read=total_rows_read, rows_written=total_rows_written,
+                        step_outputs=step_outputs,
                     )
                 elif attempt.status == StepStatus.FAILED:
                     # Check if we should retry
@@ -430,7 +433,8 @@ class Executor:
                             failed_steps[0].step_id if failed_steps else "unknown",
                             "Step execution failed",
                         ),
-                        rows_read=total_rows_read, rows_written=total_rows_written
+                        rows_read=total_rows_read, rows_written=total_rows_written,
+                        step_outputs=step_outputs,
                     )
             except ExecutionError as e:
                 last_error = e
@@ -494,7 +498,7 @@ class Executor:
             attempt_n: The attempt number (1-indexed)
 
         Returns:
-            Tuple of (AttemptRecord, rows_read, rows_written)
+            Tuple of (AttemptRecord, rows_read, rows_written, step_outputs)
         """
         started_at = _utcnow()
         step_outputs: dict[str, Any] = {}
@@ -592,7 +596,7 @@ class Executor:
             status=overall_status,
             step_outcomes=tuple(step_outcomes),
         )
-        return attempt, rows_read, rows_written
+        return attempt, rows_read, rows_written, step_outputs
 
     def _execute_step(
         self,
